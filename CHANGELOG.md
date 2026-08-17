@@ -26,6 +26,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   search looks inside them.
 
 ### Added
+- Tagging a release now publishes to Modrinth and Paper Hangar as well as GitHub
+  Releases. Both steps are skipped when their token is absent, so a tag can be cut
+  before the registry projects exist. Release notes come from this file.
+- The release workflow rejects malformed tags and refuses to publish a stable release
+  whose version has no changelog section.
 - `placement.strategy` — `FIRST_SAFE` (default, keeps the player at the cell centre when it
   is viable and stops probing there), `FLATTEST`, or `HIGHEST` with a `height-ceiling` that
   keeps ranking off jagged peaks.
