@@ -24,6 +24,9 @@ if [[ ! -f "$PLUGIN_JAR" ]]; then
     exit 1
 fi
 
+# Resolve before the cd below, or a relative path stops pointing at the jar.
+PLUGIN_JAR="$(realpath "$PLUGIN_JAR")"
+
 mkdir -p "$WORKDIR/plugins"
 cd "$WORKDIR"
 
