@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- Geometry is identical to icon.svg, minus the background rect. -->
+  <g transform="translate(18,0)">
+    <polyline points="422,602 422,458 566,458 566,746 278,746 278,314 710,314 710,890 134,890 134,170 854,170 854,602" fill="none" stroke="#00E5A3" stroke-width="48" stroke-linecap="square" stroke-linejoin="miter" />
+    <circle cx="566" cy="552" r="60" fill="#FFAC1C" />
+    <circle cx="422" cy="746" r="60" fill="#FFAC1C" />
+    <circle cx="392" cy="314" r="60" fill="#FFAC1C" />
+    <circle cx="710" cy="778" r="60" fill="#FFAC1C" />
+    <circle cx="470" cy="170" r="60" fill="#FFAC1C" />
+  </g>
+</svg>
