@@ -1,172 +1,216 @@
 # SpiralGenesis 🌀
 
 [![CI](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml/badge.svg)](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml)
-[![Release](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/release.yml/badge.svg)](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/release.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html)
 [![PaperMC](https://img.shields.io/badge/PaperMC-1.20%2B-green.svg)](https://papermc.io)
 
-**SpiralGenesis** is a modern, high-performance distributed spawn and private territory engine for PaperMC, Purpur, and hybrid cross-play Minecraft servers.
+**Every player starts somewhere of their own.** Instead of dropping everyone at one crowded
+world spawn, SpiralGenesis gives each new player their own plot of land — 500×500 blocks by
+default — laid out in an expanding spiral around a centre point you choose.
 
-Instead of confining all players to a single crowded world spawn, SpiralGenesis distributes incoming players in an expanding clockwise **square spiral grid** ($N \times N$ block plots). Each player receives an isolated, safe, permanent genesis plot while retaining individual respawn points.
+The plugin finds them somewhere sensible to stand: not in an ocean, not in a lava pool, not
+at the bottom of a ravine or on the edge of a cliff. It happens on first join, off the main
+thread, and the player keeps that spot as their respawn point for good.
 
----
-
-## 🌟 Key Features
-
-* **Deterministic Square Spiral Distribution**: Maps player index $k \in [0, \infty)$ deterministically to 2D grid coordinates $(u, v)$ with offset $N$.
-* **Asynchronous Ocean & Hazard Avoidance**: Asynchronously scans chunks and heightmaps before allocation; automatically rejects oceans, deep water, lava, ice, and hazardous biomes, advancing the spiral until dry safe land is reached.
-* **Cross-Play Authentication Parity**:
-  * **Bedrock Edition (Geyser / Floodgate)**: Seamless automatic spawn allocation and teleportation on `PlayerJoinEvent`.
-  * **Java Edition (AuthMe-Reloaded)**: Teleportation is strictly gated until `/login` or `/register` is executed (preventing unauthenticated chunk loading / exploits).
-* **Per-Player Respawn Override**: Automatically enforces individual genesis coordinates on death respawns if no active bed or respawn anchor is present.
-* **Full Administrative Command Suite**: Powerful `/sgen` CLI to set origin coordinates, inspect player plots, manually relocate players, or reassign plots.
-* **Tick-Friendly Allocation**: Chunks are loaded through Paper's asynchronous API and each candidate cell is probed on its own tick, so terrain scanning never stalls the server. Storage writes are coalesced and flushed off the main thread.
-* **Folia-Ready Threading**: Every scheduler call site uses Paper's region, entity, and async schedulers rather than the legacy global scheduler, so the same jar runs on both Paper and Folia's regionised threading model.
+**[⬇ Download](https://github.com/Ninja6-MC/SpiralGenesis/releases)** ·
+[Modrinth](https://modrinth.com/plugin/spiralgenesis) ·
+[Hangar](https://hangar.papermc.io/Ninja6-MC/SpiralGenesis)
 
 ---
 
-## 📐 Mathematical Specification
+## Quick start
 
-Given global origin $(X_0, Z_0)$ and plot dimension $N$ (default $500$ blocks):
+1. **Requirements:** Paper 1.20+, a Paper fork such as Purpur, or Folia. Java 21.
+2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
+3. Start the server. `plugins/SpiralGenesis/config.yml` is generated on first run.
+4. Stand where you want the spiral to begin and run `/sgen setcenter`.
+5. That's it. The next player to join gets plot #1.
 
-$$X = X_0 + u \cdot N$$
-$$Z = Z_0 + v \cdot N$$
+Optional: install **Floodgate** if you run Bedrock cross-play, and/or **AuthMe-Reloaded**
+if your Java players log in with a password. SpiralGenesis detects both automatically.
 
-The sequence progresses in expanding clockwise rings ($1, 1, 2, 2, 3, 3, 4, 4 \dots$):
-
-```
-                   (-1,-1) ───> (0,-1) ───> (1,-1) ───> (2,-1)
-                      ▲                                    │
-                      │    (0,0) [P1] ───> (1,0) [P2]      │
-                      │                      │             ▼
-                   (-1,0)                    ▼           (2,0)
-                      ▲                   (1,1) [P3]       │
-                      │                      │             ▼
-                   (-1,1) <──── (0,1) <──────┘           (2,1)
-                    [P5]         [P4]                      │
-                                                           ▼
-```
+> **Pregenerate your world first.** Allocation generates chunks as it searches. On a fresh
+> world that is fine, but a pregenerated area makes first joins near-instant. See
+> [sizing guidance](docs/ADMIN_GUIDE.md#8-sizing-and-world-generation) for how big
+> to make it.
 
 ---
 
-## 📦 Installation & Setup
+## What it does
 
-**Requirements:** PaperMC, a Paper fork such as Purpur, or Folia — plus Java 21. Built
-against the 1.20.4 API; verify on your exact server version before deploying to production.
+* **One plot per player, never reused.** Plots are handed out along a square spiral, so
+  players spread outward evenly instead of piling into the same valley.
+* **Skips bad ground.** Oceans, lava, ice, deep water, ravines, sinkholes, cliff edges and
+  jagged peaks are all rejected. The plugin searches *inside* a plot for a good landing
+  spot before giving up on it.
+* **Respawns at home.** Die without a bed or anchor and you return to your own plot, not to
+  world spawn.
+* **Cross-play aware.** Bedrock players (Geyser/Floodgate) are placed the moment they join.
+  Java players behind AuthMe are held until `/login` or `/register` completes, so nobody
+  loads chunks before authenticating.
+* **Doesn't stall the server.** Chunks load through Paper's async API and each candidate
+  spot is checked on its own tick. Saves are batched off the main thread.
+* **Runs on Folia.** The same jar uses region, entity and async schedulers throughout.
 
-Spigot and CraftBukkit are **not** supported: allocation relies on Paper's asynchronous
-chunk and teleport APIs, and a synchronous fallback would stall the server on every join.
-Fabric, NeoForge, and proxies (Velocity, BungeeCord) are out of scope by design — the
-former are mod loaders rather than plugin platforms, and proxies have no world to
-allocate territory in.
+### What it does *not* do
 
-1. Download the latest release from [GitHub Releases](https://github.com/Ninja6-MC/SpiralGenesis/releases), [Modrinth](https://modrinth.com/plugin/spiralgenesis), or [Paper Hangar](https://hangar.papermc.io/Ninja6-MC/SpiralGenesis).
-2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` directory.
-3. (Optional) Install **Floodgate** for Bedrock cross-play and/or **AuthMe-Reloaded** for Java authentication.
-4. Restart your server to generate `plugins/SpiralGenesis/config.yml`.
-5. Run `/sgen setcenter` in-game to set the center of your spiral grid, or configure coordinates in `config.yml`.
+SpiralGenesis gives each player **space**, not **ownership**. It does not protect blocks,
+create claims, or stop another player from walking over and breaking things. If you want
+land protection, pair it with a claim plugin such as GriefPrevention or Lands — the spiral
+layout gives those plugins clean, non-overlapping regions to work with.
 
 ---
 
-## ⚙️ Configuration (`config.yml`)
+## Configuration
+
+`plugins/SpiralGenesis/config.yml`, with the defaults that matter most:
 
 ```yaml
-# Global origin for spiral calculation
 origin:
   world: "world"
   x: 0
   z: 0
 
-# Dimensions of each player's territory in blocks (N x N)
-# Clamped to 50-100000.
+# Size of each player's territory in blocks (500 = 500x500).
 cell-size: 500
 
-# Where inside a cell the player is placed
 placement:
-  # FIRST_SAFE (default) - the cell centre if it is viable, otherwise the first
-  #   viable point spiralling outward from it. Stops as soon as it finds one.
-  # FLATTEST - probe every candidate, take the least uneven.
-  # HIGHEST  - probe every candidate, take the highest at or below height-ceiling.
+  # FIRST_SAFE (default) - centre of the plot if it works, otherwise the first
+  #                        good spot found spiralling outward. Fastest.
+  # FLATTEST             - check every candidate, pick the most level ground.
+  # HIGHEST              - check every candidate, pick the highest below height-ceiling.
   strategy: FIRST_SAFE
-  # Blocks between candidates. Clamped to 16-512 (16 = one chunk).
-  stride: 16
-  # Candidates tried per cell before advancing the spiral. Clamped to 1-64, and
-  # reduced automatically if the search would otherwise leave the cell.
-  max-candidates: 12
-  # HIGHEST only: ranking ignores anything above this Y, which keeps players off
-  # jagged peaks. Clamped to -64..320.
-  height-ceiling: 110
+  stride: 16          # blocks between candidate spots (16 = one chunk)
+  max-candidates: 12  # spots tried inside a plot before moving to the next one
+  height-ceiling: 110 # HIGHEST only: ignore anything above this Y
 
-# Safety probing rules
 safety:
-  # Minimum surface Y for a candidate to be accepted. Clamped to -64..320.
-  min-surface-y: 63
-  # Cells probed before falling back to the best candidate seen. Worst case is
-  # max-scan-attempts * max-candidates ticks. Clamped to 1-500.
-  max-scan-attempts: 8
-  # Reject a candidate this far below the terrain around it — the rule that keeps
-  # players out of ravines and sinkholes. Clamped to 1-128.
-  max-pit-depth: 8
-  # Reject a candidate whose surroundings vary by more than this, ruling out cliff
-  # edges and spikes. Clamped to 1-128.
-  max-roughness: 12
+  min-surface-y: 63     # reject spots below this height
+  max-scan-attempts: 8  # plots to try before settling for the best seen so far
+  max-pit-depth: 8      # reject spots this far below the surrounding land (ravines)
+  max-roughness: 12     # reject spots whose surroundings are this uneven (cliffs)
 ```
 
-> The live spiral progression index is persisted in `data.yml`
-> (`current-spiral-index`), not in `config.yml`.
+Every value is range-checked on load, so a typo degrades to a sane value instead of
+breaking joins. The full annotated file ships inside the jar; see the
+[admin guide](docs/ADMIN_GUIDE.md) for what each rule actually rejects and how to tune it.
+
+Player assignments and the current spiral position live in `data.yml` — leave that one
+alone unless you are deliberately resetting the grid.
 
 ---
 
-## 💻 Commands & Permissions
+## Commands
 
-| Command | Permission | Description |
-| :--- | :--- | :--- |
-| `/sgen setcenter` | `spiralgenesis.admin` | Sets the global origin $(X_0, Z_0)$ to your current position. |
-| `/sgen setcenter <x> <z>` | `spiralgenesis.admin` | Sets explicit coordinates for the global origin. |
-| `/sgen setspawn <player>` | `spiralgenesis.admin` | Sets the target player's spawn to your current location. |
-| `/sgen setspawn <player> <x> <y> <z>` | `spiralgenesis.admin` | Explicitly sets coordinates for target player. |
-| `/sgen reassign <player>` | `spiralgenesis.admin` | Clears target player's spawn and allocates a fresh safe spiral plot. |
-| `/sgen tp <player>` | `spiralgenesis.admin` | Teleports you to the player's assigned genesis coordinates. |
-| `/sgen info <player>` | `spiralgenesis.admin` | Displays player's index $k$, grid cell $(u, v)$, and world coordinates. |
-| `/sgen simulate <count>` | `spiralgenesis.admin` | Runs allocation against live terrain and reports index burn, fallbacks and per-rule rejections. Generates chunks; does not advance the live spiral index. |
-| `/sgen reload` | `spiralgenesis.admin` | Reloads `config.yml` and refreshes storage. |
+All commands require the `spiralgenesis.admin` permission (default: operators).
+`/spiralgenesis` works as an alias for `/sgen`.
+
+| Command | What it does |
+| :--- | :--- |
+| `/sgen setcenter` | Set the centre of the spiral to where you're standing. |
+| `/sgen setcenter <x> <z>` | Set the centre to explicit coordinates. |
+| `/sgen setspawn <player>` | Move a player's spawn to your position. |
+| `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
+| `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
+| `/sgen tp <player>` | Teleport yourself to a player's plot. |
+| `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
+| `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
+| `/sgen reload` | Reload `config.yml`. |
+
+`setspawn` and `reassign` act on the live player, so the target has to be online. `tp` and
+`info` read from storage and work for offline players too.
+
+`/sgen simulate 50` is the fastest way to check your settings against your world before
+players arrive — it reports how many plots were skipped, how often the search fell back,
+and exactly which safety rule did the rejecting.
 
 ---
 
-## 🛠️ Building from Source
+## How the spiral works
+
+Plot 1 lands on the centre. Each following plot moves one cell along an expanding clockwise
+square spiral, so plot *n* is always `cell-size` blocks from its neighbours:
+
+```
+        (-1,-1) ───> (0,-1) ───> (1,-1) ───> (2,-1)
+           ▲                                    │
+           │    (0,0) [P1] ───> (1,0) [P2]      │
+           │                      │             ▼
+        (-1,0)                    ▼           (2,0)
+           ▲                   (1,1) [P3]       │
+           │                      │             ▼
+        (-1,1) <──── (0,1) <──────┘           (2,1)
+         [P5]         [P4]                      │
+                                                ▼
+```
+
+A cell's world position is simply `x = origin.x + u * cell-size` and
+`z = origin.z + v * cell-size`. The full derivation, terrain rules and lifecycle hooks are
+in the [admin guide](docs/ADMIN_GUIDE.md).
+
+---
+
+## Compatibility
+
+| | Supported |
+| :--- | :--- |
+| Paper, Purpur and other Paper forks | ✅ 1.20+ |
+| Folia | ✅ |
+| Spigot / CraftBukkit | ❌ — allocation needs Paper's async chunk and teleport APIs |
+| Fabric / NeoForge | ❌ — mod loaders, not plugin platforms |
+| Velocity / BungeeCord | ❌ — proxies have no world to allocate in; install on the backend servers |
+
+Built against the 1.20.4 API. Newer Paper releases have worked in testing, but verify on
+your exact version before putting it on a live server.
+
+---
+
+## Troubleshooting
+
+**Players still spawn at world spawn.** They are probably not new. Only players without a
+recorded plot are allocated one; everyone else keeps the spawn they already have until you
+`/sgen reassign` them (they must be online for that).
+
+**Players land in the wrong world.** If `origin.world` doesn't match a loaded world, the
+plugin logs a warning and falls back to the server's first world rather than refusing to
+allocate — so allocation looks healthy while everyone is placed somewhere unintended. Check
+the startup log for `Could not find target world`.
+
+**First join takes a few seconds.** The plugin is generating chunks to look for safe
+ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.
+
+**AuthMe players get placed before logging in.** Make sure AuthMe is installed and loading;
+without it SpiralGenesis falls back to placing players on join.
+
+**Someone landed somewhere terrible.** Run `/sgen simulate 50` — the per-rule rejection
+breakdown usually shows the rule that needs loosening, most often `min-surface-y` or
+`max-roughness` on mountainous or ocean-heavy worlds.
+
+---
+
+## Docs, source and contributing
+
+* [Admin & architecture guide](docs/ADMIN_GUIDE.md) — terrain rules, lifecycle, storage
+  format, sizing, testing matrix.
+* [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md)
+* Bugs and feature requests: [GitHub Issues](https://github.com/Ninja6-MC/SpiralGenesis/issues)
+* Patches welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and PR rules, and
+  [RELEASE_PROCESS.md](RELEASE_PROCESS.md) covers how releases are cut.
+
+Building it yourself:
 
 ```bash
-# Clone the repository
-git clone https://github.com/Ninja6-MC/SpiralGenesis.git
-cd SpiralGenesis
-
-# Run test suite
-./gradlew test
-
-# Build production shadow JAR
 ./gradlew build
 ```
 
-Compiled JAR will be in `build/libs/SpiralGenesis-<version>.jar`.
+The jar lands in `build/libs/`.
 
 ---
 
-## 🚀 Release Process & Contribution
+## License & credits
 
-* For release flows (Alpha, Beta, and Market GA), read [RELEASE_PROCESS.md](RELEASE_PROCESS.md).
-* For development setup, branching rules, and PR guidelines, read [CONTRIBUTING.md](CONTRIBUTING.md).
-* Security vulnerabilities should be reported following [SECURITY.md](SECURITY.md).
-
----
-
-## 📄 License
-
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
-
----
-
-## 🙏 Acknowledgements
+[GNU General Public License v3.0](LICENSE).
 
 Inspired by [Block4Block / DynamicSpawnPlugin](https://github.com/Block4Block/DynamicSpawnPlugin),
 which pioneered spiral-pattern spawn distribution for Paper servers. SpiralGenesis is an
