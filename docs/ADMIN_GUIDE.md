@@ -1,29 +1,62 @@
-# SpiralGenesis Plugin Architecture & Deployment Guide
+# SpiralGenesis — Admin & Architecture Guide
 
-This document defines the mathematical specification, runtime architecture, configuration, and implementation details for **SpiralGenesis** — the per-player **Square Spiral ($N \times N$) Distributed Spawn & Territory Engine** on the PaperMC + Geyser/Floodgate + AuthMe hybrid server.
+This is the reference for server owners who want to know exactly how SpiralGenesis picks a
+spot, what it stores, and how to size a world for it. For installation and day-to-day use,
+start with the [README](../README.md).
+
+**Contents**
+
+1. [How allocation works](#1-how-allocation-works)
+2. [The spiral, precisely](#2-the-spiral-precisely)
+3. [Terrain rules](#3-terrain-rules)
+4. [Placement strategies](#4-placement-strategies)
+5. [Join and respawn lifecycle](#5-join-and-respawn-lifecycle)
+6. [Stored data](#6-stored-data)
+7. [Tuning with `/sgen simulate`](#7-tuning-with-sgen-simulate)
+8. [Sizing and world generation](#8-sizing-and-world-generation)
+9. [Testing checklist](#9-testing-checklist)
+10. [Where the code lives](#10-where-the-code-lives)
 
 ---
 
-## 1. Upstream References & Source Credits
+## 1. How allocation works
 
-| Resource | Link | Description |
-| :--- | :--- | :--- |
-| **Plugin Name** | **SpiralGenesis** (`com.ninja6.spiralgenesis`) | Custom per-player spiral distribution & genesis engine. |
-| **Upstream Base** | [Block4Block / DynamicSpawnPlugin (GitHub)](https://github.com/Block4Block/DynamicSpawnPlugin) | Open-source base reference for spiral & square spawn mechanics. |
-| **Upstream Modrinth** | [DynamicSpawnPlugin (Modrinth)](https://modrinth.com/plugin/dynamicspawnplugin) | Upstream Modrinth release page and plugin documentation. |
+A player joins for the first time. SpiralGenesis:
 
-### Architectural Extensions in SpiralGenesis
-While upstream `DynamicSpawnPlugin` alters the *global world spawn* across a single point for the entire server, **SpiralGenesis** implements:
-1. **Per-Player UUID Registry**: Unique, permanent default spawn allocated per player rather than shifting the single global world spawn.
-2. **Ocean & Hazard Filtering**: Automatic asynchronous chunk and heightmap probing to reject water/ocean cells and advance the spiral to valid dry land.
-3. **Cross-Play Authentication Parity**: Specialized hooks for Bedrock (Floodgate instant auth) and Java (AuthMe `/login` and `/register` completion).
+1. Claims the next **spiral index** — a global counter, shared across all players, that
+   maps to a grid cell. Claiming is atomic, so two players joining at the same moment can
+   never land in the same cell.
+2. Loads that cell's chunks asynchronously and probes **candidate points inside the cell**,
+   spiralling outward from its centre.
+3. Accepts the first (or best, depending on strategy) candidate that passes every terrain
+   rule in §3.
+4. If every candidate in the cell fails, claims another index and starts again — up to
+   `safety.max-scan-attempts` cells.
+5. If all attempts are exhausted, settles on the best candidate seen anywhere during the
+   scan rather than dropping the player at world spawn.
+
+Two nested searches, in other words: an outer one over cells, an inner one within a cell.
+The inner search is what keeps one bad block from throwing away an entire 500×500 plot.
+
+Probes are spread one per tick, and chunks load through Paper's async API, so allocation
+never blocks the main thread. Worst-case time for one player is
+`max-scan-attempts × max-candidates` ticks — 96 ticks (about 5 seconds) at the defaults,
+and far less in practice.
 
 ---
 
-## 2. System Overview & Core Objectives
+## 2. The spiral, precisely
 
-### 2.1 Objective
-Distribute incoming players across the world in an expanding clockwise **square spiral grid** where each player receives a unique, private territory of size $N \times N$ blocks. If an assigned grid cell falls on water, ocean biomes, or hazardous terrain, the engine automatically skips the cell and advances to the next spiral coordinate until safe dry land is secured.
+Given an origin `(X₀, Z₀)` and a cell size `N`, the world coordinates at the centre of grid
+cell `(u, v)` are:
+
+```
+X = X₀ + u · N
+Z = Z₀ + v · N
+```
+
+Indices walk clockwise with segment lengths growing every two turns
+(1, 1, 2, 2, 3, 3, 4, 4, …), moving East → South → West → North:
 
 ```
                              (-1,-1) ───> (0,-1) ───> (1,-1) ───> (2,-1)
@@ -38,124 +71,123 @@ Distribute incoming players across the world in an expanding clockwise **square 
                                                                      ▼
 ```
 
-### 2.2 Key Capabilities
-1. **Deterministic Grid Expansion**: Spiral index $k \in [0, \infty)$ deterministically maps to grid coordinates $(u, v)$.
-2. **Dynamic Ocean & Hazard Avoidance**: Asynchronous chunk and heightmap probing rejects water/ocean cells and advances to the next index.
-3. **Cross-Play Authentication Parity**:
-   * **Bedrock (Floodgate)**: Automatic spawn assignment and teleportation on `PlayerJoinEvent`.
-   * **Java (AuthMe-Reloaded)**: Spawn assignment and teleportation triggers strictly on `LoginEvent` / `RegisterEvent` (preventing unauthenticated chunk loading).
-4. **Per-Player Persistence & Respawn Override**: Sets `player.setRespawnLocation(loc, true)` and hooks into `PlayerSpawnLocationEvent` and `PlayerRespawnEvent`.
-5. **Administrative Controls**: Full `/sgen` command suite for overriding global origin, setting individual player spawns, reassigning players, and inspecting assignments.
-
----
-
-## 3. Mathematical Specification
-
-### 3.1 Coordinate Transformation Formulas
-
-Let:
-* $(X_0, Z_0)$ be the global spiral center / origin.
-* $N$ be the cell dimension (e.g. $500$ blocks).
-* $(u, v) \in \mathbb{Z}^2$ be the discrete grid cell index.
-
-The world coordinates $(X, Z)$ representing the center of cell $(u, v)$ are given by:
-$$X = X_0 + u \cdot N$$
-$$Z = Z_0 + v \cdot N$$
-
-### 3.2 Spiral Sequence Progression
-
-The progression steps follow clockwise movement with segment lengths increasing every two turns:
-$$\text{Lengths: } 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, \dots$$
-$$\text{Directions: } \text{East } (+u) \to \text{South } (+v) \to \text{West } (-u) \to \text{North } (-v)$$
-
-| Player / Step Index ($k$) | Grid Cell $(u, v)$ | Direction Moved | World Offset from Origin ($N=500$) |
+| Index | Cell (u, v) | Direction | World offset from origin (N = 500) |
 | :--- | :--- | :--- | :--- |
-| **0 (Player 1)** | $(0, 0)$ | Origin | $(0, 0)$ |
-| **1 (Player 2)** | $(1, 0)$ | Right (East) | $(+500, 0)$ |
-| **2 (Player 3)** | $(1, 1)$ | Down (South) | $(+500, +500)$ |
-| **3 (Player 4)** | $(0, 1)$ | Left (West) | $(0, +500)$ |
-| **4 (Player 5)** | $(-1, 1)$ | Left (West) | $(-500, +500)$ |
-| **5 (Player 6)** | $(-1, 0)$ | Up (North) | $(-500, 0)$ |
-| **6 (Player 7)** | $(-1, -1)$ | Up (North) | $(-500, -500)$ |
-| **7 (Player 8)** | $(0, -1)$ | Right (East) | $(0, -500)$ |
-| **8 (Player 9)** | $(1, -1)$ | Right (East) | $(+500, -500)$ |
-| **9 (Player 10)** | $(2, -1)$ | Right (East) | $(+1000, -500)$ |
-| **10 (Player 11)** | $(2, 0)$ | Down (South) | $(+1000, 0)$ |
+| 0 | (0, 0) | origin | (0, 0) |
+| 1 | (1, 0) | East | (+500, 0) |
+| 2 | (1, 1) | South | (+500, +500) |
+| 3 | (0, 1) | West | (0, +500) |
+| 4 | (-1, 1) | West | (-500, +500) |
+| 5 | (-1, 0) | North | (-500, 0) |
+| 6 | (-1, -1) | North | (-500, -500) |
+| 7 | (0, -1) | East | (0, -500) |
+| 8 | (1, -1) | East | (+500, -500) |
+| 9 | (2, -1) | East | (+1000, -500) |
+| 10 | (2, 0) | South | (+1000, 0) |
+
+Indices are consumed, not recycled. A cell that fails every candidate burns its index
+permanently — which is why the in-cell search matters on ocean-heavy worlds.
 
 ---
 
-## 4. Terrain Validation & Water-Filtering Engine
+## 3. Terrain rules
 
-To prevent spawning players in oceans, underwater, or inside lava:
+Each candidate point is checked against the surface height from the
+`MOTION_BLOCKING_NO_LEAVES` heightmap plus eight terrain samples spread across the
+candidate's own chunk. A candidate is rejected for any of these reasons, which are the same
+names `/sgen simulate` reports:
 
-```
-                            [ Candidate Coordinate (X, Z) ]
-                                           │
-                                           ▼
-                           [ world.getChunkAtAsync(X>>4, Z>>4) ]
-                                           │
-                                           ▼
-                   [ Get Surface Y: MOTION_BLOCKING_NO_LEAVES ]
-                                           │
-                                           ▼
-                   ┌───────────────────────────────────────────────┐
-                   │               Validation Checks:              │
-                   │  1. Surface Y <= SeaLevel (62)                │
-                   │  2. Block is WATER / LAVA / ICE / KELP        │
-                   │  3. Biome is OCEAN / DEEP_OCEAN / FROZEN      │
-                   └───────────────────────┬───────────────────────┘
-                                           │
-                           ┌───────────────┴───────────────┐
-                          FAIL                            PASS
-                           │                               │
-                           ▼                               ▼
-                 [ Increment Index k++ ]         [ Save & Assign Location ]
-                 [ Recurse Next Cell ]           [ Teleport Player to (X, Y+1, Z) ]
-```
+| Reason | Rule | Config |
+| :--- | :--- | :--- |
+| `LOW_SURFACE` | Surface sits below the minimum height. | `safety.min-surface-y` (63) |
+| `OCEAN` | Surface biome is any ocean variant. | — |
+| `HAZARD` | Block underfoot is water, lava, ice, packed/blue ice, seagrass, kelp or powder snow. | — |
+| `NO_HEADROOM` | Not enough clear space for a player to stand. | — |
+| `PIT` | Sits more than the allowed depth below the median of surrounding terrain — ravines, canyons, sinkholes, craters. | `safety.max-pit-depth` (8) |
+| `ROUGH` | Surroundings vary more sharply than allowed — cliff edges, spikes, jagged ground. | `safety.max-roughness` (12) |
+| `NEARBY_HAZARD` | Lava or powder snow within the sampled surroundings. | — |
 
-### Biome and Block Blacklists
-* **Blocked Biomes**: `OCEAN`, `DEEP_OCEAN`, `WARM_OCEAN`, `LUKEWARM_OCEAN`, `DEEP_LUKEWARM_OCEAN`, `COLD_OCEAN`, `DEEP_COLD_OCEAN`, `FROZEN_OCEAN`, `DEEP_FROZEN_OCEAN`.
-* **Blocked Surface Materials**: `WATER`, `LAVA`, `ICE`, `PACKED_ICE`, `BLUE_ICE`, `SEAGRASS`, `TALL_SEAGRASS`, `KELP`, `KELP_PLANT`.
-* **Minimum Surface Elevation**: $Y \ge 63$ (above standard sea level).
+Two details worth knowing:
+
+**Why `PIT` and `ROUGH` exist.** The heightmap reports a ravine floor as "the surface",
+because nothing is above it. Without a shape check, a player drops 40 blocks into a canyon
+and the plugin considers that a success. Comparing the candidate against the terrain around
+it is what catches those cases.
+
+**Water nearby is fine.** Only lava and powder snow disqualify a candidate by proximity.
+Water or ice a few blocks away is a lake shore or river bank — a good spawn, not a bad one.
+
+Terrain samples are taken from fixed positions inside the candidate's own chunk rather than
+in a ring around the point. A ring would cross into neighbouring chunks whenever a candidate
+sits near a chunk edge, which is common; reading those would force chunk generation, and
+skipping them would quietly disable the checks.
 
 ---
 
-## 5. Lifecycle Hooks & Cross-Play Architecture
+## 4. Placement strategies
 
-### 5.1 Bedrock Edition Flow (Geyser + Floodgate)
-1. Bedrock client joins via UDP Playit tunnel $\to$ Geyser translator.
-2. Floodgate authenticates the Xbox Live gamertag automatically (UUID format `00000000-0000-0000-0009-...`).
-3. `PlayerJoinEvent` fires:
-   * System checks if UUID exists in `plugins/SpiralGenesis/data.yml`.
-   * If missing $\to$ execute spiral allocation $\to$ teleport to assigned coordinate.
+`placement.strategy` decides which candidate inside a cell wins:
 
-### 5.2 Java Edition Flow (AuthMe-Reloaded)
-1. Java client connects to TCP port 25565.
-2. AuthMe holds player at AuthMe spawn lobby in limbo mode.
-3. Player executes `/register <password> <password>` or `/login <password>`.
-4. AuthMe fires `fr.xephi.authme.events.RegisterEvent` or `LoginEvent`:
-   * System checks if UUID exists in `plugins/SpiralGenesis/data.yml`.
-   * If missing $\to$ execute spiral allocation $\to$ save coordinates $\to$ teleport player.
-   * If already registered $\to$ ensure player respawn point is restored.
+| Strategy | Behaviour | Cost |
+| :--- | :--- | :--- |
+| `FIRST_SAFE` *(default)* | Take the cell centre if it passes, otherwise the first viable point spiralling outward. Stops as soon as it finds one. | Often a single chunk. |
+| `FLATTEST` | Probe every candidate, take the one with the least height variation. | Always spends the full `max-candidates` budget. |
+| `HIGHEST` | Probe every candidate, take the highest at or below `placement.height-ceiling`. | Always spends the full `max-candidates` budget. |
+
+`height-ceiling` (default 110) keeps `HIGHEST` from stranding players on jagged mountain
+peaks while still preferring hills over lowlands.
+
+`placement.stride` (default 16) is the distance between candidates; 16 is one chunk and the
+minimum, since anything smaller puts multiple candidates in the same chunk.
+`placement.max-candidates` (default 12) is reduced automatically if `cell-size` and `stride`
+cannot fit that many without the search leaving the cell.
 
 ---
 
-## 6. Per-Player Data Persistence & Storage Schema
+## 5. Join and respawn lifecycle
 
-Data is persisted in `plugins/SpiralGenesis/data.yml` (or SQLite database `spiralgenesis.db`):
+### Bedrock (Geyser + Floodgate)
+
+1. Bedrock client connects through Geyser; Floodgate authenticates the Xbox Live gamertag
+   automatically (UUIDs of the form `00000000-0000-0000-0009-…`).
+2. `PlayerJoinEvent` fires. If the UUID is absent from `data.yml`, allocation runs and the
+   player is teleported to the result.
+
+### Java behind AuthMe-Reloaded
+
+1. Java client connects; AuthMe holds the player in limbo at its own lobby.
+2. Player runs `/register <password> <password>` or `/login <password>`.
+3. AuthMe's `RegisterEvent` / `LoginEvent` fires. If the UUID is absent from `data.yml`,
+   allocation runs, coordinates are saved, and the player is teleported.
+4. Returning players have their respawn point restored.
+
+Gating on the AuthMe event rather than on join is deliberate: it stops unauthenticated
+sessions from loading chunks.
+
+### Java without AuthMe
+
+Allocation runs on `PlayerJoinEvent`, exactly as it does for Bedrock.
+
+### Respawn
+
+The plugin sets the player's respawn location and hooks `PlayerSpawnLocationEvent` and
+`PlayerRespawnEvent`. A bed or respawn anchor always takes priority; the genesis plot is
+the fallback, replacing world spawn.
+
+---
+
+## 6. Stored data
+
+`plugins/SpiralGenesis/config.yml` holds settings you edit. `plugins/SpiralGenesis/data.yml`
+holds runtime state you generally should not — including `current-spiral-index`, the live
+spiral position.
 
 ```yaml
-# Global Configuration (config.yml)
-origin:
-  world: "world"
-  x: 0
-  z: 0
-cell-size: 500
+# data.yml
 current-spiral-index: 12
 
-# Per-Player Registry (Keyed by permanent Player UUID in data.yml)
 players:
-  # Bedrock Player (Floodgate)
+  # Bedrock player (Floodgate)
   00000000-0000-0000-0009-01f4c3a2b100:
     name: "*BedrockWarrior"
     client: "BEDROCK"
@@ -168,7 +200,7 @@ players:
     world: "world"
     assigned-date: "2026-08-17T02:00:00Z"
 
-  # Java Player (AuthMe)
+  # Java player (AuthMe)
   a1b2c3d4-e5f6-7890-abcd-ef1234567890:
     name: "JavaCrafter"
     client: "JAVA"
@@ -182,66 +214,89 @@ players:
     assigned-date: "2026-08-17T02:05:00Z"
 ```
 
----
-
-## 7. Administrative Command Interface (`/sgen` or `/spiralgenesis`)
-
-| Command | Permission | Description |
-| :--- | :--- | :--- |
-| `/sgen setcenter` | `spiralgenesis.admin` | Sets the global spiral center $(X_0, Z_0)$ to the admin's current location. |
-| `/sgen setcenter <x> <z>` | `spiralgenesis.admin` | Overrides the global spiral center to explicit coordinates $(X, Z)$. |
-| `/sgen setspawn <player>` | `spiralgenesis.admin` | Overrides the target player's personal spawn to admin's current position. |
-| `/sgen setspawn <player> <x> <y> <z>` | `spiralgenesis.admin` | Manually assigns exact coordinates $(X, Y, Z)$ to a player. |
-| `/sgen reassign <player>` | `spiralgenesis.admin` | Clears player's previous location, advances index, and assigns a fresh spiral plot. |
-| `/sgen tp <player>` | `spiralgenesis.admin` | Teleports admin to the target player's assigned genesis spawn. |
-| `/sgen info <player>` | `spiralgenesis.admin` | Displays player's assigned coordinates, index $k$, and $(u, v)$ grid cell. |
-| `/sgen reload` | `spiralgenesis.admin` | Reloads `config.yml` and refreshes storage. |
+Writes are coalesced and flushed off the main thread. To reset a single player, use
+`/sgen reassign <player>` rather than editing the file by hand.
 
 ---
 
-## 8. Source Code Reference
+## 7. Tuning with `/sgen simulate`
 
-This section previously inlined full listings of four classes. Those copies drifted
-out of sync with the code they documented, so they have been replaced with pointers
-to the files themselves — the source is the authoritative reference.
+```
+/sgen simulate 50
+```
 
-All implementation lives under `src/main/java/com/ninja6/spiralgenesis/`.
+Runs 50 allocations against your live terrain and reports indices consumed per spawn,
+fallback use, the range of surface heights chosen, and a breakdown of which rule rejected
+what. It uses a throwaway counter, so the live spiral index never moves — but it *does*
+generate chunks, so run it on a test world or somewhere you intend to pregenerate anyway.
 
-| Component | File | Responsibility | Spec |
+Reading the output:
+
+* **High index burn** — most cells are failing outright. Usually an ocean-heavy world;
+  raise `max-candidates`, or move the origin onto a continent.
+* **Mostly `ROUGH`** — `max-roughness` is too strict for mountainous terrain.
+* **Mostly `LOW_SURFACE`** — `min-surface-y` is above much of your terrain.
+* **Frequent fallbacks** — the scan is running out of attempts; raise `max-scan-attempts`,
+  accepting the longer worst-case allocation time.
+
+CI runs this same command against a generated world and fails the build on regressions in
+index burn, fallback use, or spawns below `min-surface-y`.
+
+---
+
+## 8. Sizing and world generation
+
+Allocation generates chunks while it searches, so pregenerate with a tool such as Chunky
+before opening the doors.
+
+| Expected players | Cell size | Minimum world radius | Chunky command |
 | :--- | :--- | :--- | :--- |
-| Spiral math | `math/SpiralMath.java` | Index → grid and grid → world coordinate transforms | §3 |
-| Allocation | `manager/SpawnManager.java` | Plot assignment, async terrain probing, spiral advance | §4 |
+| 20 | 500 × 500 | 2,000 blocks | `chunky radius 2000` |
+| 50 | 500 × 500 | 3,000 blocks | `chunky radius 3000` |
+| 100 | 500 × 500 | 4,500 blocks | `chunky radius 4500` |
+| 50 | 1,000 × 1,000 | 6,000 blocks | `chunky radius 6000` |
+
+Add headroom on worlds with a lot of ocean: skipped cells consume indices, so the spiral
+reaches further out than the player count alone suggests. `/sgen simulate` will tell you how
+much further.
+
+Also check that your world border is larger than the radius you plan to fill.
+
+---
+
+## 9. Testing checklist
+
+Worth running once on a staging server before going live:
+
+| Check | How | Expected |
+| :--- | :--- | :--- |
+| Sequential allocation | Join with 4 test accounts in sequence. | Plots at (0,0), (N,0), (N,N), (0,N) offsets. |
+| Ocean skipping | Set the origin so a cell centre lands in deep ocean. | Cell skipped, next index allocated on dry land. |
+| Bedrock first join | Connect a Bedrock client via Geyser/Floodgate. | Allocated and teleported on join. |
+| AuthMe gating | Connect a Java client with AuthMe installed. | No allocation until `/register` or `/login`. |
+| Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
+| Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
+
+---
+
+## 10. Where the code lives
+
+All implementation is under `src/main/java/com/ninja6/spiralgenesis/`. The source is the
+authoritative reference — this guide describes behaviour, not line numbers.
+
+| Component | File | Responsibility | Section |
+| :--- | :--- | :--- | :--- |
+| Spiral math | `math/SpiralMath.java` | Index → grid and grid → world transforms | §2 |
+| Allocation | `manager/SpawnManager.java` | Cell and candidate search, async probing | §1, §3 |
+| Rejection reasons | `manager/RejectionReason.java` | The rule names reported by simulation | §3 |
+| Simulation | `manager/SpawnSimulator.java` | `/sgen simulate` dry runs | §7 |
 | Join lifecycle | `listeners/PlayerSpawnListener.java` | First-join and respawn hooks | §5 |
-| Java auth gating | `listeners/AuthMeHookListener.java` | Defers allocation until AuthMe login completes | §5.2 |
-| Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players for instant auth | §5.1 |
-| AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5.2 |
-| Persistence | `storage/YamlDataStorage.java` | Per-player UUID registry in `data.yml` | §6 |
-| Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | §7 |
-| Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, and validation | §6 |
+| Java auth gating | `listeners/AuthMeHookListener.java` | Defers allocation until AuthMe login | §5 |
+| Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players | §5 |
+| AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5 |
+| Persistence | `storage/YamlDataStorage.java` | Per-player registry in `data.yml` | §6 |
+| Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
+| Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |
 
-Unit tests covering the mathematical and configuration logic live under
+Unit tests for the maths and configuration logic live under
 `src/test/java/com/ninja6/spiralgenesis/`.
-
----
-
-## 9. Sizing & World Generation Guidelines
-
-| Expected Player Capacity | Cell Size ($N$) | Minimum World Radius | Chunky Pregen Command |
-| :--- | :--- | :--- | :--- |
-| **20 Players** | $500 \times 500$ | $2,000$ blocks | `chunky radius 2000` |
-| **50 Players** | $500 \times 500$ | $3,000$ blocks | `chunky radius 3000` |
-| **100 Players** | $500 \times 500$ | $4,500$ blocks | `chunky radius 4500` |
-| **50 Players** | $1,000 \times 1,000$ | $6,000$ blocks | `chunky radius 6000` |
-
----
-
-## 10. Operational Testing Matrix
-
-| Test Case | Procedure | Expected Result |
-| :--- | :--- | :--- |
-| **1. Sequential Grid Allocation** | Join with 4 mock accounts in sequence. | Players land at $(0,0)$, $(N,0)$, $(N,N)$, $(0,N)$ offsets. |
-| **2. Ocean / Water Skipping** | Target cell center lands in Ocean / Deep Ocean. | Scanner skips cell, increments index, and allocates adjacent land plot. |
-| **3. Bedrock First Join** | Connect via Bedrock client (Geyser/Floodgate). | Automatically allocated and teleported on join. |
-| **4. Java AuthMe Isolation** | Connect via Java client. | Spawn allocated only **after** `/register` or `/login`. |
-| **5. Death & Respawn** | Execute `/kill` without setting a bed. | Respawns at assigned genesis coordinates instead of world spawn $(0, 64, 0)$. |
-| **6. Admin Override** | Execute `/sgen setspawn <player> 1200 70 -400`. | Player's spawn and respawn point are updated immediately. |
