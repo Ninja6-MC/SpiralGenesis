@@ -39,9 +39,10 @@ Two nested searches, in other words: an outer one over cells, an inner one withi
 The inner search is what keeps one bad block from throwing away an entire 500×500 plot.
 
 Probes are spread one per tick, and chunks load through Paper's async API, so allocation
-never blocks the main thread. Worst-case time for one player is
-`max-scan-attempts × max-candidates` ticks — 96 ticks (about 5 seconds) at the defaults,
-and far less in practice.
+never blocks the main thread. Worst case is `max-scan-attempts × max-candidates` probes —
+96 at the defaults, and far fewer in practice. That bounds the number of ticks the search
+occupies, not the wall-clock time: each probe waits on its chunk first, and on ungenerated
+terrain that wait dominates. Pregenerating is what turns the bound into a fast join.
 
 ---
 
@@ -170,9 +171,9 @@ Allocation runs on `PlayerJoinEvent`, exactly as it does for Bedrock.
 
 ### Respawn
 
-The plugin sets the player's respawn location and hooks `PlayerSpawnLocationEvent` and
-`PlayerRespawnEvent`. A bed or respawn anchor always takes priority; the genesis plot is
-the fallback, replacing world spawn.
+The plugin sets the player's respawn location at allocation time and handles
+`PlayerRespawnEvent` at `HIGHEST` priority. A bed or respawn anchor always takes priority;
+the genesis plot is the fallback, replacing world spawn.
 
 ---
 
@@ -225,7 +226,8 @@ Writes are coalesced and flushed off the main thread. To reset a single player, 
 /sgen simulate 50
 ```
 
-Runs 50 allocations against your live terrain and reports indices consumed per spawn,
+Runs 50 allocations against your live terrain (any count from 1 to 500) and reports
+indices consumed per spawn,
 fallback use, the range of surface heights chosen, and a breakdown of which rule rejected
 what. It uses a throwaway counter, so the live spiral index never moves — but it *does*
 generate chunks, so run it on a test world or somewhere you intend to pregenerate anyway.

@@ -86,7 +86,7 @@ placement:
   height-ceiling: 110 # HIGHEST only: ignore anything above this Y
 
 safety:
-  min-surface-y: 63     # don't place anyone below this height
+  min-surface-y: 63     # reject spots below this height
   max-scan-attempts: 8  # plots to try before settling for the best seen so far
   max-pit-depth: 8      # reject spots this far below the surrounding land (ravines)
   max-roughness: 12     # reject spots whose surroundings are this uneven (cliffs)
@@ -115,8 +115,11 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
-| `/sgen simulate <count>` | Dry-run allocation against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
+| `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
 | `/sgen reload` | Reload `config.yml`. |
+
+`setspawn` and `reassign` act on the live player, so the target has to be online. `tp` and
+`info` read from storage and work for offline players too.
 
 `/sgen simulate 50` is the fastest way to check your settings against your world before
 players arrive — it reports how many plots were skipped, how often the search fell back,
@@ -165,9 +168,14 @@ your exact version before putting it on a live server.
 
 ## Troubleshooting
 
-**Players still spawn at world spawn.** Check that `origin.world` matches your actual world
-name, and that the player is genuinely new — existing players keep whatever spawn they
-already have until you `/sgen reassign` them.
+**Players still spawn at world spawn.** They are probably not new. Only players without a
+recorded plot are allocated one; everyone else keeps the spawn they already have until you
+`/sgen reassign` them (they must be online for that).
+
+**Players land in the wrong world.** If `origin.world` doesn't match a loaded world, the
+plugin logs a warning and falls back to the server's first world rather than refusing to
+allocate — so allocation looks healthy while everyone is placed somewhere unintended. Check
+the startup log for `Could not find target world`.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.
