@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.commands;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.manager.SpawnSimulator;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -16,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -23,6 +25,12 @@ import java.util.logging.Level;
  * Administrative /sgen command suite for SpiralGenesis.
  */
 public class SpiralCommand implements CommandExecutor, TabCompleter {
+
+    /**
+     * Upper bound on {@code /sgen simulate}. Each sample generates chunks, so an unbounded
+     * count typed on a live server would be a self-inflicted outage.
+     */
+    private static final int MAX_SIMULATE_SAMPLES = 500;
 
     private final SpiralGenesisPlugin plugin;
 
@@ -49,6 +57,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             case "reassign" -> handleReassign(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
+            case "simulate" -> handleSimulate(sender, args);
             case "reload" -> handleReload(sender);
             default -> sendHelp(sender);
         }
@@ -232,6 +241,85 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 + " (" + record.worldName() + ")");
     }
 
+    /**
+     * Runs allocation repeatedly against the live world and reports the aggregate, without
+     * involving a player or touching the live spiral index.
+     *
+     * <p>This is the only way to exercise the terrain rules without a game client, so it is
+     * also what CI drives to keep the safety thresholds honest against generated terrain.
+     */
+    private void handleSimulate(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen simulate <count>");
+            return;
+        }
+
+        int samples;
+        try {
+            samples = Integer.parseInt(args[1]);
+        } catch (NumberFormatException e) {
+            sender.sendMessage(ChatColor.RED + "Count must be a number.");
+            return;
+        }
+        if (samples < 1 || samples > MAX_SIMULATE_SAMPLES) {
+            sender.sendMessage(ChatColor.RED + "Count must be between 1 and " + MAX_SIMULATE_SAMPLES + ".");
+            return;
+        }
+
+        SpawnManager spawnManager = plugin.getSpawnManager();
+        if (spawnManager == null) {
+            sender.sendMessage(ChatColor.RED + "Spiral world is unavailable; cannot simulate.");
+            return;
+        }
+
+        sender.sendMessage(ChatColor.YELLOW + "Simulating " + samples
+                + " allocations against live terrain; this generates chunks and may take a while...");
+
+        SpawnSimulator.run(spawnManager, samples).thenAccept(report -> {
+            // Logged rather than only messaged: the console log is what CI greps, and the
+            // sender may well be the console anyway.
+            plugin.getLogger().info(report.toSummaryLine());
+            plugin.getLogger().info(report.toRejectionLine());
+
+            reply(sender, () -> {
+                sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Simulation ===");
+                sender.sendMessage(ChatColor.YELLOW + "Allocations: " + ChatColor.WHITE
+                        + report.completed() + "/" + report.samples());
+                sender.sendMessage(ChatColor.YELLOW + "Indices per spawn: " + ChatColor.WHITE
+                        + String.format(Locale.ROOT, "%.2f", report.indicesPerSpawn())
+                        + ChatColor.GRAY + " (1.00 is ideal; high means cells are being rejected)");
+                sender.sendMessage(ChatColor.YELLOW + "Candidates probed: " + ChatColor.WHITE
+                        + report.candidatesProbed());
+                sender.sendMessage(ChatColor.YELLOW + "Fallbacks: " + ChatColor.WHITE + report.fallbacks());
+                sender.sendMessage(ChatColor.YELLOW + "Surface Y range: " + ChatColor.WHITE
+                        + report.minSurfaceY() + " to " + report.maxSurfaceY());
+                sender.sendMessage(ChatColor.YELLOW + "Rejections: " + ChatColor.WHITE
+                        + (report.rejections().isEmpty() ? "none" : report.rejections().toString()));
+            });
+        }).exceptionally(ex -> {
+            plugin.getLogger().log(Level.SEVERE, "Spawn simulation failed", ex);
+            reply(sender, () -> sender.sendMessage(
+                    ChatColor.RED + "Simulation failed; check the console for details."));
+            return null;
+        });
+    }
+
+    /**
+     * Delivers a reply on the thread that owns the sender.
+     *
+     * <p>Allocation callbacks resolve on whichever region thread finished the last probe,
+     * which on Folia is generally not the region owning the admin who typed the command,
+     * and Player API rejects calls from a foreign region. The console sender has no owning
+     * region, so it is written to directly.
+     */
+    private void reply(CommandSender sender, Runnable send) {
+        if (sender instanceof Player player) {
+            player.getScheduler().run(plugin, task -> send.run(), null);
+        } else {
+            send.run();
+        }
+    }
+
     private void handleReload(CommandSender sender) {
         plugin.reload();
         sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
@@ -244,6 +332,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.YELLOW + "/sgen reassign <player>" + ChatColor.WHITE + " - Allocates fresh spiral plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen simulate <count>" + ChatColor.WHITE + " - Measures allocation against live terrain.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen reload" + ChatColor.WHITE + " - Reloads configuration.");
     }
 
@@ -254,7 +343,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "reassign", "tp", "info", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "reassign", "tp", "info", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {

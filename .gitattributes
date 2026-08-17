@@ -1,0 +1,23 @@
+# Line-ending policy.
+#
+# Without this, a clone with core.autocrlf=true (the Git for Windows default) checks
+# shell scripts out with CRLF. Their shebang then reads as "#!/bin/sh\r", and running
+# them under bash fails with:
+#
+#     /bin/sh^M: bad interpreter: No such file or directory
+#
+# Pinning the endings here fixes it for every clone regardless of local git config,
+# rather than relying on each developer to configure autocrlf correctly.
+
+# Shell scripts are executed by bash and must keep LF.
+gradlew         text eol=lf
+*.sh            text eol=lf
+
+# Batch files are executed by cmd.exe and must keep CRLF.
+gradlew.bat     text eol=crlf
+*.bat           text eol=crlf
+
+# Never apply end-of-line conversion to binaries.
+*.jar           binary
+*.png           binary
+*.zip           binary
