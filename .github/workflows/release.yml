@@ -13,21 +13,15 @@ jobs:
     permissions:
       contents: write
 
+    # Declared at job level, not on the individual steps: only job-level and workflow-level
+    # env is reliably visible to a step's own `if`, and these gate whether each registry is
+    # published to. HANGAR_API_TOKEN doubles as the credential the Gradle plugin reads.
+    env:
+      MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+      HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Set up Java 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
-
+      # First, so a malformed tag fails in seconds rather than after a toolchain setup.
       # The `v*.*.*-*` trigger glob accepts any suffix, so `v1.0.0-whatever` would reach
       # this job and fall through the channel mapping below into `release`. The tier a
       # tag publishes to is decided here, so the tag itself has to be exact.
@@ -47,6 +41,20 @@ jobs:
             exit 1
           fi
           echo "Tag '$TAG_NAME' is valid."
+
+      - name: Checkout Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
 
       - name: Extract Tag & Release Channel
         id: vars
@@ -148,11 +156,9 @@ jobs:
 
       # Both publish steps are skipped when their token is not configured, so a release
       # still reaches GitHub while the registry projects are being set up. Secrets cannot
-      # be read directly in an `if`, hence the env indirection.
+      # be read directly in an `if`, hence the job-level env above.
       - name: Publish to Modrinth
         if: env.MODRINTH_TOKEN != ''
-        env:
-          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
         uses: Kira-NT/mc-publish@v3
         with:
           modrinth-id: spiralgenesis
@@ -177,8 +183,6 @@ jobs:
 
       - name: Publish to Hangar
         if: env.HANGAR_API_TOKEN != ''
-        env:
-          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
         run: >
           ./gradlew publishPluginPublicationToHangar
           -PpluginVersion=${{ steps.vars.outputs.version }}
