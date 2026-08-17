@@ -199,206 +199,28 @@ players:
 
 ---
 
-## 8. Production Plugin Source Code Reference
+## 8. Source Code Reference
 
-### 8.1 `SpiralMath.java`
-```java
-package com.ninja6.spiralgenesis.math;
+This section previously inlined full listings of four classes. Those copies drifted
+out of sync with the code they documented, so they have been replaced with pointers
+to the files themselves — the source is the authoritative reference.
 
-public class SpiralMath {
-    /**
-     * Converts a 1D sequence index k (0, 1, 2, ...) into 2D grid coordinates (u, v).
-     * Follows clockwise square spiral: (0,0) -> (1,0) -> (1,1) -> (0,1) -> (-1,1) ...
-     */
-    public static int[] indexToGrid(int index) {
-        if (index <= 0) return new int[]{0, 0};
+All implementation lives under `src/main/java/com/ninja6/spiralgenesis/`.
 
-        int u = 0, v = 0;
-        int du = 1, dv = 0;
-        int segmentLength = 1;
-        int segmentPassed = 0;
+| Component | File | Responsibility | Spec |
+| :--- | :--- | :--- | :--- |
+| Spiral math | `math/SpiralMath.java` | Index → grid and grid → world coordinate transforms | §3 |
+| Allocation | `manager/SpawnManager.java` | Plot assignment, async terrain probing, spiral advance | §4 |
+| Join lifecycle | `listeners/PlayerSpawnListener.java` | First-join and respawn hooks | §5 |
+| Java auth gating | `listeners/AuthMeHookListener.java` | Defers allocation until AuthMe login completes | §5.2 |
+| Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players for instant auth | §5.1 |
+| AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5.2 |
+| Persistence | `storage/YamlDataStorage.java` | Per-player UUID registry in `data.yml` | §6 |
+| Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | §7 |
+| Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, and validation | §6 |
 
-        for (int i = 0; i < index; i++) {
-            u += du;
-            v += dv;
-            segmentPassed++;
-
-            if (segmentPassed == segmentLength) {
-                segmentPassed = 0;
-                // Rotate 90 degrees clockwise (East -> South -> West -> North)
-                int temp = du;
-                du = -dv;
-                dv = temp;
-                if (dv != 0) {
-                    segmentLength++;
-                }
-            }
-        }
-        return new int[]{u, v};
-    }
-}
-```
-
-### 8.2 `SpawnManager.java`
-```java
-package com.ninja6.spiralgenesis.manager;
-
-import com.ninja6.spiralgenesis.math.SpiralMath;
-import org.bukkit.HeightMap;
-import org.bukkit.Location;
-import org.bukkit.Material;
-import org.bukkit.World;
-import org.bukkit.block.Biome;
-import org.bukkit.block.Block;
-import org.bukkit.plugin.java.JavaPlugin;
-
-import java.util.EnumSet;
-import java.util.Set;
-import java.util.concurrent.CompletableFuture;
-
-public class SpawnManager {
-    private final JavaPlugin plugin;
-    private final World world;
-    private final int originX;
-    private final int originZ;
-    private final int cellSize;
-
-    private static final Set<Material> HAZARD_MATERIALS = EnumSet.of(
-            Material.WATER, Material.LAVA, Material.ICE, Material.PACKED_ICE,
-            Material.BLUE_ICE, Material.SEAGRASS, Material.TALL_SEAGRASS,
-            Material.KELP, Material.KELP_PLANT
-    );
-
-    private static final Set<Biome> OCEAN_BIOMES = EnumSet.of(
-            Biome.OCEAN, Biome.DEEP_OCEAN, Biome.WARM_OCEAN, Biome.LUKEWARM_OCEAN,
-            Biome.DEEP_LUKEWARM_OCEAN, Biome.COLD_OCEAN, Biome.DEEP_COLD_OCEAN,
-            Biome.FROZEN_OCEAN, Biome.DEEP_FROZEN_OCEAN
-    );
-
-    public SpawnManager(JavaPlugin plugin, World world, int originX, int originZ, int cellSize) {
-        this.plugin = plugin;
-        this.world = world;
-        this.originX = originX;
-        this.originZ = originZ;
-        this.cellSize = cellSize;
-    }
-
-    public CompletableFuture<LocationResult> allocateNextSafeSpawn(int startIndex) {
-        return findSafeRecursive(startIndex);
-    }
-
-    private CompletableFuture<LocationResult> findSafeRecursive(int index) {
-        int[] grid = SpiralMath.indexToGrid(index);
-        int targetX = originX + (grid[0] * cellSize);
-        int targetZ = originZ + (grid[1] * cellSize);
-
-        // Async chunk loading using Paper API
-        return world.getChunkAtAsync(targetX >> 4, targetZ >> 4).thenCompose(chunk -> {
-            Biome biome = world.getBiome(targetX, 64, targetZ);
-            if (OCEAN_BIOMES.contains(biome)) {
-                // Reject ocean biome, advance index
-                return findSafeRecursive(index + 1);
-            }
-
-            int surfaceY = world.getHighestBlockYAt(targetX, targetZ, HeightMap.MOTION_BLOCKING_NO_LEAVES);
-            Block block = world.getBlockAt(targetX, surfaceY, targetZ);
-
-            if (surfaceY <= 62 || HAZARD_MATERIALS.contains(block.getType())) {
-                // Reject water/hazard, advance index
-                return findSafeRecursive(index + 1);
-            }
-
-            // Safe dry land location verified
-            Location loc = new Location(world, targetX + 0.5, surfaceY + 1.0, targetZ + 0.5);
-            return CompletableFuture.completedFuture(new LocationResult(loc, index, grid[0], grid[1]));
-        });
-    }
-
-    public record LocationResult(Location location, int index, int gridU, int gridV) {}
-}
-```
-
-### 8.3 `PlayerSpawnListener.java`
-```java
-package com.ninja6.spiralgenesis.listeners;
-
-import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
-import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.Listener;
-import org.bukkit.event.player.PlayerJoinEvent;
-import org.bukkit.event.player.PlayerRespawnEvent;
-import org.geysermc.floodgate.api.FloodgateApi;
-
-public class PlayerSpawnListener implements Listener {
-    private final SpiralGenesisPlugin plugin;
-
-    public PlayerSpawnListener(SpiralGenesisPlugin plugin) {
-        this.plugin = plugin;
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onPlayerJoin(PlayerJoinEvent event) {
-        Player player = event.getPlayer();
-        
-        // Only auto-allocate on join for Bedrock players (Floodgate)
-        // Java players wait for AuthMe Login/Register event
-        boolean isFloodgate = plugin.isFloodgateInstalled() && FloodgateApi.getInstance().isFloodgatePlayer(player.getUniqueId());
-
-        if (isFloodgate) {
-            plugin.handlePlayerFirstJoin(player);
-        }
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onPlayerRespawn(PlayerRespawnEvent event) {
-        Player player = event.getPlayer();
-        
-        // If player has no bed or anchor, enforce their spiral plot spawn
-        if (!event.isBedSpawn() && !event.isAnchorSpawn()) {
-            if (plugin.getDataStorage().hasSpawn(player.getUniqueId())) {
-                event.setRespawnLocation(plugin.getDataStorage().getSpawn(player.getUniqueId()));
-            }
-        }
-    }
-}
-```
-
-### 8.4 `AuthMeHookListener.java`
-```java
-package com.ninja6.spiralgenesis.listeners;
-
-import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
-import fr.xephi.authme.events.LoginEvent;
-import fr.xephi.authme.events.RegisterEvent;
-import org.bukkit.entity.Player;
-import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
-import org.bukkit.event.Listener;
-
-public class AuthMeHookListener implements Listener {
-    private final SpiralGenesisPlugin plugin;
-
-    public AuthMeHookListener(SpiralGenesisPlugin plugin) {
-        this.plugin = plugin;
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onAuthMeRegister(RegisterEvent event) {
-        Player player = event.getPlayer();
-        plugin.handlePlayerFirstJoin(player);
-    }
-
-    @EventHandler(priority = EventPriority.HIGHEST)
-    public void onAuthMeLogin(LoginEvent event) {
-        Player player = event.getPlayer();
-        if (!plugin.getDataStorage().hasSpawn(player.getUniqueId())) {
-            plugin.handlePlayerFirstJoin(player);
-        }
-    }
-}
-```
+Unit tests covering the mathematical and configuration logic live under
+`src/test/java/com/ninja6/spiralgenesis/`.
 
 ---
 
