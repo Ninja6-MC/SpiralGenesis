@@ -16,3 +16,5 @@
 - [ ] I have added tests that prove my fix is effective or that my feature works.
 - [ ] I have updated documentation / CHANGELOG as appropriate.
 - [ ] My commits follow [Conventional Commits](https://www.conventionalcommits.org/).
+<!-- Relative links do not resolve in a PR body, so this one is absolute. -->
+- [ ] Every commit is signed off (`git commit -s`), per [section 5 of CONTRIBUTING.md](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/CONTRIBUTING.md#5-licensing-of-contributions).
