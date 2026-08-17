@@ -44,19 +44,27 @@ default name, rename it before opening the PR:
 git branch -m feat/my-actual-change
 ```
 
+If the old name was already pushed, publish the new one and delete the old, or the stale
+branch outlives the rename:
+
+```bash
+git push -u origin feat/my-actual-change && git push origin --delete <old-name>
+```
+
 ---
 
 ## 3. Development Workflow
 
-1. **Fork & Clone**:
+1. **Fork & Clone**, and add this repository as `upstream` so you can keep `main` current:
    ```bash
    git clone https://github.com/<your-username>/SpiralGenesis.git
    cd SpiralGenesis
+   git remote add upstream https://github.com/Ninja6-MC/SpiralGenesis.git
    ```
-2. **Branch from `main`**:
+2. **Branch from an up-to-date `main`**:
    ```bash
    git checkout main
-   git pull origin main
+   git pull upstream main   # `origin` if you are working in the repository itself
    git checkout -b feat/my-new-feature
    ```
 3. **Coding Standards**:
