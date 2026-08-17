@@ -144,7 +144,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
 
         spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(res -> {
-            Bukkit.getScheduler().runTask(plugin, () -> {
+            // Player state must be touched on the thread owning that player: the entity
+            // scheduler on Folia, the main thread on Paper.
+            target.getScheduler().run(plugin, task -> {
                 if (!target.isOnline()) {
                     sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
                     return;
@@ -155,7 +157,8 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to index #" +
                             res.index() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                 });
-            });
+            }, () -> sender.sendMessage(ChatColor.RED + target.getName()
+                    + " went offline before reassignment completed."));
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Failed to reassign " + target.getName(), ex);
             sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");

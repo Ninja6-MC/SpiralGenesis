@@ -72,15 +72,18 @@ public class SpawnManager {
         final int targetZ = config.getOriginZ() + (grid[1] * config.getCellSize());
         final boolean finalAttempt = attempt + 1 >= config.getMaxScanAttempts();
 
-        world.getChunkAtAsync(targetX >> 4, targetZ >> 4).whenComplete((chunk, error) -> {
+        loadChunk(targetX >> 4, targetZ >> 4).whenComplete((chunk, error) -> {
             if (error != null) {
                 result.completeExceptionally(error);
                 return;
             }
-            // Re-enter on the main thread: world/heightmap reads are not thread-safe, and
-            // hopping the scheduler also gives every probe a fresh stack.
-            runOnMainThread(result, () -> evaluate(indexSupplier, attempt, finalAttempt,
-                    index, grid, targetX, targetZ, result));
+            // Re-enter on the thread that owns this cell: world/heightmap reads are not
+            // thread-safe, and hopping the scheduler also gives every probe a fresh stack.
+            // On Folia that owner is the target chunk's region thread; on Paper the region
+            // scheduler runs the task on the main thread, so behaviour is unchanged there.
+            runOnRegion(result, targetX >> 4, targetZ >> 4,
+                    () -> evaluate(indexSupplier, attempt, finalAttempt,
+                            index, grid, targetX, targetZ, result));
         });
     }
 
@@ -91,7 +94,10 @@ public class SpawnManager {
 
         if (!isSafe(targetX, targetZ, surfaceY)) {
             if (!finalAttempt) {
-                runOnMainThread(result, () -> probe(indexSupplier, attempt + 1, result));
+                // The next candidate's region is unknown until its index is claimed, and
+                // probe() only computes coordinates before requesting the chunk
+                // asynchronously, so the global region is the correct owner for this hop.
+                runGlobally(result, () -> probe(indexSupplier, attempt + 1, result));
                 return;
             }
             // Exhausted the budget. Settle on this cell's real surface rather than a
@@ -118,22 +124,57 @@ public class SpawnManager {
     }
 
     /**
-     * Runs {@code action} on the server thread, failing the pending result rather than
-     * leaving it dangling if the scheduler rejects the task (e.g. during shutdown).
+     * Requests the chunk containing a candidate cell.
+     *
+     * <p>Package-private rather than inlined so tests can resolve immediately: MockBukkit
+     * does not implement {@code getChunkAtAsync}, and the allocation logic under test does
+     * not depend on the chunk object itself.
      */
-    private void runOnMainThread(CompletableFuture<LocationResult> result, Runnable action) {
+    CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+        return world.getChunkAtAsync(chunkX, chunkZ);
+    }
+
+    /**
+     * Runs {@code action} on the thread owning the given chunk, failing the pending result
+     * rather than leaving it dangling if the scheduler rejects the task (e.g. during
+     * shutdown).
+     *
+     * <p>Package-private so tests can run the action inline; MockBukkit does not implement
+     * the region schedulers.
+     */
+    void runOnRegion(CompletableFuture<LocationResult> result,
+                     int chunkX, int chunkZ, Runnable action) {
+        dispatch(result, () -> plugin.getServer().getRegionScheduler()
+                .execute(plugin, world, chunkX, chunkZ, guard(result, action)));
+    }
+
+    /**
+     * Runs {@code action} on the global region, for work not tied to a specific chunk.
+     *
+     * <p>Package-private for the same reason as {@link #runOnRegion}.
+     */
+    void runGlobally(CompletableFuture<LocationResult> result, Runnable action) {
+        dispatch(result, () -> plugin.getServer().getGlobalRegionScheduler()
+                .execute(plugin, guard(result, action)));
+    }
+
+    private void dispatch(CompletableFuture<LocationResult> result, Runnable submit) {
         try {
-            plugin.getServer().getScheduler().runTask(plugin, () -> {
-                try {
-                    action.run();
-                } catch (Throwable t) {
-                    result.completeExceptionally(t);
-                }
-            });
+            submit.run();
         } catch (IllegalStateException e) {
             plugin.getLogger().log(Level.WARNING, "Spawn allocation aborted: scheduler unavailable.", e);
             result.completeExceptionally(e);
         }
+    }
+
+    private Runnable guard(CompletableFuture<LocationResult> result, Runnable action) {
+        return () -> {
+            try {
+                action.run();
+            } catch (Throwable t) {
+                result.completeExceptionally(t);
+            }
+        };
     }
 
     public record LocationResult(Location location, int index, int gridU, int gridV) {}

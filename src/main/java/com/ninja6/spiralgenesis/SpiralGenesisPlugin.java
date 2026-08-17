@@ -138,7 +138,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // The index is claimed atomically inside the scan, so concurrent joins never
         // resolve to the same grid cell.
         spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
-            Bukkit.getScheduler().runTask(this, () -> {
+            // Player state must be touched on the thread owning that player. The entity
+            // scheduler is that thread on Folia and the main thread on Paper; it also drops
+            // the task automatically if the player disconnects before it runs.
+            player.getScheduler().run(this, task -> {
                 if (!player.isOnline()) return;
 
                 dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
@@ -150,7 +153,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                                 " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                     }
                 });
-            });
+            }, () -> getLogger().fine("Player " + player.getName()
+                    + " disconnected before their plot could be applied; index already reserved."));
         }).exceptionally(ex -> {
             getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
             return null;
