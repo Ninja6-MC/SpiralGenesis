@@ -1,6 +1,10 @@
 plugins {
     `java-library`
     id("com.gradleup.shadow") version "8.3.6"
+    // NOTE: `runServer` is currently unusable. 2.x resolves servers through PaperMC's v2
+    // API, which now returns 403 ("Unknown Paper Version"), and every 3.x release that
+    // speaks the v3 API requires Gradle 9. Use scripts/dev-server.sh until the wrapper is
+    // upgraded; it resolves servers the same way .github/scripts/smoke-test.sh does.
     id("xyz.jpenilla.run-paper") version "2.3.1"
 }
 

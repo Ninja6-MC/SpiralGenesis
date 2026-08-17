@@ -5,6 +5,8 @@ build/
 
 # Run-paper & Local Test Server
 run/
+# Smoke-test working directories (run-paper/, run-folia/).
+run-*/
 logs/
 *.log
 crash-reports/

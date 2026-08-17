@@ -19,6 +19,18 @@ BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-90}"
 WORKDIR="${WORKDIR:-$PWD/run-$PLATFORM}"
 
+# Allocation is only reachable by a player joining, which CI has no client for, so the
+# plugin's own `sgen simulate` drives it instead. Each sample generates chunks, so the
+# count trades coverage against CI minutes.
+SIMULATE_SAMPLES="${SIMULATE_SAMPLES:-25}"
+SIMULATE_TIMEOUT="${SIMULATE_TIMEOUT:-240}"
+LEVEL_SEED="${LEVEL_SEED:-spiralgenesis}"
+
+# Spiral indices consumed per allocation. 1.0 is perfect. Well above that means the safety
+# rules are discarding whole cells and pushing players outward, which is the regression
+# this guards: a max-roughness or max-pit-depth too strict for real terrain.
+MAX_INDEX_RATIO="${MAX_INDEX_RATIO:-3.0}"
+
 if [[ ! -f "$PLUGIN_JAR" ]]; then
     echo "::error::Plugin jar not found: $PLUGIN_JAR"
     exit 1
@@ -37,10 +49,17 @@ API="https://fill.papermc.io/v3/projects/$PLATFORM/versions/$MC_VERSION/builds/l
 echo "Resolving $PLATFORM $MC_VERSION from $API"
 
 BUILD_JSON="$(curl -fsS --retry 3 --retry-delay 5 -m 60 "$API")"
-JAR_URL="$(jq -r '.downloads["server:default"].url' <<<"$BUILD_JSON")"
-JAR_SHA="$(jq -r '.downloads["server:default"].checksums.sha256' <<<"$BUILD_JSON")"
-BUILD_ID="$(jq -r '.id' <<<"$BUILD_JSON")"
-CHANNEL="$(jq -r '.channel' <<<"$BUILD_JSON")"
+
+# Parsed with shell builtins rather than jq so this script also runs on a developer
+# machine, where jq is often absent. Everything before "server:default" is dropped, which
+# discards the Mojang-mapped download that would otherwise match these patterns first.
+SEGMENT="${BUILD_JSON#*\"server:default\":}"
+JAR_URL="$(printf '%s' "$SEGMENT" | grep -oE 'https://[^"]+' | head -1)"
+JAR_SHA="$(printf '%s' "$SEGMENT" | grep -oE '"sha256":"[a-f0-9]{64}"' | head -1 \
+    | grep -oE '[a-f0-9]{64}')"
+BUILD_ID="$(printf '%s' "$BUILD_JSON" | grep -oE '"id":[0-9]+' | head -1 | grep -oE '[0-9]+')"
+CHANNEL="$(printf '%s' "$BUILD_JSON" | grep -oE '"channel":"[A-Z]+"' | head -1 \
+    | sed 's/.*:"//; s/"//')"
 
 if [[ -z "$JAR_URL" || "$JAR_URL" == "null" ]]; then
     echo "::error::Could not resolve a download URL for $PLATFORM $MC_VERSION"
@@ -59,12 +78,14 @@ echo "$JAR_SHA  server.jar" | sha256sum -c -
 # ---------------------------------------------------------------------------
 echo "eula=true" > eula.txt
 
-# A flat world keeps chunk generation cheap. Note this puts the surface far below the
-# plugin's default min-surface-y, so allocation would exercise its fallback path - fine
-# for a boot test, but a join test needs a normal world or a lowered threshold.
-cat > server.properties <<'PROPS'
+# A normal world, not a flat one: `sgen simulate` below measures the terrain rules, and a
+# flat world sits entirely below min-surface-y, so every allocation would take the fallback
+# path and the run would assert nothing. The seed is fixed so a threshold regression shows
+# up as a changed number rather than as new terrain.
+cat > server.properties <<PROPS
 online-mode=false
-level-type=minecraft\:flat
+level-type=minecraft\\:normal
+level-seed=$LEVEL_SEED
 view-distance=4
 simulation-distance=4
 spawn-protection=0
@@ -82,6 +103,9 @@ echo "Installed plugin: $(basename "$PLUGIN_JAR")"
 rm -f stdin.pipe
 mkfifo stdin.pipe
 
+# NOTE: this script is Linux-only in practice. Reading stdin from a FIFO crashes the JVM
+# on Windows - jansi's native DLL faults with an access violation during library loading,
+# before the server starts. Use scripts/dev-server.sh for local testing on Windows.
 java -Xms1G -Xmx2G -jar server.jar --nogui < stdin.pipe > server.log 2>&1 &
 SERVER_PID=$!
 
@@ -114,6 +138,24 @@ for ((i = 0; i < BOOT_TIMEOUT; i++)); do
 done
 
 if [[ "$booted" -eq 1 ]]; then
+    # ---------------------------------------------------------------------------
+    # Exercise allocation against the generated world
+    # ---------------------------------------------------------------------------
+    echo "Running $SIMULATE_SAMPLES simulated allocations..."
+    echo "sgen simulate $SIMULATE_SAMPLES" >&3 || true
+
+    for ((i = 0; i < SIMULATE_TIMEOUT; i++)); do
+        if grep -q 'SIMULATE rejections' server.log 2>/dev/null; then
+            echo "Simulation completed after ${i}s."
+            break
+        fi
+        if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+            echo "::error::Server exited during simulation."
+            break
+        fi
+        sleep 1
+    done
+
     echo "Requesting graceful shutdown..."
     echo "stop" >&3 || true
     for ((i = 0; i < STOP_TIMEOUT; i++)); do
@@ -164,6 +206,49 @@ fi
 # The legacy scheduler throws this on Folia; catching it here is the whole point.
 if grep -q 'UnsupportedOperationException' server.log; then
     fail "UnsupportedOperationException in log (likely a legacy scheduler call on Folia)."
+fi
+
+# ---------------------------------------------------------------------------
+# Allocation assertions
+# ---------------------------------------------------------------------------
+SUMMARY="$(grep -o 'SIMULATE samples=.*' server.log | tail -1 || true)"
+
+if [[ -z "$SUMMARY" ]]; then
+    fail "Simulation never reported a summary within ${SIMULATE_TIMEOUT}s."
+else
+    echo "----- allocation summary -----"
+    echo "$SUMMARY"
+    grep -o 'SIMULATE rejections.*' server.log | tail -1 || true
+    echo "------------------------------"
+
+    field() { sed -n "s/.*[[:space:]]$1=\([^[:space:]]*\).*/\1/p" <<<"$SUMMARY"; }
+
+    COMPLETED="$(field completed)"
+    RATIO="$(field ratio)"
+    FALLBACKS="$(field fallbacks)"
+    MIN_Y="$(field minY)"
+
+    # Every requested allocation must resolve; a hang or a swallowed exception shows up
+    # here as a short count rather than as a silent pass.
+    if [[ "$COMPLETED" != "$SIMULATE_SAMPLES" ]]; then
+        fail "Only $COMPLETED of $SIMULATE_SAMPLES allocations completed."
+    fi
+
+    # The fallback path bypasses the safety rules by design, so it firing at all on normal
+    # terrain means the thresholds are unusable.
+    if [[ "$FALLBACKS" != "0" ]]; then
+        fail "$FALLBACKS allocation(s) exhausted max-scan-attempts and used the fallback."
+    fi
+
+    # Nothing may be placed below the configured floor. 63 is the plugin default; the
+    # simulation runs against a stock config, so this is the value in force.
+    if [[ -n "$MIN_Y" ]] && (( MIN_Y < 63 )); then
+        fail "An allocation landed at Y=$MIN_Y, below the configured min-surface-y of 63."
+    fi
+
+    if awk -v r="$RATIO" -v m="$MAX_INDEX_RATIO" 'BEGIN { exit !(r > m) }'; then
+        fail "Index burn ratio $RATIO exceeds $MAX_INDEX_RATIO - the safety thresholds are rejecting too much terrain."
+    fi
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then
