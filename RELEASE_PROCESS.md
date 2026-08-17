@@ -19,8 +19,14 @@ Every release follows `MAJOR.MINOR.PATCH[-PRERELEASE]`:
 
 ## 2. Release Tiers & Distribution Channels
 
+Every tier is cut by tagging a commit on `main`. The tag decides the tier, not the branch —
+there is no separate release branch.
+
 ```
-                                [ dev branch ]
+                    [ feat/… fix/… docs/… topic branches ]
+                                      │
+                                      ▼
+                            [ PR squashed into main ]
                                       │
                 ┌─────────────────────┴─────────────────────┐
                 ▼                                           ▼
@@ -32,9 +38,6 @@ Every release follows `MAJOR.MINOR.PATCH[-PRERELEASE]`:
    └────────────┬────────────┘                 └────────────┬────────────┘
                 │                                           │
                 └─────────────────────┬─────────────────────┘
-                                      ▼
-                            [ PR merged into main ]
-                                      │
                                       ▼
                          ┌─────────────────────────┐
                          │   MARKET / GA (vX.Y.Z)  │
@@ -48,8 +51,8 @@ Every release follows `MAJOR.MINOR.PATCH[-PRERELEASE]`:
 
 | Tier | Git Tag Pattern | Source Branch | Stability Level | Published Channels |
 | :--- | :--- | :--- | :--- | :--- |
-| **Alpha** | `vX.Y.Z-alpha.N` | `dev` / `feat/*` | Experimental | GitHub Releases (*Pre-release*), CI Artifacts, Modrinth (*alpha*) |
-| **Beta / RC** | `vX.Y.Z-beta.N` | `dev` | Feature-Complete | GitHub Releases (*Pre-release*), Modrinth (*beta*), Paper Hangar (*Beta*) |
+| **Alpha** | `vX.Y.Z-alpha.N` | `main` | Experimental | GitHub Releases (*Pre-release*), CI Artifacts, Modrinth (*alpha*) |
+| **Beta / RC** | `vX.Y.Z-beta.N` | `main` | Feature-Complete | GitHub Releases (*Pre-release*), Modrinth (*beta*), Paper Hangar (*Beta*) |
 | **Market (GA)** | `vX.Y.Z` | `main` | Production Stable | GitHub Releases (*Latest*), Modrinth (*Featured*), Paper Hangar (*Release*), SpigotMC |
 
 ---
@@ -57,7 +60,7 @@ Every release follows `MAJOR.MINOR.PATCH[-PRERELEASE]`:
 ## 3. How to Execute a Release
 
 ### Step 1: Pre-Release Checklist
-1. All target PRs merged into `dev`.
+1. All target PRs merged into `main`, with CI green on the merge commit.
 2. Run test suite locally:
    ```bash
    ./gradlew test
@@ -66,9 +69,9 @@ Every release follows `MAJOR.MINOR.PATCH[-PRERELEASE]`:
 
 ### Step 2: Publishing an Alpha / Beta
 ```bash
-# Checkout dev
-git checkout dev
-git pull origin dev
+# Alpha and beta tags are cut from main, same as GA
+git checkout main
+git pull origin main
 
 # Tag alpha or beta
 git tag -a v1.0.0-beta.1 -m "SpiralGenesis v1.0.0 Beta 1: Feature-complete cross-play testing"
@@ -79,7 +82,7 @@ git push origin v1.0.0-beta.1
 
 ### Step 3: Publishing a Market / GA Release
 ```bash
-# 1. Open and merge PR from dev -> main on GitHub
+# 1. Confirm every PR for this version is merged and CI is green on main
 # 2. Checkout main locally
 git checkout main
 git pull origin main

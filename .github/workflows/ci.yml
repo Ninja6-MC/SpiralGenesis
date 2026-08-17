@@ -1,12 +1,12 @@
 name: Continuous Integration
 
 on:
+  # Topic branches are covered by the pull_request trigger, so listing their prefixes here
+  # too would only run every branch twice once its PR is open. `main` is the trunk and has
+  # no PR of its own, so it needs the push trigger.
   push:
     branches:
       - main
-      - dev
-      - 'feature/**'
-      - 'setup_**'
   pull_request:
   workflow_dispatch:
 
