@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-18
+
+First published build. Everything below has been in the repository since the initial
+commit; this is the point at which it became downloadable.
+
 ### Changed
 - Spawn allocation now searches **within** a cell before abandoning it. Previously a single
   unsafe block at the cell centre discarded the whole `cell-size` plot and permanently
