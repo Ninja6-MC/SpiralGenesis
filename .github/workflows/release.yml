@@ -13,7 +13,35 @@ jobs:
     permissions:
       contents: write
 
+    # Declared at job level, not on the individual steps: only job-level and workflow-level
+    # env is reliably visible to a step's own `if`, and these gate whether each registry is
+    # published to. HANGAR_API_TOKEN doubles as the credential the Gradle plugin reads.
+    env:
+      MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+      HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+
     steps:
+      # First, so a malformed tag fails in seconds rather than after a toolchain setup.
+      # The `v*.*.*-*` trigger glob accepts any suffix, so `v1.0.0-whatever` would reach
+      # this job and fall through the channel mapping below into `release`. The tier a
+      # tag publishes to is decided here, so the tag itself has to be exact.
+      - name: Validate Tag Format
+        run: |
+          TAG_NAME="${GITHUB_REF#refs/tags/}"
+          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
+            echo "Tag '$TAG_NAME' is not a valid release tag."
+            echo
+            echo "Expected vMAJOR.MINOR.PATCH, optionally followed by"
+            echo "-alpha.N, -beta.N or -rc.N. For example:"
+            echo "  v1.0.0"
+            echo "  v1.0.0-beta.1"
+            echo
+            echo "Delete the tag, then re-tag with the correct format:"
+            echo "  git tag -d $TAG_NAME && git push origin :refs/tags/$TAG_NAME"
+            exit 1
+          fi
+          echo "Tag '$TAG_NAME' is valid."
+
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
@@ -35,17 +63,63 @@ jobs:
           VERSION="${TAG_NAME#v}"
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
+          # Everything before the first hyphen: 1.0.0-beta.1 -> 1.0.0. Used to find the
+          # changelog entry, which is written per version rather than per pre-release.
+          echo "baseVersion=${VERSION%%-*}" >> $GITHUB_OUTPUT
+
+          # Hangar channel names are capitalised and must already exist on the project.
           if [[ "$TAG_NAME" =~ alpha ]]; then
             echo "channel=alpha" >> $GITHUB_OUTPUT
+            echo "hangarChannel=Alpha" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
           elif [[ "$TAG_NAME" =~ beta|rc ]]; then
             echo "channel=beta" >> $GITHUB_OUTPUT
+            echo "hangarChannel=Beta" >> $GITHUB_OUTPUT
             echo "prerelease=true" >> $GITHUB_OUTPUT
           else
             echo "channel=release" >> $GITHUB_OUTPUT
+            echo "hangarChannel=Release" >> $GITHUB_OUTPUT
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
+
+      # A stable release tagged while CHANGELOG.md still says only [Unreleased] would
+      # otherwise publish to three registries with no release notes and nobody noticing.
+      - name: Check Changelog And Collect Release Notes
+        env:
+          VERSION: ${{ steps.vars.outputs.version }}
+          BASE_VERSION: ${{ steps.vars.outputs.baseVersion }}
+          PRERELEASE: ${{ steps.vars.outputs.prerelease }}
+        run: |
+          extract() {
+            awk -v header="## [$1]" '
+              index($0, header) == 1 { found = 1; next }
+              found && /^## / { exit }
+              found { print }
+            ' CHANGELOG.md
+          }
+
+          # An exact pre-release heading wins if one exists, otherwise the heading for
+          # the version being worked towards.
+          NOTES="$(extract "$VERSION")"
+          [ -z "${NOTES//[[:space:]]/}" ] && NOTES="$(extract "$BASE_VERSION")"
+
+          if [ -z "${NOTES//[[:space:]]/}" ]; then
+            if [ "$PRERELEASE" != "true" ]; then
+              echo "CHANGELOG.md has no '## [$BASE_VERSION]' section."
+              echo
+              echo "A stable release must document what changed. Move the [Unreleased]"
+              echo "entries under a '## [$BASE_VERSION]' heading, merge that to main,"
+              echo "and re-tag."
+              exit 1
+            fi
+            echo "No changelog section for $VERSION; pre-releases may ship without one."
+            NOTES="See the GitHub release for this version."
+          fi
+
+          mkdir -p build
+          printf '%s\n' "$NOTES" > build/release-notes.md
+          echo "Release notes:"
+          cat build/release-notes.md
 
       # The wrapper script is not guaranteed to carry the executable bit in the
       # index (notably when committed from Windows), so set it explicitly.
@@ -79,3 +153,38 @@ jobs:
             build/libs/*.sha256
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Both publish steps are skipped when their token is not configured, so a release
+      # still reaches GitHub while the registry projects are being set up. Secrets cannot
+      # be read directly in an `if`, hence the job-level env above.
+      - name: Publish to Modrinth
+        if: env.MODRINTH_TOKEN != ''
+        uses: Kira-NT/mc-publish@v3
+        with:
+          modrinth-id: spiralgenesis
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          name: SpiralGenesis ${{ steps.vars.outputs.version }}
+          version: ${{ steps.vars.outputs.version }}
+          version-type: ${{ steps.vars.outputs.channel }}
+          changelog-file: build/release-notes.md
+          # The sources and javadoc jars are not built by `shadowJar`, but exclude them
+          # explicitly so a future build change cannot quietly upload them as the plugin.
+          files: |
+            build/libs/*.jar
+            !build/libs/*-sources.jar
+            !build/libs/*-javadoc.jar
+          loaders: |
+            paper
+            purpur
+            folia
+          game-versions: |
+            1.20.x
+            1.21.x
+
+      - name: Publish to Hangar
+        if: env.HANGAR_API_TOKEN != ''
+        run: >
+          ./gradlew publishPluginPublicationToHangar
+          -PpluginVersion=${{ steps.vars.outputs.version }}
+          -PhangarChannel=${{ steps.vars.outputs.hangarChannel }}
+          --no-daemon

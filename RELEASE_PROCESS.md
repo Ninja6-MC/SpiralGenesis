@@ -96,8 +96,37 @@ git push origin v1.0.0
 
 ### Step 4: Automated CI Actions
 GitHub Actions (`.github/workflows/release.yml`) will:
-1. Compile with Java 21 and run JUnit 5 tests.
-2. Build optimized `SpiralGenesis-<version>.jar`.
-3. Compute SHA-256 checksums (`SpiralGenesis-<version>.jar.sha256`).
-4. Publish release notes and JARs to GitHub Releases.
-5. Publish to Modrinth and Paper Hangar using repository secrets (`MODRINTH_TOKEN`, `HANGAR_TOKEN`).
+1. Reject the tag unless it matches `vMAJOR.MINOR.PATCH` with an optional `-alpha.N`,
+   `-beta.N` or `-rc.N` suffix. The tag decides the tier, so it has to be exact.
+2. Require a `## [MAJOR.MINOR.PATCH]` section in `CHANGELOG.md` for a stable release, and
+   use it as the release notes. Pre-releases may ship without one.
+3. Compile with Java 21 and run JUnit 5 tests.
+4. Build optimized `SpiralGenesis-<version>.jar`.
+5. Compute SHA-256 checksums (`SpiralGenesis-<version>.jar.sha256`).
+6. Publish release notes and JARs to GitHub Releases.
+7. Publish to Modrinth, then to Paper Hangar.
+
+### Repository Secrets
+
+| Secret | Used by | Publishing is skipped if absent |
+| :--- | :--- | :--- |
+| `MODRINTH_TOKEN` | Modrinth step (`mc-publish`) | Yes |
+| `HANGAR_API_TOKEN` | Hangar step (`publishPluginPublicationToHangar`) | Yes |
+
+Neither is required for a release to succeed. Without them the workflow still tests,
+builds and publishes to GitHub Releases, and simply skips the registry it has no token
+for, which is what makes it safe to cut a tag before both registry projects exist.
+
+### Registry Settings That Live Outside This Repository
+
+Some values cannot be set from CI and must already be correct on the registry side:
+
+* **Hangar channels.** `Alpha`, `Beta` and `Release` must exist on the Hangar project.
+  The workflow selects one by name; it cannot create them.
+* **Modrinth project ID.** Hard-coded as `spiralgenesis` in the workflow. If the slug
+  changes, the workflow changes with it.
+* **Supported Minecraft versions.** Declared in two places that must stay in step: the
+  `game-versions` list in the workflow (Modrinth) and the `hangarPlatformVersions`
+  property in `build.gradle.kts` (Hangar). Both must contain versions the registry
+  recognises, or the publish is rejected. Widen them when a new Minecraft release is
+  supported.

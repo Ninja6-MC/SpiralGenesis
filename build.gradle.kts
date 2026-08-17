@@ -6,6 +6,9 @@ plugins {
     // speaks the v3 API requires Gradle 9. Use scripts/dev-server.sh until the wrapper is
     // upgraded; it resolves servers the same way .github/scripts/smoke-test.sh does.
     id("xyz.jpenilla.run-paper") version "2.3.1"
+    // Hangar has no publish API that a generic action can drive, so publication goes
+    // through PaperMC's own Gradle plugin. Modrinth is published from the workflow.
+    id("io.papermc.hangar-publish-plugin") version "0.1.4"
 }
 
 group = "com.ninja6.spiralgenesis"
@@ -54,6 +57,39 @@ dependencies {
 
     // In-process Bukkit server mock, for exercising allocation against a real World.
     testImplementation("com.github.seeseemelk:MockBukkit-v1.20:3.93.2")
+}
+
+// Hangar publication. Everything is driven by properties and the HANGAR_API_TOKEN
+// environment variable so the release workflow can set them per tag; no part of this
+// runs during an ordinary build or test.
+//
+// `platformVersions` must contain versions Hangar itself recognises, or the publish
+// request is rejected. It is a property rather than a literal so the list can be widened
+// for a new Minecraft release without touching this file.
+hangarPublish {
+    publications.register("plugin") {
+        id.set(providers.gradleProperty("hangarProject").orElse("SpiralGenesis"))
+        version.set(project.version.toString())
+        channel.set(providers.gradleProperty("hangarChannel").orElse("Release"))
+        apiKey.set(providers.environmentVariable("HANGAR_API_TOKEN"))
+        // Written by the release workflow before it publishes. Absent during a local
+        // build, in which case the fallback text applies.
+        changelog.set(
+            providers.fileContents(layout.buildDirectory.file("release-notes.md")).asText
+                .orElse("See the GitHub release for this version.")
+        )
+
+        platforms {
+            paper {
+                jar.set(tasks.shadowJar.flatMap { it.archiveFile })
+                platformVersions.set(
+                    providers.gradleProperty("hangarPlatformVersions")
+                        .orElse("1.20.x,1.21.x")
+                        .map { versions -> versions.split(",").map(String::trim).filter(String::isNotEmpty) }
+                )
+            }
+        }
+    }
 }
 
 tasks {
