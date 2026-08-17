@@ -67,34 +67,43 @@ there is no separate release branch.
    ```
 3. Update `CHANGELOG.md` under the target version header.
 
-### Step 2: Publishing an Alpha / Beta
+### Step 2: Cut the Tag
+
+Every tier is cut the same way, with `scripts/release.sh`. Pass the version without the
+leading `v`:
+
 ```bash
-# Alpha and beta tags are cut from main, same as GA
-git checkout main
-git pull origin main
-
-# Tag alpha or beta
-git tag -a v1.0.0-beta.1 -m "SpiralGenesis v1.0.0 Beta 1: Feature-complete cross-play testing"
-
-# Push tag to trigger CI
-git push origin v1.0.0-beta.1
+scripts/release.sh 1.0.0-beta.1
 ```
 
-### Step 3: Publishing a Market / GA Release
 ```bash
-# 1. Confirm every PR for this version is merged and CI is green on main
-# 2. Checkout main locally
-git checkout main
-git pull origin main
-
-# 3. Create production tag
-git tag -a v1.0.0 -m "SpiralGenesis v1.0.0: Initial Public Release"
-
-# 4. Push tag to trigger automated publication
-git push origin v1.0.0
+scripts/release.sh 1.0.0
 ```
 
-### Step 4: Automated CI Actions
+The script refuses to tag unless all of the following hold, then prints the tag, the
+commit, the channel and the release notes and asks you to type the tag to confirm:
+
+| Check | Why |
+| :--- | :--- |
+| Version matches the tag grammar | Same rule CI enforces, applied before the tag is public. |
+| Not a linked worktree | Worktrees sit on their own branches at older commits. This is how a tag ends up pointing several merges behind `main`. |
+| On `main` | Releases are cut from the trunk. |
+| Working tree clean | A tag names a commit; uncommitted work is not in the release. |
+| Local `main` equals `origin/main` | Behind means the release misses merged work; ahead means it contains unreviewed commits. |
+| Tag unused locally and on origin | Re-tagging is how a published version ends up pointing at different code than its tag. |
+| Changelog section exists | Stable releases only. Pre-releases may ship without one. |
+
+Add `--dry-run` to run every check and print the summary without tagging or pushing:
+
+```bash
+scripts/release.sh 1.0.0 --dry-run
+```
+
+Tagging by hand still works and CI still gates it, but the failures then happen after the
+tag is public, when undoing them means deleting a tag that two registries have already
+seen.
+
+### Step 3: Automated CI Actions
 GitHub Actions (`.github/workflows/release.yml`) will:
 1. Reject the tag unless it matches `vMAJOR.MINOR.PATCH` with an optional `-alpha.N`,
    `-beta.N` or `-rc.N` suffix. The tag decides the tier, so it has to be exact.
