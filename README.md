@@ -22,6 +22,7 @@ Instead of confining all players to a single crowded world spawn, SpiralGenesis 
 * **Per-Player Respawn Override**: Automatically enforces individual genesis coordinates on death respawns if no active bed or respawn anchor is present.
 * **Full Administrative Command Suite**: Powerful `/sgen` CLI to set origin coordinates, inspect player plots, manually relocate players, or reassign plots.
 * **Tick-Friendly Allocation**: Chunks are loaded through Paper's asynchronous API and each candidate cell is probed on its own tick, so terrain scanning never stalls the server. Storage writes are coalesced and flushed off the main thread.
+* **Folia-Ready Threading**: Every scheduler call site uses Paper's region, entity, and async schedulers rather than the legacy global scheduler, so the same jar runs on both Paper and Folia's regionised threading model.
 
 ---
 
@@ -51,8 +52,14 @@ The sequence progresses in expanding clockwise rings ($1, 1, 2, 2, 3, 3, 4, 4 \d
 
 ## 📦 Installation & Setup
 
-**Requirements:** PaperMC (or a fork such as Purpur) and Java 21. Built against the
-1.20.4 API; verify on your exact server version before deploying to production.
+**Requirements:** PaperMC, a Paper fork such as Purpur, or Folia — plus Java 21. Built
+against the 1.20.4 API; verify on your exact server version before deploying to production.
+
+Spigot and CraftBukkit are **not** supported: allocation relies on Paper's asynchronous
+chunk and teleport APIs, and a synchronous fallback would stall the server on every join.
+Fabric, NeoForge, and proxies (Velocity, BungeeCord) are out of scope by design — the
+former are mod loaders rather than plugin platforms, and proxies have no world to
+allocate territory in.
 
 1. Download the latest release from [GitHub Releases](https://github.com/Ninja6-MC/SpiralGenesis/releases), [Modrinth](https://modrinth.com/plugin/spiralgenesis), or [Paper Hangar](https://hangar.papermc.io/Ninja6-MC/SpiralGenesis).
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` directory.

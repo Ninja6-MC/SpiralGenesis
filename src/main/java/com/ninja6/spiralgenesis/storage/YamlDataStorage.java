@@ -3,8 +3,8 @@ package com.ninja6.spiralgenesis.storage;
 import org.bukkit.Location;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.file.YamlConfiguration;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
-import org.bukkit.scheduler.BukkitTask;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -15,6 +15,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -29,7 +30,7 @@ import java.util.logging.Level;
 public class YamlDataStorage implements DataStorage {
 
     /** How often the background flush task checks for pending changes. */
-    private static final long FLUSH_INTERVAL_TICKS = 100L; // ~5 seconds
+    private static final long FLUSH_INTERVAL_SECONDS = 5L;
 
     private final JavaPlugin plugin;
     private final Path dataFile;
@@ -43,7 +44,7 @@ public class YamlDataStorage implements DataStorage {
     private final AtomicInteger currentIndex = new AtomicInteger();
     private final AtomicBoolean dirty = new AtomicBoolean();
 
-    private BukkitTask flushTask;
+    private ScheduledTask flushTask;
 
     public YamlDataStorage(JavaPlugin plugin) {
         this.plugin = plugin;
@@ -120,8 +121,9 @@ public class YamlDataStorage implements DataStorage {
             return;
         }
         try {
-            flushTask = plugin.getServer().getScheduler().runTaskTimerAsynchronously(
-                    plugin, this::flushIfDirty, FLUSH_INTERVAL_TICKS, FLUSH_INTERVAL_TICKS);
+            flushTask = plugin.getServer().getAsyncScheduler().runAtFixedRate(
+                    plugin, task -> flushIfDirty(),
+                    FLUSH_INTERVAL_SECONDS, FLUSH_INTERVAL_SECONDS, TimeUnit.SECONDS);
         } catch (IllegalStateException e) {
             // Plugin not enabled (e.g. under test) - fall back to synchronous saves only.
             plugin.getLogger().fine("Asynchronous flush task unavailable; saving synchronously.");
