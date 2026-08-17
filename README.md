@@ -133,4 +133,11 @@ Compiled JAR will be in `build/libs/SpiralGenesis-<version>.jar`.
 ## 📄 License
 
 This project is licensed under the [GNU General Public License v3.0](LICENSE).
-Upstream base reference: [Block4Block / DynamicSpawnPlugin](https://github.com/Block4Block/DynamicSpawnPlugin).
+
+---
+
+## 🙏 Acknowledgements
+
+Inspired by [Block4Block / DynamicSpawnPlugin](https://github.com/Block4Block/DynamicSpawnPlugin),
+which pioneered spiral-pattern spawn distribution for Paper servers. SpiralGenesis is an
+independent implementation.
