@@ -1,6 +1,7 @@
 package com.ninja6.spiralgenesis.manager;
 
 import java.util.EnumMap;
+import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -117,7 +118,11 @@ public final class SpawnSimulator {
          * asserts on these fields, so the key names are part of the contract.
          */
         public String toSummaryLine() {
-            return String.format(
+            // Locale.ROOT is load-bearing, not defensive: CI parses `ratio=` out of this
+            // line with awk. Under a comma-decimal default locale the value would render as
+            // "3,50", which awk coerces to 3, so a real regression just above the threshold
+            // would slip through the guard silently.
+            return String.format(Locale.ROOT,
                     "SIMULATE samples=%d completed=%d indices=%d ratio=%.2f candidates=%d "
                             + "fallbacks=%d minY=%d maxY=%d",
                     samples, completed, cellsProbed, indicesPerSpawn(), candidatesProbed,

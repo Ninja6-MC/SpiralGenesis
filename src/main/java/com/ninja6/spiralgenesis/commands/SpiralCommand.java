@@ -17,6 +17,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.logging.Level;
 
@@ -280,24 +281,43 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             plugin.getLogger().info(report.toSummaryLine());
             plugin.getLogger().info(report.toRejectionLine());
 
-            sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Simulation ===");
-            sender.sendMessage(ChatColor.YELLOW + "Allocations: " + ChatColor.WHITE
-                    + report.completed() + "/" + report.samples());
-            sender.sendMessage(ChatColor.YELLOW + "Indices per spawn: " + ChatColor.WHITE
-                    + String.format("%.2f", report.indicesPerSpawn())
-                    + ChatColor.GRAY + " (1.00 is ideal; high means cells are being rejected)");
-            sender.sendMessage(ChatColor.YELLOW + "Candidates probed: " + ChatColor.WHITE
-                    + report.candidatesProbed());
-            sender.sendMessage(ChatColor.YELLOW + "Fallbacks: " + ChatColor.WHITE + report.fallbacks());
-            sender.sendMessage(ChatColor.YELLOW + "Surface Y range: " + ChatColor.WHITE
-                    + report.minSurfaceY() + " to " + report.maxSurfaceY());
-            sender.sendMessage(ChatColor.YELLOW + "Rejections: " + ChatColor.WHITE
-                    + (report.rejections().isEmpty() ? "none" : report.rejections().toString()));
+            reply(sender, () -> {
+                sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Simulation ===");
+                sender.sendMessage(ChatColor.YELLOW + "Allocations: " + ChatColor.WHITE
+                        + report.completed() + "/" + report.samples());
+                sender.sendMessage(ChatColor.YELLOW + "Indices per spawn: " + ChatColor.WHITE
+                        + String.format(Locale.ROOT, "%.2f", report.indicesPerSpawn())
+                        + ChatColor.GRAY + " (1.00 is ideal; high means cells are being rejected)");
+                sender.sendMessage(ChatColor.YELLOW + "Candidates probed: " + ChatColor.WHITE
+                        + report.candidatesProbed());
+                sender.sendMessage(ChatColor.YELLOW + "Fallbacks: " + ChatColor.WHITE + report.fallbacks());
+                sender.sendMessage(ChatColor.YELLOW + "Surface Y range: " + ChatColor.WHITE
+                        + report.minSurfaceY() + " to " + report.maxSurfaceY());
+                sender.sendMessage(ChatColor.YELLOW + "Rejections: " + ChatColor.WHITE
+                        + (report.rejections().isEmpty() ? "none" : report.rejections().toString()));
+            });
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Spawn simulation failed", ex);
-            sender.sendMessage(ChatColor.RED + "Simulation failed; check the console for details.");
+            reply(sender, () -> sender.sendMessage(
+                    ChatColor.RED + "Simulation failed; check the console for details."));
             return null;
         });
+    }
+
+    /**
+     * Delivers a reply on the thread that owns the sender.
+     *
+     * <p>Allocation callbacks resolve on whichever region thread finished the last probe,
+     * which on Folia is generally not the region owning the admin who typed the command,
+     * and Player API rejects calls from a foreign region. The console sender has no owning
+     * region, so it is written to directly.
+     */
+    private void reply(CommandSender sender, Runnable send) {
+        if (sender instanceof Player player) {
+            player.getScheduler().run(plugin, task -> send.run(), null);
+        } else {
+            send.run();
+        }
     }
 
     private void handleReload(CommandSender sender) {

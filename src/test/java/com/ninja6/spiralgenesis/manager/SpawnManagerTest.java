@@ -17,6 +17,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.StringReader;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
@@ -488,6 +489,25 @@ class SpawnManagerTest {
         }
         assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
                 "the smoke test waits on this prefix to know the run finished");
+    }
+
+    @Test
+    @DisplayName("The summary ratio uses a decimal point regardless of the server's locale")
+    void simulationSummaryIsLocaleIndependent() throws Exception {
+        Locale original = Locale.getDefault();
+        try {
+            // A comma-decimal locale would render the ratio as "1,00". CI parses that field
+            // with awk, which coerces "3,50" to 3 and would wave a real regression through.
+            Locale.setDefault(Locale.GERMANY);
+
+            SpawnManager manager = managerWith(config(0, 8));
+            SpawnSimulator.Report report = SpawnSimulator.run(manager, 2).get(10, TimeUnit.SECONDS);
+
+            assertTrue(report.toSummaryLine().contains("ratio=1.00"),
+                    "ratio must be machine-parseable under any locale: " + report.toSummaryLine());
+        } finally {
+            Locale.setDefault(original);
+        }
     }
 
     @Test

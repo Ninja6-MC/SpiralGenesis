@@ -31,6 +31,10 @@ LEVEL_SEED="${LEVEL_SEED:-spiralgenesis}"
 # this guards: a max-roughness or max-pit-depth too strict for real terrain.
 MAX_INDEX_RATIO="${MAX_INDEX_RATIO:-3.0}"
 
+# Must track the safety.min-surface-y default in src/main/resources/config.yml; the
+# simulation runs against a stock config.
+MIN_SURFACE_Y="${MIN_SURFACE_Y:-63}"
+
 if [[ ! -f "$PLUGIN_JAR" ]]; then
     echo "::error::Plugin jar not found: $PLUGIN_JAR"
     exit 1
@@ -240,10 +244,12 @@ else
         fail "$FALLBACKS allocation(s) exhausted max-scan-attempts and used the fallback."
     fi
 
-    # Nothing may be placed below the configured floor. 63 is the plugin default; the
-    # simulation runs against a stock config, so this is the value in force.
-    if [[ -n "$MIN_Y" ]] && (( MIN_Y < 63 )); then
-        fail "An allocation landed at Y=$MIN_Y, below the configured min-surface-y of 63."
+    # Nothing may be placed below the configured floor. The simulation runs against a stock
+    # config, so this must track the safety.min-surface-y default in config.yml - if that
+    # default changes without this following it, the check silently starts asserting a
+    # threshold the plugin no longer uses.
+    if [[ -n "$MIN_Y" ]] && (( MIN_Y < MIN_SURFACE_Y )); then
+        fail "An allocation landed at Y=$MIN_Y, below the configured min-surface-y of $MIN_SURFACE_Y."
     fi
 
     if awk -v r="$RATIO" -v m="$MAX_INDEX_RATIO" 'BEGIN { exit !(r > m) }'; then
