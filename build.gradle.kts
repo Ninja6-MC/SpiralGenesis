@@ -47,6 +47,9 @@ dependencies {
     // YamlConfiguration runs standalone (no server instance), so this is enough to
     // cover configuration parsing and validation.
     testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+
+    // In-process Bukkit server mock, for exercising allocation against a real World.
+    testImplementation("com.github.seeseemelk:MockBukkit-v1.20:3.93.2")
 }
 
 tasks {

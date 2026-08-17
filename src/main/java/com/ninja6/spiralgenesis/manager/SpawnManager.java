@@ -72,7 +72,7 @@ public class SpawnManager {
         final int targetZ = config.getOriginZ() + (grid[1] * config.getCellSize());
         final boolean finalAttempt = attempt + 1 >= config.getMaxScanAttempts();
 
-        world.getChunkAtAsync(targetX >> 4, targetZ >> 4).whenComplete((chunk, error) -> {
+        loadChunk(targetX >> 4, targetZ >> 4).whenComplete((chunk, error) -> {
             if (error != null) {
                 result.completeExceptionally(error);
                 return;
@@ -124,20 +124,36 @@ public class SpawnManager {
     }
 
     /**
+     * Requests the chunk containing a candidate cell.
+     *
+     * <p>Package-private rather than inlined so tests can resolve immediately: MockBukkit
+     * does not implement {@code getChunkAtAsync}, and the allocation logic under test does
+     * not depend on the chunk object itself.
+     */
+    CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+        return world.getChunkAtAsync(chunkX, chunkZ);
+    }
+
+    /**
      * Runs {@code action} on the thread owning the given chunk, failing the pending result
      * rather than leaving it dangling if the scheduler rejects the task (e.g. during
      * shutdown).
+     *
+     * <p>Package-private so tests can run the action inline; MockBukkit does not implement
+     * the region schedulers.
      */
-    private void runOnRegion(CompletableFuture<LocationResult> result,
-                             int chunkX, int chunkZ, Runnable action) {
+    void runOnRegion(CompletableFuture<LocationResult> result,
+                     int chunkX, int chunkZ, Runnable action) {
         dispatch(result, () -> plugin.getServer().getRegionScheduler()
                 .execute(plugin, world, chunkX, chunkZ, guard(result, action)));
     }
 
     /**
      * Runs {@code action} on the global region, for work not tied to a specific chunk.
+     *
+     * <p>Package-private for the same reason as {@link #runOnRegion}.
      */
-    private void runGlobally(CompletableFuture<LocationResult> result, Runnable action) {
+    void runGlobally(CompletableFuture<LocationResult> result, Runnable action) {
         dispatch(result, () -> plugin.getServer().getGlobalRegionScheduler()
                 .execute(plugin, guard(result, action)));
     }
