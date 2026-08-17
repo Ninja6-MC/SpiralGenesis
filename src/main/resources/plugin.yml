@@ -1,0 +1,21 @@
+name: ${name}
+version: '${version}'
+main: com.ninja6.spiralgenesis.SpiralGenesisPlugin
+api-version: '${apiVersion}'
+description: ${description}
+author: Ninja6-MC
+softdepend:
+  - Floodgate
+  - AuthMe
+
+commands:
+  sgen:
+    description: SpiralGenesis administrative commands
+    aliases: [spiralgenesis]
+    permission: spiralgenesis.admin
+    usage: /sgen <setcenter|setspawn|reassign|tp|info|reload>
+
+permissions:
+  spiralgenesis.admin:
+    description: Allows full administration of SpiralGenesis plots, centers, and configuration.
+    default: op

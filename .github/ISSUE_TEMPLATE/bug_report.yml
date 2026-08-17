@@ -1,0 +1,62 @@
+name: Bug Report
+description: Report a bug or unintended behavior in SpiralGenesis
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for reporting a bug. Please ensure you are running the latest version of Paper and SpiralGenesis before submitting.
+
+  - type: input
+    id: version
+    attributes:
+      label: SpiralGenesis Version
+      placeholder: "e.g. 1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: server-version
+    attributes:
+      label: Server Software & Version
+      placeholder: "e.g. Paper 1.20.4 build 498"
+    validations:
+      required: true
+
+  - type: input
+    id: hooks
+    attributes:
+      label: Installed Soft-Dependencies
+      placeholder: "e.g. Floodgate 2.2.2, AuthMe 5.6.0"
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce the issue?
+      placeholder: |
+        1. Join server with Floodgate player
+        2. Check assigned coordinates
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Server Logs / Stack Trace
+      description: Paste any relevant console output or stack traces.
+      render: text
+    validations:
+      required: false

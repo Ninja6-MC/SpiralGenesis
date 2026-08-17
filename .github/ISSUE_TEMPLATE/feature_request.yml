@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new feature or enhancement for SpiralGenesis
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve SpiralGenesis!
+
+  - type: textarea
+    id: feature
+    attributes:
+      label: Feature Description
+      description: A clear and concise description of the feature or improvement you are proposing.
+    validations:
+      required: true
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Use Case / Problem Addressed
+      description: Explain why this feature is useful and what problem it solves for server administrators.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative solutions or workarounds you've considered.
+    validations:
+      required: false

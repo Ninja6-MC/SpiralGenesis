@@ -1,0 +1,28 @@
+# Gradle
+.gradle/
+build/
+!gradle/wrapper/gradle-wrapper.jar
+
+# Run-paper & Local Test Server
+run/
+logs/
+*.log
+crash-reports/
+
+# IDE & Editor
+.idea/
+*.iml
+.vscode/
+*.ipr
+*.iws
+.project
+.classpath
+.settings/
+
+# OS Specific
+.DS_Store
+Thumbs.db
+
+# Output JARs
+*.jar
+!gradle/wrapper/gradle-wrapper.jar

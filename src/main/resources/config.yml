@@ -1,0 +1,29 @@
+# ==============================================================================
+# SpiralGenesis - Per-Player Spiral Distributed Spawn & Territory Engine
+# ==============================================================================
+
+# Global spiral origin settings
+origin:
+  # The world where spiral allocation takes place
+  world: "world"
+  # Global X center coordinate
+  x: 0
+  # Global Z center coordinate
+  z: 0
+
+# The dimension of each player's square territory in blocks (e.g. 500 = 500x500 blocks)
+cell-size: 500
+
+# Current global progression index in the spiral sequence (Auto-incremented on allocation)
+current-spiral-index: 0
+
+# Terrain probing and safety rules
+safety:
+  # Minimum surface Y elevation required for valid spawn (Default: 63, above sea level)
+  min-surface-y: 63
+  # Maximum search steps to attempt during recursive scan before aborting
+  max-scan-attempts: 50
+
+# Anonymous bStats metrics
+metrics:
+  enabled: true
