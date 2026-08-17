@@ -13,6 +13,15 @@ public class PluginConfig {
     static final int MIN_SURFACE_Y_CEILING = 320;
     static final int MIN_SCAN_ATTEMPTS = 1;
     static final int MAX_SCAN_ATTEMPTS = 500;
+    /** A stride below one chunk would put several candidates in the same chunk. */
+    static final int MIN_STRIDE = 16;
+    static final int MAX_STRIDE = 512;
+    static final int MIN_CANDIDATES = 1;
+    static final int MAX_CANDIDATES = 64;
+    static final int MIN_PIT_DEPTH = 1;
+    static final int MAX_PIT_DEPTH = 128;
+    static final int MIN_ROUGHNESS = 1;
+    static final int MAX_ROUGHNESS = 128;
 
     private final String worldName;
     private int originX;
@@ -20,6 +29,12 @@ public class PluginConfig {
     private final int cellSize;
     private final int minSurfaceY;
     private final int maxScanAttempts;
+    private final PlacementStrategy placementStrategy;
+    private final int stride;
+    private final int maxCandidates;
+    private final int heightCeiling;
+    private final int maxPitDepth;
+    private final int maxRoughness;
 
     public PluginConfig(FileConfiguration config) {
         String configuredWorld = config.getString("origin.world", "world");
@@ -30,8 +45,22 @@ public class PluginConfig {
         this.minSurfaceY = clamp(config.getInt("safety.min-surface-y", 63),
                 MIN_SURFACE_Y_FLOOR, MIN_SURFACE_Y_CEILING);
         // A value below 1 would send every player straight to the fallback location.
-        this.maxScanAttempts = clamp(config.getInt("safety.max-scan-attempts", 50),
+        // Worst-case allocation is max-scan-attempts * max-candidates ticks, so this stays
+        // low: with in-cell searching a cell rarely fails outright.
+        this.maxScanAttempts = clamp(config.getInt("safety.max-scan-attempts", 8),
                 MIN_SCAN_ATTEMPTS, MAX_SCAN_ATTEMPTS);
+
+        this.placementStrategy = PlacementStrategy.parse(
+                config.getString("placement.strategy"), PlacementStrategy.FIRST_SAFE);
+        this.stride = clamp(config.getInt("placement.stride", 16), MIN_STRIDE, MAX_STRIDE);
+        this.maxCandidates = clamp(config.getInt("placement.max-candidates", 12),
+                MIN_CANDIDATES, MAX_CANDIDATES);
+        this.heightCeiling = clamp(config.getInt("placement.height-ceiling", 110),
+                MIN_SURFACE_Y_FLOOR, MIN_SURFACE_Y_CEILING);
+        this.maxPitDepth = clamp(config.getInt("safety.max-pit-depth", 8),
+                MIN_PIT_DEPTH, MAX_PIT_DEPTH);
+        this.maxRoughness = clamp(config.getInt("safety.max-roughness", 12),
+                MIN_ROUGHNESS, MAX_ROUGHNESS);
     }
 
     private static int clamp(int value, int min, int max) {
@@ -68,5 +97,29 @@ public class PluginConfig {
 
     public int getMaxScanAttempts() {
         return maxScanAttempts;
+    }
+
+    public PlacementStrategy getPlacementStrategy() {
+        return placementStrategy;
+    }
+
+    public int getStride() {
+        return stride;
+    }
+
+    public int getMaxCandidates() {
+        return maxCandidates;
+    }
+
+    public int getHeightCeiling() {
+        return heightCeiling;
+    }
+
+    public int getMaxPitDepth() {
+        return maxPitDepth;
+    }
+
+    public int getMaxRoughness() {
+        return maxRoughness;
     }
 }

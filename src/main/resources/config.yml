@@ -17,12 +17,40 @@ cell-size: 500
 # NOTE: the live spiral progression index is persisted in data.yml
 # (`current-spiral-index`), not here. Editing it in this file has no effect.
 
+# Where inside an allocated cell the player is placed.
+placement:
+  # FIRST_SAFE - use the cell centre if it passes the safety rules below, otherwise the
+  #              first viable point found spiralling outward from it. Cheapest: a viable
+  #              centre costs a single chunk and stops there. (Default)
+  # FLATTEST   - probe every candidate and take the one with the least height variation.
+  # HIGHEST    - probe every candidate and take the highest at or below height-ceiling.
+  # FLATTEST and HIGHEST cannot stop early, so they always spend the full
+  # max-candidates budget in chunk generation on every allocation.
+  strategy: FIRST_SAFE
+  # Blocks between candidate points. 16 (one chunk) is the minimum; anything smaller
+  # would land several candidates in the same chunk. Clamped to 16-512.
+  stride: 16
+  # Candidate points to try inside a cell before advancing to the next spiral index.
+  # Automatically reduced if cell-size and stride cannot fit this many without the
+  # search leaving the cell. Clamped to 1-64.
+  max-candidates: 12
+  # HIGHEST only: ignore candidates above this Y, so ranking prefers hills over
+  # lowlands without stranding players on jagged peaks.
+  height-ceiling: 110
+
 # Terrain probing and safety rules
 safety:
   # Minimum surface Y elevation required for valid spawn (Default: 63, above sea level)
   # Clamped to the world's build range at runtime.
   min-surface-y: 63
-  # Maximum candidate cells to probe before giving up and using a best-effort
-  # surface location. Each attempt is spread across one server tick.
-  # Clamped to 1-500.
-  max-scan-attempts: 50
+  # Maximum cells to probe before giving up and using the best candidate seen. Worst-case
+  # allocation time is max-scan-attempts * max-candidates ticks, so this is far lower than
+  # it needs to be without in-cell searching. Clamped to 1-500.
+  max-scan-attempts: 8
+  # Reject a candidate sitting more than this many blocks below the median of the terrain
+  # around it. This is what keeps players out of ravines, canyons and sinkholes: their
+  # floor is reported as "the surface" because nothing is above it. Clamped to 1-128.
+  max-pit-depth: 8
+  # Reject a candidate whose immediate surroundings vary by more than this many blocks,
+  # which rules out cliff edges, spikes and jagged terrain. Clamped to 1-128.
+  max-roughness: 12

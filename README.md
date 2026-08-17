@@ -82,13 +82,35 @@ origin:
 # Clamped to 50-100000.
 cell-size: 500
 
+# Where inside a cell the player is placed
+placement:
+  # FIRST_SAFE (default) - the cell centre if it is viable, otherwise the first
+  #   viable point spiralling outward from it. Stops as soon as it finds one.
+  # FLATTEST - probe every candidate, take the least uneven.
+  # HIGHEST  - probe every candidate, take the highest at or below height-ceiling.
+  strategy: FIRST_SAFE
+  # Blocks between candidates. Clamped to 16-512 (16 = one chunk).
+  stride: 16
+  # Candidates tried per cell before advancing the spiral. Clamped to 1-64, and
+  # reduced automatically if the search would otherwise leave the cell.
+  max-candidates: 12
+  # HIGHEST only: ranking ignores anything above this Y, which keeps players off
+  # jagged peaks. Clamped to -64..320.
+  height-ceiling: 110
+
 # Safety probing rules
 safety:
-  # Minimum surface Y for a cell to be accepted. Clamped to -64..320.
+  # Minimum surface Y for a candidate to be accepted. Clamped to -64..320.
   min-surface-y: 63
-  # Candidate cells probed before falling back to a best-effort surface
-  # location. One probe per tick. Clamped to 1-500.
-  max-scan-attempts: 50
+  # Cells probed before falling back to the best candidate seen. Worst case is
+  # max-scan-attempts * max-candidates ticks. Clamped to 1-500.
+  max-scan-attempts: 8
+  # Reject a candidate this far below the terrain around it — the rule that keeps
+  # players out of ravines and sinkholes. Clamped to 1-128.
+  max-pit-depth: 8
+  # Reject a candidate whose surroundings vary by more than this, ruling out cliff
+  # edges and spikes. Clamped to 1-128.
+  max-roughness: 12
 ```
 
 > The live spiral progression index is persisted in `data.yml`
@@ -107,6 +129,7 @@ safety:
 | `/sgen reassign <player>` | `spiralgenesis.admin` | Clears target player's spawn and allocates a fresh safe spiral plot. |
 | `/sgen tp <player>` | `spiralgenesis.admin` | Teleports you to the player's assigned genesis coordinates. |
 | `/sgen info <player>` | `spiralgenesis.admin` | Displays player's index $k$, grid cell $(u, v)$, and world coordinates. |
+| `/sgen simulate <count>` | `spiralgenesis.admin` | Runs allocation against live terrain and reports index burn, fallbacks and per-rule rejections. Generates chunks; does not advance the live spiral index. |
 | `/sgen reload` | `spiralgenesis.admin` | Reloads `config.yml` and refreshes storage. |
 
 ---

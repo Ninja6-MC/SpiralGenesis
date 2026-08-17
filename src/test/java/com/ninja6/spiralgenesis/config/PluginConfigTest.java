@@ -22,7 +22,13 @@ class PluginConfigTest {
         assertEquals(0, config.getOriginZ());
         assertEquals(500, config.getCellSize());
         assertEquals(63, config.getMinSurfaceY());
-        assertEquals(50, config.getMaxScanAttempts());
+        assertEquals(8, config.getMaxScanAttempts());
+        assertEquals(PlacementStrategy.FIRST_SAFE, config.getPlacementStrategy());
+        assertEquals(16, config.getStride());
+        assertEquals(12, config.getMaxCandidates());
+        assertEquals(110, config.getHeightCeiling());
+        assertEquals(8, config.getMaxPitDepth());
+        assertEquals(12, config.getMaxRoughness());
     }
 
     @Test
@@ -73,6 +79,41 @@ class PluginConfigTest {
     void testMinSurfaceYClamped() {
         assertEquals(PluginConfig.MIN_SURFACE_Y_FLOOR, parse("safety:\n  min-surface-y: -5000\n").getMinSurfaceY());
         assertEquals(PluginConfig.MIN_SURFACE_Y_CEILING, parse("safety:\n  min-surface-y: 5000\n").getMinSurfaceY());
+    }
+
+    @Test
+    @DisplayName("An unrecognised placement strategy falls back to the default")
+    void testUnknownStrategyFallsBack() {
+        assertEquals(PlacementStrategy.FIRST_SAFE,
+                parse("placement:\n  strategy: \"NEAR_SOUTH\"\n").getPlacementStrategy());
+        assertEquals(PlacementStrategy.FLATTEST,
+                parse("placement:\n  strategy: \"flattest\"\n").getPlacementStrategy(),
+                "names should be case-insensitive");
+    }
+
+    @Test
+    @DisplayName("stride is clamped to at least one chunk so candidates never share a chunk")
+    void testStrideClamped() {
+        assertEquals(PluginConfig.MIN_STRIDE, parse("placement:\n  stride: 1\n").getStride());
+        assertEquals(PluginConfig.MAX_STRIDE, parse("placement:\n  stride: 99999\n").getStride());
+    }
+
+    @Test
+    @DisplayName("max-candidates is clamped to bound per-cell chunk generation")
+    void testMaxCandidatesClamped() {
+        assertEquals(PluginConfig.MIN_CANDIDATES,
+                parse("placement:\n  max-candidates: 0\n").getMaxCandidates());
+        assertEquals(PluginConfig.MAX_CANDIDATES,
+                parse("placement:\n  max-candidates: 5000\n").getMaxCandidates());
+    }
+
+    @Test
+    @DisplayName("Terrain shape thresholds are clamped above zero so they stay meaningful")
+    void testShapeThresholdsClamped() {
+        assertEquals(PluginConfig.MIN_PIT_DEPTH, parse("safety:\n  max-pit-depth: 0\n").getMaxPitDepth());
+        assertEquals(PluginConfig.MAX_PIT_DEPTH, parse("safety:\n  max-pit-depth: 9999\n").getMaxPitDepth());
+        assertEquals(PluginConfig.MIN_ROUGHNESS, parse("safety:\n  max-roughness: -3\n").getMaxRoughness());
+        assertEquals(PluginConfig.MAX_ROUGHNESS, parse("safety:\n  max-roughness: 9999\n").getMaxRoughness());
     }
 
     @Test
