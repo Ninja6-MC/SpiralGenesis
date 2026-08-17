@@ -15,6 +15,9 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -27,6 +30,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private SpawnManager spawnManager;
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
+
+    /** Players with an allocation currently in flight; guards against double assignment. */
+    private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
 
     @Override
     public void onEnable() {
@@ -67,7 +73,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     @Override
     public void onDisable() {
         if (dataStorage != null) {
-            dataStorage.save();
+            dataStorage.shutdown();
         }
         getLogger().info("SpiralGenesis disabled.");
     }
@@ -76,6 +82,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         reloadConfig();
         loadConfiguration();
         if (dataStorage != null) {
+            // Flush first: load() replaces in-memory state from disk, so any pending
+            // change that has not been written yet would otherwise be discarded.
+            dataStorage.save();
             dataStorage.load();
         }
         initSpawnManager();
@@ -99,14 +108,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     /**
      * Handles first join allocation for incoming players asynchronously.
+     *
+     * <p>Allocation is idempotent per player: a scan takes several ticks to resolve, and in
+     * that window storage still reports the player as unassigned. AuthMe fires both
+     * {@code RegisterEvent} and {@code LoginEvent} for a fresh registration, so without the
+     * in-flight guard below a single player would be allocated two separate plots.
      */
     public void handlePlayerFirstJoin(Player player, String clientType) {
-        if (dataStorage.hasSpawn(player.getUniqueId())) {
+        UUID uuid = player.getUniqueId();
+        if (dataStorage.hasSpawn(uuid)) {
             return;
         }
-
-        getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + player.getUniqueId() + ")...");
-        int nextIndex = dataStorage.getCurrentIndex();
 
         if (spawnManager == null) {
             initSpawnManager();
@@ -117,12 +129,19 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return;
         }
 
-        spawnManager.allocateNextSafeSpawn(nextIndex).thenAccept(res -> {
+        if (!allocating.add(uuid)) {
+            return; // An allocation for this player is already in flight.
+        }
+
+        getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
+
+        // The index is claimed atomically inside the scan, so concurrent joins never
+        // resolve to the same grid cell.
+        spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
             Bukkit.getScheduler().runTask(this, () -> {
                 if (!player.isOnline()) return;
 
-                dataStorage.setCurrentIndex(res.index() + 1);
-                dataStorage.setSpawn(player.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
+                dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
                 player.setRespawnLocation(res.location(), true);
                 player.teleportAsync(res.location()).thenAccept(success -> {
@@ -135,7 +154,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }).exceptionally(ex -> {
             getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
             return null;
-        });
+        }).whenComplete((ignored, ex) -> allocating.remove(uuid));
     }
 
     public PluginConfig getPluginConfig() {

@@ -13,6 +13,8 @@ import org.bukkit.plugin.java.JavaPlugin;
 import java.util.EnumSet;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.IntSupplier;
+import java.util.logging.Level;
 
 /**
  * Asynchronous territory allocation and terrain validation engine.
@@ -29,10 +31,16 @@ public class SpawnManager {
             Material.KELP, Material.KELP_PLANT, Material.POWDER_SNOW
     );
 
-    private static final Set<Biome> OCEAN_BIOMES = EnumSet.of(
-            Biome.OCEAN, Biome.DEEP_OCEAN, Biome.WARM_OCEAN, Biome.LUKEWARM_OCEAN,
-            Biome.DEEP_LUKEWARM_OCEAN, Biome.COLD_OCEAN, Biome.DEEP_COLD_OCEAN,
-            Biome.FROZEN_OCEAN, Biome.DEEP_FROZEN_OCEAN
+    /**
+     * Ocean biomes, matched by namespaced key rather than enum identity.
+     *
+     * <p>{@code Biome} is registry-backed rather than an enum on current Paper releases, so
+     * an {@code EnumSet} of biome constants fails at class-initialisation there even when it
+     * compiles cleanly against an older API. Key matching is stable across API versions.
+     */
+    private static final Set<String> OCEAN_BIOME_KEYS = Set.of(
+            "ocean", "deep_ocean", "warm_ocean", "lukewarm_ocean", "deep_lukewarm_ocean",
+            "cold_ocean", "deep_cold_ocean", "frozen_ocean", "deep_frozen_ocean"
     );
 
     public SpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
@@ -44,48 +52,88 @@ public class SpawnManager {
     /**
      * Allocates the next safe dry land spawn location asynchronously.
      *
-     * @param startIndex The starting index to scan from
+     * <p>Each probe consumes a fresh index from {@code indexSupplier}, so two concurrent
+     * allocations can never converge on the same cell. Probes are spread one-per-tick: this
+     * keeps chunk generation off any single tick's budget and bounds the callback stack.
+     *
+     * @param indexSupplier atomic source of candidate spiral indices
      * @return CompletableFuture resolving to safe LocationResult
      */
-    public CompletableFuture<LocationResult> allocateNextSafeSpawn(int startIndex) {
-        return findSafeRecursive(startIndex, 0);
+    public CompletableFuture<LocationResult> allocateNextSafeSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<LocationResult> result = new CompletableFuture<>();
+        probe(indexSupplier, 0, result);
+        return result;
     }
 
-    private CompletableFuture<LocationResult> findSafeRecursive(int index, int attempts) {
-        if (attempts >= config.getMaxScanAttempts()) {
-            plugin.getLogger().warning("Reached maximum scan attempts (" + config.getMaxScanAttempts() + ") for index " + index);
-            // Fallback to origin or current coordinate on max attempts
-            int[] grid = SpiralMath.indexToGrid(index);
-            int targetX = config.getOriginX() + (grid[0] * config.getCellSize());
-            int targetZ = config.getOriginZ() + (grid[1] * config.getCellSize());
-            Location fallback = new Location(world, targetX + 0.5, 75.0, targetZ + 0.5);
-            return CompletableFuture.completedFuture(new LocationResult(fallback, index, grid[0], grid[1]));
+    private void probe(IntSupplier indexSupplier, int attempt, CompletableFuture<LocationResult> result) {
+        final int index = indexSupplier.getAsInt();
+        final int[] grid = SpiralMath.indexToGrid(index);
+        final int targetX = config.getOriginX() + (grid[0] * config.getCellSize());
+        final int targetZ = config.getOriginZ() + (grid[1] * config.getCellSize());
+        final boolean finalAttempt = attempt + 1 >= config.getMaxScanAttempts();
+
+        world.getChunkAtAsync(targetX >> 4, targetZ >> 4).whenComplete((chunk, error) -> {
+            if (error != null) {
+                result.completeExceptionally(error);
+                return;
+            }
+            // Re-enter on the main thread: world/heightmap reads are not thread-safe, and
+            // hopping the scheduler also gives every probe a fresh stack.
+            runOnMainThread(result, () -> evaluate(indexSupplier, attempt, finalAttempt,
+                    index, grid, targetX, targetZ, result));
+        });
+    }
+
+    private void evaluate(IntSupplier indexSupplier, int attempt, boolean finalAttempt,
+                          int index, int[] grid, int targetX, int targetZ,
+                          CompletableFuture<LocationResult> result) {
+        int surfaceY = world.getHighestBlockYAt(targetX, targetZ, HeightMap.MOTION_BLOCKING_NO_LEAVES);
+
+        if (!isSafe(targetX, targetZ, surfaceY)) {
+            if (!finalAttempt) {
+                runOnMainThread(result, () -> probe(indexSupplier, attempt + 1, result));
+                return;
+            }
+            // Exhausted the budget. Settle on this cell's real surface rather than a
+            // hardcoded altitude, which could bury the player or drop them into the void.
+            plugin.getLogger().warning("Reached maximum scan attempts ("
+                    + config.getMaxScanAttempts() + "); falling back to index " + index
+                    + " at surface Y=" + surfaceY + ".");
         }
 
-        int[] grid = SpiralMath.indexToGrid(index);
-        int targetX = config.getOriginX() + (grid[0] * config.getCellSize());
-        int targetZ = config.getOriginZ() + (grid[1] * config.getCellSize());
+        Location location = new Location(world, targetX + 0.5, surfaceY + 1.0, targetZ + 0.5);
+        result.complete(new LocationResult(location, index, grid[0], grid[1]));
+    }
 
-        // Asynchronous chunk loading via Paper API
-        return world.getChunkAtAsync(targetX >> 4, targetZ >> 4).thenCompose(chunk -> {
-            Biome biome = world.getBiome(targetX, 64, targetZ);
-            if (OCEAN_BIOMES.contains(biome)) {
-                // Reject ocean biome, advance index
-                return findSafeRecursive(index + 1, attempts + 1);
-            }
+    private boolean isSafe(int x, int z, int surfaceY) {
+        if (surfaceY < config.getMinSurfaceY()) {
+            return false;
+        }
+        Biome biome = world.getBiome(x, surfaceY, z);
+        if (OCEAN_BIOME_KEYS.contains(biome.getKey().getKey())) {
+            return false;
+        }
+        Block block = world.getBlockAt(x, surfaceY, z);
+        return !HAZARD_MATERIALS.contains(block.getType());
+    }
 
-            int surfaceY = world.getHighestBlockYAt(targetX, targetZ, HeightMap.MOTION_BLOCKING_NO_LEAVES);
-            Block block = world.getBlockAt(targetX, surfaceY, targetZ);
-
-            if (surfaceY < config.getMinSurfaceY() || HAZARD_MATERIALS.contains(block.getType())) {
-                // Reject water/hazard surface, advance index
-                return findSafeRecursive(index + 1, attempts + 1);
-            }
-
-            // Safe dry land location verified
-            Location loc = new Location(world, targetX + 0.5, surfaceY + 1.0, targetZ + 0.5);
-            return CompletableFuture.completedFuture(new LocationResult(loc, index, grid[0], grid[1]));
-        });
+    /**
+     * Runs {@code action} on the server thread, failing the pending result rather than
+     * leaving it dangling if the scheduler rejects the task (e.g. during shutdown).
+     */
+    private void runOnMainThread(CompletableFuture<LocationResult> result, Runnable action) {
+        try {
+            plugin.getServer().getScheduler().runTask(plugin, () -> {
+                try {
+                    action.run();
+                } catch (Throwable t) {
+                    result.completeExceptionally(t);
+                }
+            });
+        } catch (IllegalStateException e) {
+            plugin.getLogger().log(Level.WARNING, "Spawn allocation aborted: scheduler unavailable.", e);
+            result.completeExceptionally(e);
+        }
     }
 
     public record LocationResult(Location location, int index, int gridU, int gridV) {}

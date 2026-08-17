@@ -47,6 +47,15 @@ jobs:
             echo "prerelease=false" >> $GITHUB_OUTPUT
           fi
 
+      # The wrapper script is not guaranteed to carry the executable bit in the
+      # index (notably when committed from Windows), so set it explicitly.
+      - name: Ensure Gradle Wrapper Is Executable
+        run: chmod +x ./gradlew
+
+      # Never publish an artifact whose tests have not passed.
+      - name: Run Tests
+        run: ./gradlew test --no-daemon
+
       - name: Build Release JAR
         run: ./gradlew shadowJar -PpluginVersion=${{ steps.vars.outputs.version }} --no-daemon
 
@@ -61,7 +70,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.vars.outputs.tag }}
-          name: "SpiralGenesis ${{ steps.vars.outputs.tag }}"
+          name: "SpiralGenesis ${{ steps.vars.outputs.tag }} (${{ steps.vars.outputs.channel }})"
           draft: false
           prerelease: ${{ steps.vars.outputs.prerelease == 'true' }}
           generate_release_notes: true

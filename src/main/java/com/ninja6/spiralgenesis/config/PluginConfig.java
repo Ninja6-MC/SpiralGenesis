@@ -7,22 +7,35 @@ import org.bukkit.configuration.file.FileConfiguration;
  */
 public class PluginConfig {
 
+    static final int MIN_CELL_SIZE = 50;
+    static final int MAX_CELL_SIZE = 100_000;
+    static final int MIN_SURFACE_Y_FLOOR = -64;
+    static final int MIN_SURFACE_Y_CEILING = 320;
+    static final int MIN_SCAN_ATTEMPTS = 1;
+    static final int MAX_SCAN_ATTEMPTS = 500;
+
     private final String worldName;
     private int originX;
     private int originZ;
     private final int cellSize;
     private final int minSurfaceY;
     private final int maxScanAttempts;
-    private final boolean metricsEnabled;
 
     public PluginConfig(FileConfiguration config) {
-        this.worldName = config.getString("origin.world", "world");
+        String configuredWorld = config.getString("origin.world", "world");
+        this.worldName = (configuredWorld == null || configuredWorld.isBlank()) ? "world" : configuredWorld;
         this.originX = config.getInt("origin.x", 0);
         this.originZ = config.getInt("origin.z", 0);
-        this.cellSize = Math.max(50, config.getInt("cell-size", 500));
-        this.minSurfaceY = config.getInt("safety.min-surface-y", 63);
-        this.maxScanAttempts = config.getInt("safety.max-scan-attempts", 50);
-        this.metricsEnabled = config.getBoolean("metrics.enabled", true);
+        this.cellSize = clamp(config.getInt("cell-size", 500), MIN_CELL_SIZE, MAX_CELL_SIZE);
+        this.minSurfaceY = clamp(config.getInt("safety.min-surface-y", 63),
+                MIN_SURFACE_Y_FLOOR, MIN_SURFACE_Y_CEILING);
+        // A value below 1 would send every player straight to the fallback location.
+        this.maxScanAttempts = clamp(config.getInt("safety.max-scan-attempts", 50),
+                MIN_SCAN_ATTEMPTS, MAX_SCAN_ATTEMPTS);
+    }
+
+    private static int clamp(int value, int min, int max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     public String getWorldName() {
@@ -55,9 +68,5 @@ public class PluginConfig {
 
     public int getMaxScanAttempts() {
         return maxScanAttempts;
-    }
-
-    public boolean isMetricsEnabled() {
-        return metricsEnabled;
     }
 }

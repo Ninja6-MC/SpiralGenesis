@@ -2,10 +2,10 @@ package com.ninja6.spiralgenesis.commands;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
-import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.UUID;
+import java.util.logging.Level;
 
 /**
  * Administrative /sgen command suite for SpiralGenesis.
@@ -134,12 +135,20 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
-        int nextIndex = plugin.getDataStorage().getCurrentIndex();
+        SpawnManager spawnManager = plugin.getSpawnManager();
+        if (spawnManager == null) {
+            sender.sendMessage(ChatColor.RED + "Spiral world is unavailable; cannot reassign. Check the console for details.");
+            return;
+        }
 
-        plugin.getSpawnManager().allocateNextSafeSpawn(nextIndex).thenAccept(res -> {
+        sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
+
+        spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(res -> {
             Bukkit.getScheduler().runTask(plugin, () -> {
-                plugin.getDataStorage().setCurrentIndex(res.index() + 1);
+                if (!target.isOnline()) {
+                    sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
+                    return;
+                }
                 plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN");
                 target.setRespawnLocation(res.location(), true);
                 target.teleportAsync(res.location()).thenAccept(success -> {
@@ -147,7 +156,26 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                             res.index() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                 });
             });
+        }).exceptionally(ex -> {
+            plugin.getLogger().log(Level.SEVERE, "Failed to reassign " + target.getName(), ex);
+            sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");
+            return null;
         });
+    }
+
+    /**
+     * Resolves a player name to a UUID without blocking the server thread.
+     *
+     * <p>{@code Bukkit.getOfflinePlayer(String)} can issue a synchronous profile lookup
+     * against Mojang's API, so it is not usable from a command handler. Online players and
+     * previously recorded assignments cover every name this command can act on.
+     */
+    private UUID resolveUuid(String name) {
+        Player online = Bukkit.getPlayerExact(name);
+        if (online != null) {
+            return online.getUniqueId();
+        }
+        return plugin.getDataStorage().findByName(name);
     }
 
     private void handleTp(CommandSender sender, String[] args) {
@@ -161,14 +189,17 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
-        UUID uuid = target.getUniqueId();
-        if (!plugin.getDataStorage().hasSpawn(uuid)) {
+        UUID uuid = resolveUuid(args[1]);
+        if (uuid == null || !plugin.getDataStorage().hasSpawn(uuid)) {
             sender.sendMessage(ChatColor.RED + "Player " + args[1] + " has no recorded genesis spawn.");
             return;
         }
 
         Location loc = plugin.getDataStorage().getSpawn(uuid);
+        if (loc == null) {
+            sender.sendMessage(ChatColor.RED + "That plot's world is not currently loaded.");
+            return;
+        }
         player.teleportAsync(loc).thenAccept(success -> {
             player.sendMessage(ChatColor.GREEN + "Teleported to " + args[1] + "'s genesis spawn.");
         });
@@ -180,18 +211,22 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
-        UUID uuid = target.getUniqueId();
-        if (!plugin.getDataStorage().hasSpawn(uuid)) {
+        UUID uuid = resolveUuid(args[1]);
+        StoredSpawn record = uuid == null ? null : plugin.getDataStorage().getRecord(uuid);
+        if (record == null) {
             sender.sendMessage(ChatColor.RED + "Player " + args[1] + " has no recorded genesis spawn.");
             return;
         }
 
-        Location loc = plugin.getDataStorage().getSpawn(uuid);
+        // Reported from the stored record so info still works when the world is unloaded.
         sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Info: " + args[1] + " ===");
         sender.sendMessage(ChatColor.YELLOW + "UUID: " + ChatColor.WHITE + uuid);
+        sender.sendMessage(ChatColor.YELLOW + "Client: " + ChatColor.WHITE + record.clientType());
+        sender.sendMessage(ChatColor.YELLOW + "Spiral Index: " + ChatColor.WHITE + record.index()
+                + ChatColor.GRAY + " (grid " + record.gridU() + ", " + record.gridV() + ")");
         sender.sendMessage(ChatColor.YELLOW + "Spawn Location: " + ChatColor.WHITE +
-                loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ() + " (" + (loc.getWorld() != null ? loc.getWorld().getName() : "world") + ")");
+                (int) record.x() + ", " + (int) record.y() + ", " + (int) record.z()
+                + " (" + record.worldName() + ")");
     }
 
     private void handleReload(CommandSender sender) {

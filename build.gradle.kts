@@ -42,6 +42,11 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+
+    // compileOnly dependencies are not inherited by the test compile classpath.
+    // YamlConfiguration runs standalone (no server instance), so this is enough to
+    // cover configuration parsing and validation.
+    testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
 }
 
 tasks {
@@ -63,6 +68,12 @@ tasks {
         }
     }
 
+    javadoc {
+        // Prose docs are intentional here; missing @param/@return on self-describing
+        // accessors should not flood the build log.
+        (options as StandardJavadocDocletOptions).addStringOption("Xdoclint:none", "-quiet")
+    }
+
     test {
         useJUnitPlatform()
         testLogging {
@@ -73,8 +84,9 @@ tasks {
     shadowJar {
         archiveBaseName.set("SpiralGenesis")
         archiveClassifier.set("")
-        // Minimizing archive size
-        minimize()
+        // No runtime dependencies are bundled (every dependency is compileOnly),
+        // so minimize() would have nothing to strip and only risks removing
+        // classes that are resolved reflectively.
     }
 
     build {

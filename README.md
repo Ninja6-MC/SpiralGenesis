@@ -21,7 +21,7 @@ Instead of confining all players to a single crowded world spawn, SpiralGenesis 
   * **Java Edition (AuthMe-Reloaded)**: Teleportation is strictly gated until `/login` or `/register` is executed (preventing unauthenticated chunk loading / exploits).
 * **Per-Player Respawn Override**: Automatically enforces individual genesis coordinates on death respawns if no active bed or respawn anchor is present.
 * **Full Administrative Command Suite**: Powerful `/sgen` CLI to set origin coordinates, inspect player plots, manually relocate players, or reassign plots.
-* **Zero Main-Thread Latency**: Built with asynchronous Paper API chunk and heightmap probing to prevent server lag spikes.
+* **Tick-Friendly Allocation**: Chunks are loaded through Paper's asynchronous API and each candidate cell is probed on its own tick, so terrain scanning never stalls the server. Storage writes are coalesced and flushed off the main thread.
 
 ---
 
@@ -51,6 +51,9 @@ The sequence progresses in expanding clockwise rings ($1, 1, 2, 2, 3, 3, 4, 4 \d
 
 ## 📦 Installation & Setup
 
+**Requirements:** PaperMC (or a fork such as Purpur) and Java 21. Built against the
+1.20.4 API; verify on your exact server version before deploying to production.
+
 1. Download the latest release from [GitHub Releases](https://github.com/Ninja6-MC/SpiralGenesis/releases), [Modrinth](https://modrinth.com/plugin/spiralgenesis), or [Paper Hangar](https://hangar.papermc.io/Ninja6-MC/SpiralGenesis).
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` directory.
 3. (Optional) Install **Floodgate** for Bedrock cross-play and/or **AuthMe-Reloaded** for Java authentication.
@@ -69,20 +72,20 @@ origin:
   z: 0
 
 # Dimensions of each player's territory in blocks (N x N)
+# Clamped to 50-100000.
 cell-size: 500
-
-# Current global spiral sequence index
-current-spiral-index: 0
 
 # Safety probing rules
 safety:
+  # Minimum surface Y for a cell to be accepted. Clamped to -64..320.
   min-surface-y: 63
-  async-chunk-timeout-seconds: 10
-
-# Metrics telemetry (bStats)
-metrics:
-  enabled: true
+  # Candidate cells probed before falling back to a best-effort surface
+  # location. One probe per tick. Clamped to 1-500.
+  max-scan-attempts: 50
 ```
+
+> The live spiral progression index is persisted in `data.yml`
+> (`current-spiral-index`), not in `config.yml`.
 
 ---
 

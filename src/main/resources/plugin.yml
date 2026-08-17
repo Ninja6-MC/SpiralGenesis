@@ -4,8 +4,10 @@ main: com.ninja6.spiralgenesis.SpiralGenesisPlugin
 api-version: '${apiVersion}'
 description: ${description}
 author: Ninja6-MC
+# Names must match the dependency's own plugin.yml `name:` exactly, or the
+# load-order guarantee silently does not apply. Floodgate registers lowercase.
 softdepend:
-  - Floodgate
+  - floodgate
   - AuthMe
 
 commands:

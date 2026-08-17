@@ -14,16 +14,15 @@ origin:
 # The dimension of each player's square territory in blocks (e.g. 500 = 500x500 blocks)
 cell-size: 500
 
-# Current global progression index in the spiral sequence (Auto-incremented on allocation)
-current-spiral-index: 0
+# NOTE: the live spiral progression index is persisted in data.yml
+# (`current-spiral-index`), not here. Editing it in this file has no effect.
 
 # Terrain probing and safety rules
 safety:
   # Minimum surface Y elevation required for valid spawn (Default: 63, above sea level)
+  # Clamped to the world's build range at runtime.
   min-surface-y: 63
-  # Maximum search steps to attempt during recursive scan before aborting
+  # Maximum candidate cells to probe before giving up and using a best-effort
+  # surface location. Each attempt is spread across one server tick.
+  # Clamped to 1-500.
   max-scan-attempts: 50
-
-# Anonymous bStats metrics
-metrics:
-  enabled: true
