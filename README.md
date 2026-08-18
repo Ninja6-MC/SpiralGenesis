@@ -1,9 +1,18 @@
-# SpiralGenesis 🌀
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-transparent-dark.svg">
+    <img src="docs/assets/icon-transparent-light.svg" width="112" height="112" alt="">
+  </picture>
+</p>
 
-[![CI](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml/badge.svg)](https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml)
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Java 21](https://img.shields.io/badge/Java-21-orange.svg)](https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html)
-[![PaperMC](https://img.shields.io/badge/PaperMC-1.20%2B-green.svg)](https://papermc.io)
+<h1 align="center">SpiralGenesis</h1>
+
+<p align="center">
+  <a href="https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml"><img src="https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
+  <a href="https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html"><img src="https://img.shields.io/badge/Java-21-orange.svg" alt="Java 21"></a>
+  <a href="https://papermc.io"><img src="https://img.shields.io/badge/PaperMC-1.20%2B-green.svg" alt="PaperMC 1.20+"></a>
+</p>
 
 **Every player starts somewhere of their own.** Instead of dropping everyone at one crowded
 world spawn, SpiralGenesis gives each new player their own plot of land — 500×500 blocks by
@@ -223,3 +232,9 @@ The jar lands in `build/libs/`.
 Inspired by [Block4Block / DynamicSpawnPlugin](https://github.com/Block4Block/DynamicSpawnPlugin),
 which pioneered spiral-pattern spawn distribution for Paper servers. SpiralGenesis is an
 independent implementation.
+
+---
+
+<p align="center">
+  <sub>A <a href="https://github.com/Ninja6-MC">Ninja6</a> project.</sub>
+</p>
