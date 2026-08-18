@@ -103,6 +103,11 @@ jobs:
             seed: '1901'
             max_fallbacks: '3'
             min_surface_y: '55'
+            # 60, not the default 25: the fallback this entry exists to exercise appears
+            # around sample 50 on this seed. At 25 the world looks ordinary and the
+            # allowance is never reached, which would make the entry decorative.
+            samples: '60'
+            simulate_timeout: '420'
 
     steps:
       - name: Checkout Code
@@ -125,6 +130,8 @@ jobs:
           LEVEL_SEED: ${{ matrix.seed || 'spiralgenesis' }}
           MAX_FALLBACKS: ${{ matrix.max_fallbacks || '0' }}
           MIN_SURFACE_Y: ${{ matrix.min_surface_y || '63' }}
+          SIMULATE_SAMPLES: ${{ matrix.samples || '25' }}
+          SIMULATE_TIMEOUT: ${{ matrix.simulate_timeout || '240' }}
         run: |
           chmod +x .github/scripts/smoke-test.sh
           JAR="$(find dist -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
