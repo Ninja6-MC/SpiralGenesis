@@ -61,20 +61,31 @@ jobs:
       # Paper and Folia fail for different reasons; seeing both results is the point.
       fail-fast: false
       matrix:
+        # `java` is the version the SERVER runs on, not the one the plugin is built
+        # with: Minecraft 26.1 and newer refuse to boot on anything below Java 25.
+        # The jar itself stays Java 21 bytecode, which a Java 25 runtime accepts.
         include:
           - platform: paper
             minecraft: '1.20.4'
+            java: '21'
           - platform: folia
             minecraft: '1.20.4'
+            java: '21'
+          - platform: paper
+            minecraft: '26.2'
+            java: '25'
+          - platform: folia
+            minecraft: '26.2'
+            java: '25'
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Set up Java 21
+      - name: Set up Java ${{ matrix.java }}
         uses: actions/setup-java@v4
         with:
-          java-version: '21'
+          java-version: ${{ matrix.java }}
           distribution: 'temurin'
 
       - name: Download Plugin Artifact
