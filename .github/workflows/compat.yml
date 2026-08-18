@@ -1,0 +1,103 @@
+name: Latest Server Compatibility
+
+# The smoke matrix in ci.yml pins versions, which is what makes it a stable regression
+# gate - and also what makes it blind to releases that do not exist yet. When Mojang and
+# PaperMC ship a new version, nothing here changes, and the first sign that it broke
+# SpiralGenesis would be a user reporting it.
+#
+# This job resolves the newest Paper and Folia builds at run time and boots the plugin on
+# them. It is expected to break occasionally; that is the entire point. It never runs on a
+# pull request, so a Minecraft release cannot turn someone else's PR red.
+on:
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  latest:
+    name: ${{ matrix.platform }} (latest)
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [paper, folia]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Resolve the newest version this platform publishes, and the Java it needs.
+      # Minecraft 26.1 and newer refuse to boot below Java 25; older lines run on 21.
+      - name: Resolve Latest Version
+        id: resolve
+        run: |
+          VERSIONS_JSON="$(curl -fsSL "https://fill.papermc.io/v3/projects/${{ matrix.platform }}")"
+          # Newest first, skipping release candidates and pre-releases: those are
+          # published alongside stable builds and would otherwise be picked up as
+          # "latest" during a release cycle.
+          MC="$(jq -r '.versions | to_entries | map(.value[]) | map(select(test("-(rc|pre)") | not)) | .[0]' <<<"$VERSIONS_JSON")"
+
+          if [ -z "$MC" ] || [ "$MC" = "null" ]; then
+            echo "Could not resolve a latest version for ${{ matrix.platform }}."
+            exit 1
+          fi
+
+          MAJOR="${MC%%.*}"
+          if [ "$MAJOR" -ge 26 ] 2>/dev/null; then
+            JAVA=25
+          else
+            JAVA=21
+          fi
+
+          echo "minecraft=$MC" >> "$GITHUB_OUTPUT"
+          echo "java=$JAVA" >> "$GITHUB_OUTPUT"
+          echo "Latest ${{ matrix.platform }} is $MC, testing on Java $JAVA."
+
+      - name: Set up Java ${{ steps.resolve.outputs.java }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ steps.resolve.outputs.java }}
+          distribution: 'temurin'
+
+      # Java 21 builds the jar regardless of what the server needs to run it: the
+      # toolchain is pinned in build.gradle.kts, and Java 21 bytecode runs on Java 25.
+      - name: Set up Java 21 For The Build
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Ensure Scripts Are Executable
+        run: chmod +x ./gradlew .github/scripts/smoke-test.sh
+
+      - name: Build Plugin
+        run: ./gradlew shadowJar --no-daemon
+
+      # setup-java exports JAVA_HOME_<version>_X64 for every JDK it installs, so the
+      # server JDK is selected here in shell. Doing it through a step-level `env:`
+      # expression would depend on which context is resolvable at that point.
+      - name: Boot Latest Server
+        run: |
+          if [ "${{ steps.resolve.outputs.java }}" = "25" ]; then
+            export JAVA_HOME="$JAVA_HOME_25_X64"
+          else
+            export JAVA_HOME="$JAVA_HOME_21_X64"
+          fi
+          export PATH="$JAVA_HOME/bin:$PATH"
+          java -version
+          JAR="$(find build/libs -maxdepth 1 -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
+          .github/scripts/smoke-test.sh "${{ matrix.platform }}" "${{ steps.resolve.outputs.minecraft }}" "$JAR"
+
+      - name: Upload Server Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-log-${{ matrix.platform }}-latest
+          path: run-${{ matrix.platform }}/server.log
+          retention-days: 14
+          if-no-files-found: warn
