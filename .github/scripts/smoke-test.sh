@@ -30,6 +30,11 @@ LEVEL_SEED="${LEVEL_SEED:-spiralgenesis}"
 # rules are discarding whole cells and pushing players outward, which is the regression
 # this guards: a max-roughness or max-pit-depth too strict for real terrain.
 MAX_INDEX_RATIO="${MAX_INDEX_RATIO:-3.0}"
+# Allocations permitted to exhaust max-scan-attempts and take the fallback. Zero on
+# ordinary terrain, where a fallback means the thresholds are unusable. A hostile
+# world is deliberately run with a small allowance, because there the fallback is the
+# feature under test rather than a defect.
+MAX_FALLBACKS="${MAX_FALLBACKS:-0}"
 
 # Must track the safety.min-surface-y default in src/main/resources/config.yml; the
 # simulation runs against a stock config.
@@ -239,9 +244,12 @@ else
     fi
 
     # The fallback path bypasses the safety rules by design, so it firing at all on normal
-    # terrain means the thresholds are unusable.
-    if [[ "$FALLBACKS" != "0" ]]; then
-        fail "$FALLBACKS allocation(s) exhausted max-scan-attempts and used the fallback."
+    # terrain means the thresholds are unusable. MAX_FALLBACKS raises that bar only for the
+    # worlds chosen to be hard.
+    if (( FALLBACKS > MAX_FALLBACKS )); then
+        fail "$FALLBACKS allocation(s) exhausted max-scan-attempts and used the fallback, allowance is $MAX_FALLBACKS."
+    elif (( FALLBACKS > 0 )); then
+        echo "note: $FALLBACKS fallback allocation(s), within the allowance of $MAX_FALLBACKS."
     fi
 
     # Nothing may be placed below the configured floor. The simulation runs against a stock

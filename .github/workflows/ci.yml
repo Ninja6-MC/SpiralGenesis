@@ -53,7 +53,7 @@ jobs:
           retention-days: 7
 
   smoke:
-    name: Smoke Test (${{ matrix.platform }} ${{ matrix.minecraft }})
+    name: Smoke Test (${{ matrix.label }})
     needs: build
     runs-on: ubuntu-latest
 
@@ -65,18 +65,49 @@ jobs:
         # with: Minecraft 26.1 and newer refuse to boot on anything below Java 25.
         # The jar itself stays Java 21 bytecode, which a Java 25 runtime accepts.
         include:
-          - platform: paper
+          # Both ends of the declared range, plus the 1.21 series in the middle, on the
+          # default seed. These worlds are ordinary, so no allocation may take the fallback.
+          - label: 'paper 1.20.4'
+            platform: paper
             minecraft: '1.20.4'
             java: '21'
-          - platform: folia
+          - label: 'folia 1.20.4'
+            platform: folia
             minecraft: '1.20.4'
             java: '21'
-          - platform: paper
+          - label: 'paper 1.21.11'
+            platform: paper
+            minecraft: '1.21.11'
+            java: '21'
+          - label: 'folia 1.21.11'
+            platform: folia
+            minecraft: '1.21.11'
+            java: '21'
+          - label: 'paper 26.2'
+            platform: paper
             minecraft: '26.2'
             java: '25'
-          - platform: folia
+          - label: 'folia 26.2'
+            platform: folia
             minecraft: '26.2'
             java: '25'
+          # A deliberately hostile world. Seed 1901 is mountainous and is the only seed
+          # measured that exhausts a scan: it produced 1 fallback and a spawn at Y=62 across
+          # 60 samples, where the default seed produced none. It exists to exercise the
+          # fallback path, which every other entry proves is never reached, so it carries a
+          # small allowance and a lower floor rather than the zero-tolerance defaults.
+          - label: 'paper 1.20.4 mountainous'
+            platform: paper
+            minecraft: '1.20.4'
+            java: '21'
+            seed: '1901'
+            max_fallbacks: '3'
+            min_surface_y: '55'
+            # 60, not the default 25: the fallback this entry exists to exercise appears
+            # around sample 50 on this seed. At 25 the world looks ordinary and the
+            # allowance is never reached, which would make the entry decorative.
+            samples: '60'
+            simulate_timeout: '420'
 
     steps:
       - name: Checkout Code
@@ -95,6 +126,12 @@ jobs:
           path: dist
 
       - name: Boot Server and Verify Plugin Loads
+        env:
+          LEVEL_SEED: ${{ matrix.seed || 'spiralgenesis' }}
+          MAX_FALLBACKS: ${{ matrix.max_fallbacks || '0' }}
+          MIN_SURFACE_Y: ${{ matrix.min_surface_y || '63' }}
+          SIMULATE_SAMPLES: ${{ matrix.samples || '25' }}
+          SIMULATE_TIMEOUT: ${{ matrix.simulate_timeout || '240' }}
         run: |
           chmod +x .github/scripts/smoke-test.sh
           JAR="$(find dist -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
@@ -105,7 +142,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: server-log-${{ matrix.platform }}-${{ matrix.minecraft }}
+          name: server-log-${{ matrix.label }}
           path: run-${{ matrix.platform }}/server.log
           retention-days: 7
           if-no-files-found: warn
