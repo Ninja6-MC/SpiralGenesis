@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- SpiralGenesis master mark. AUTHORING FILE - geometry only.
+       See ../../../brand/ICON_PLAN.md for the rules this implements.
+
+       This file holds no colour and no plate. Every shipped variant is composed
+       from these two groups by scripts/export-icons.mjs, which supplies the paint
+       and the background at export time. Do not add a rect or a stroke colour here:
+       baking a plate in breaks the transparent variants and the square-crop variant
+       at once (ICON_PLAN section 5).
+
+       This file is <defs> only, so it deliberately renders as a blank 1024x1024
+       image. There is nothing to preview here; look at the generated variants.
+
+       Paint arrives through inherited presentation attributes on the wrapping <g>
+       that scripts/export-icons.mjs emits around this geometry - not through CSS
+       custom properties, which resvg and librsvg both gate by version. Inherited
+       attributes are SVG 1.1 and work everywhere. (ICON_PLAN describes the same
+       mechanism on a <use>; the inheritance is identical, the export just inlines
+       the geometry rather than referencing it, because resvg cannot select a node.)
+       Each shape leaves exactly one property unset, the one it should receive:
+         polyline  fill="none"   explicit, so it never picks up the dot colour;
+                   stroke        unset, inherited.
+         circle    stroke="none" explicit, or it gains an outline from the stroke;
+                   fill          unset, inherited.
+
+       GEOMETRY DERIVATION (#geo)
+       The pre-2026 mark overflowed the circle-crop safe zone: worst point was the
+       bottom-left vertex (134,890), whose miter projects to (110,914); with the old
+       translate(18,0) that is (128,914), r~556 against the 460 limit. Hangar and
+       Discord were clipping it in production.
+
+       Fixed in two steps, both baked into the coordinates below:
+         1. translate(18,-18). The 18 in x was already there. The -18 in y balances
+            the two diagonal miters - bottom-left 555.9 and top-right 530.5 both
+            become 543.1. Note this is a CROP-RADIUS correction, not a centring one:
+            the old mark's ink bbox was already y-centred on 512, because the top dot
+            (470,170) r=60 reached y=110. Balancing the miters is what buys scale.
+         2. scale 5/6 about centre, applied to COORDINATES ONLY. stroke-width stays
+            at 48 - the plugin-icon weight from ICON_PLAN section 7. Scaling the
+            group instead would drag stroke-width down to 40 and silently break that
+            rule. 5/6 is the largest clean factor under the 0.83686 limit, and it
+            lands every polyline coordinate on an integer: module 144 becomes 120,
+            offsets from centre become +/-60, 180, 300.
+       Worst point is now r 458.2, inside the 460 safe radius.
+
+       Two dot centres round by 1/3 unit (530.333 -> 530, 718.667 -> 719). That is
+       0.005px at a 16px render. -->
+  <defs>
+    <g id="geo">
+      <polyline points="452,572 452,452 572,452 572,692 332,692 332,332 692,332 692,812 212,812 212,212 812,212 812,572"
+                fill="none" stroke-width="48"
+                stroke-linecap="square" stroke-linejoin="miter" />
+      <circle cx="572" cy="530" r="50" stroke="none" />
+      <circle cx="452" cy="692" r="50" stroke="none" />
+      <circle cx="427" cy="332" r="50" stroke="none" />
+      <circle cx="692" cy="719" r="50" stroke="none" />
+      <circle cx="492" cy="212" r="50" stroke="none" />
+    </g>
+
+    <!-- SIMPLIFIED SMALL-SIZE CUT (#geo-small), for <=24px.
+         The org mark's small cut drops its accent dot and thickens the stroke. That
+         does not work here: SpiralGenesis's binding feature is arm spacing, not dot
+         clearance, and thickening the stroke CLOSES the 120-unit spacing rather than
+         helping it. Measured on #geo at 16px: stroke 0.75px, arm gap 1.12px, dot
+         clearance 0.72px - everything sub-pixel.
+
+         So this cut drops turns instead. One full turn plus an inner stub, at stroke
+         118 - the same weight as the org's small cut. The 48/92 split between plugin
+         and org marks exists because plugin icons are normally seen at 128px+; at
+         <=24px both marks are in the same regime, so both use one weight.
+
+         At 16px: stroke 1.84px, clearances 6.47px. Worst point r 459.6 of 460 - the
+         geometry budget here is spent, a heavier stroke breaches the safe zone.
+
+         The open centre is wide enough to keep an amber dot, so unlike the org mark
+         this cut does not have to give up the family accent at small size. Dot r=70
+         chosen against the real 16px render: r=90 is the geometric maximum but
+         crowds the aperture shut, r=60 goes faint. At 70 the dot is 2.19px with
+         2.14px clearance, balanced against the 1.84px stroke. -->
+    <g id="geo-small">
+      <polyline points="512,778 246,778 246,246 778,246 778,559"
+                fill="none" stroke-width="118"
+                stroke-linecap="square" stroke-linejoin="miter" />
+      <circle cx="512" cy="512" r="70" stroke="none" />
+    </g>
+  </defs>
+</svg>
