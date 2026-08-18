@@ -64,6 +64,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         return true;
     }
 
+    /**
+     * Records a spiral origin change. Moving the centre does not move anyone already
+     * allocated, so an admin reading the log later needs to know when it happened to
+     * explain why two players' plots do not line up on the same grid.
+     */
+    private void logCenterChange(CommandSender sender, int x, int z) {
+        plugin.getLogger().info(sender.getName() + " set the spiral center to (" + x + ", " + z
+                + "). Players already allocated keep their existing spawns.");
+    }
+
     private void handleSetCenter(CommandSender sender, String[] args) {
         if (args.length == 1) {
             if (!(sender instanceof Player player)) {
@@ -78,6 +88,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             plugin.getConfig().set("origin.z", z);
             plugin.saveConfig();
             sender.sendMessage(ChatColor.GREEN + "Spiral center set to your current position: (" + x + ", " + z + ")");
+            logCenterChange(sender, x, z);
         } else if (args.length == 3) {
             try {
                 int x = Integer.parseInt(args[1]);
@@ -88,6 +99,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 plugin.getConfig().set("origin.z", z);
                 plugin.saveConfig();
                 sender.sendMessage(ChatColor.GREEN + "Spiral center set to: (" + x + ", " + z + ")");
+                logCenterChange(sender, x, z);
             } catch (NumberFormatException e) {
                 sender.sendMessage(ChatColor.RED + "Invalid coordinate numbers.");
             }
@@ -130,6 +142,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         target.setRespawnLocation(loc, true);
         sender.sendMessage(ChatColor.GREEN + "Set spawn for " + target.getName() + " to: " +
                 loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
+        plugin.getLogger().info(sender.getName() + " manually set spawn for " + target.getName()
+                + " to (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ()
+                + ") in world '" + loc.getWorld().getName() + "'. The spiral index is unchanged.");
     }
 
     private void handleReassign(CommandSender sender, String[] args) {
@@ -165,6 +180,13 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 target.teleportAsync(res.location()).thenAccept(success -> {
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to index #" +
                             res.index() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                    // Logged after the teleport resolves so the line reflects what actually
+                    // happened; the spawn itself is already recorded either way.
+                    plugin.getLogger().info(sender.getName() + " reassigned " + target.getName()
+                            + " to plot #" + res.index() + " (grid " + res.gridU() + ", " + res.gridV()
+                            + ") at (" + res.location().getBlockX() + ", " + res.location().getBlockY()
+                            + ", " + res.location().getBlockZ() + ")"
+                            + (Boolean.TRUE.equals(success) ? "" : " - spawn recorded, but the teleport did not complete"));
                 });
             }, () -> sender.sendMessage(ChatColor.RED + target.getName()
                     + " went offline before reassignment completed."));
