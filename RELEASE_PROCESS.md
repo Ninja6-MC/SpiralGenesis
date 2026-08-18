@@ -99,6 +99,16 @@ Add `--dry-run` to run every check and print the summary without tagging or push
 scripts/release.sh 1.0.0 --dry-run
 ```
 
+On Windows, `scriptselease.ps1` takes the same arguments and runs the same script
+through Git Bash, so PowerShell works without opening a second shell:
+
+```powershell
+scriptselease.ps1 1.0.0 --dry-run
+```
+
+The checks live in `release.sh` only. The wrapper locates Git Bash and hands over, so
+there is one implementation rather than two that can drift apart.
+
 Tagging by hand still works and CI still gates it, but the failures then happen after the
 tag is public, when undoing them means deleting a tag that two registries have already
 seen.
