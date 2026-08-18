@@ -52,6 +52,39 @@ jobs:
           path: build/libs/*.jar
           retention-days: 7
 
+  icons:
+    name: Icon Export
+    runs-on: ubuntu-latest
+
+    # docs/assets is generated from docs/assets/icon-master.svg, but the outputs are
+    # committed because platforms and the README reference them directly. That means
+    # nothing stops someone hand-editing a generated file, or editing the master and
+    # forgetting to re-export - the "do not edit" headers are a request, not a check.
+    # This job makes it one, and it also runs the safe-zone gate on every PR, so an
+    # icon that would be clipped by a circular avatar crop cannot reach main.
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Regenerate Icons From The Master
+        run: node scripts/export-icons.mjs
+
+      - name: Fail If The Committed Artwork Drifted
+        run: |
+          if git diff --quiet -- docs/assets; then
+            echo "docs/assets matches what the master produces."
+            exit 0
+          fi
+          echo "::error::docs/assets does not match scripts/export-icons.mjs output."
+          echo "Run 'node scripts/export-icons.mjs' and commit the result."
+          git diff --stat -- docs/assets
+          exit 1
+
   smoke:
     name: Smoke Test (${{ matrix.label }})
     needs: build
