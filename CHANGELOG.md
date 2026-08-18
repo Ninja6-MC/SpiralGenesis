@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `/sgen reassign`, `/sgen setcenter` and `/sgen setspawn` now log what they did to the
+  server console: who ran the command, the target, and the resulting plot, grid cell and
+  coordinates. Previously only the actor's own chat saw the outcome, so a spawn change
+  left no trace an admin could read afterwards.
+
 ## [0.9.0] - 2026-08-18
 
 First published build. Everything below has been in the repository since the initial
