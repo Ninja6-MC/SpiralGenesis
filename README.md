@@ -21,7 +21,9 @@ thread, and the player keeps that spot as their respawn point for good.
 
 ## Quick start
 
-1. **Requirements:** Paper 1.20+, a Paper fork such as Purpur, or Folia. Java 21.
+1. **Requirements:** Paper 1.20 or newer, a Paper fork such as Purpur, or Folia.
+   Java 21 for Minecraft 1.20 and 1.21; Minecraft 26.1 and newer require the server
+   to run on Java 25, which is Mojang's requirement rather than this plugin's.
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
 3. Start the server. `plugins/SpiralGenesis/config.yml` is generated on first run.
 4. Stand where you want the spiral to begin and run `/sgen setcenter`.
@@ -155,14 +157,20 @@ in the [admin guide](docs/ADMIN_GUIDE.md).
 
 | | Supported |
 | :--- | :--- |
-| Paper, Purpur and other Paper forks | ✅ 1.20+ |
-| Folia | ✅ |
+| Paper, Purpur and other Paper forks | ✅ 1.20.x, 1.21.x, 26.x |
+| Folia | ✅ 1.20.x, 1.21.x, 26.x |
 | Spigot / CraftBukkit | ❌ — allocation needs Paper's async chunk and teleport APIs |
 | Fabric / NeoForge | ❌ — mod loaders, not plugin platforms |
 | Velocity / BungeeCord | ❌ — proxies have no world to allocate in; install on the backend servers |
 
-Built against the 1.20.4 API. Newer Paper releases have worked in testing, but verify on
-your exact version before putting it on a live server.
+Built against the 1.20.4 API, which newer servers still accept. CI boots the plugin on
+Paper and Folia at both ends of the supported range - 1.20.4 and 26.2 - and runs allocation
+against real generated terrain on each, so the range is checked on every change rather than
+assumed.
+
+Minecraft 26.1 and newer refuse to start on anything below **Java 25**. That is a server
+requirement from Mojang, not this plugin: the jar is Java 21 bytecode, which a Java 25
+runtime runs unchanged.
 
 ---
 

@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Minecraft 26.1 and 26.2 are now supported and declared on both registries. CI boots the
+  plugin on Paper and Folia at 26.2 as well as 1.20.4 and runs allocation against real
+  terrain on each, so the supported range is verified rather than assumed. Note that
+  Minecraft 26.1 and newer require the **server** to run on Java 25; the plugin itself is
+  unchanged Java 21 bytecode.
 - `/sgen reassign`, `/sgen setcenter` and `/sgen setspawn` now log what they did to the
   server console: who ran the command, the target, and the resulting plot, grid cell and
   coordinates. Previously only the actor's own chat saw the outcome, so a spawn change

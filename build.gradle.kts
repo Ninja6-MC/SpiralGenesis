@@ -84,7 +84,7 @@ hangarPublish {
                 jar.set(tasks.shadowJar.flatMap { it.archiveFile })
                 platformVersions.set(
                     providers.gradleProperty("hangarPlatformVersions")
-                        .orElse("1.20.x,1.21.x")
+                        .orElse("1.20.x,1.21.x,26.1,26.1.1,26.1.2,26.2")
                         .map { versions -> versions.split(",").map(String::trim).filter(String::isNotEmpty) }
                 )
             }
