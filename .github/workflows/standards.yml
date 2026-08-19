@@ -1,0 +1,14 @@
+# The checks live in Ninja6-MC/.github and are maintained in one place; this file is
+# only the caller. Copied from that repo's templates/standards-stub.yml.
+name: Standards
+
+on: pull_request
+
+# NOTE the doubled `.github`. A reusable workflow is referenced as
+# {owner}/{repo}/.github/workflows/{file}@{ref} - and here the repo is itself named
+# `.github`, so the segment appears twice. Written once it resolves to the path
+# `workflows/standards.yml`, which is not a valid workflow location, and the run fails
+# at startup with no jobs and no useful error.
+jobs:
+  standards:
+    uses: Ninja6-MC/.github/.github/workflows/standards.yml@main
