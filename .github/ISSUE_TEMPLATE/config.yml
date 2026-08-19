@@ -1,0 +1,15 @@
+# This repository defines its own issue templates, and issue templates inherit per
+# DIRECTORY rather than per file - so defining any of them means inheriting none of the
+# org set, config.yml included. Without this file blank issues stay enabled and the
+# security contact link is absent from the chooser. See N6-REPO-02.
+#
+# Adapted from Ninja6-MC/.github: the security link points at this repository's own
+# SECURITY.md, which differs from the org policy.
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/Ninja6-MC/SpiralGenesis/blob/main/SECURITY.md
+    about: Exploits and vulnerabilities go through a private advisory, never a public issue.
+  - name: Question or discussion
+    url: https://github.com/Ninja6-MC
+    about: Not sure it is a bug? Ask before filing.
