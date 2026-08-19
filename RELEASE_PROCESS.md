@@ -99,11 +99,11 @@ Add `--dry-run` to run every check and print the summary without tagging or push
 scripts/release.sh 1.0.0 --dry-run
 ```
 
-On Windows, `scriptselease.ps1` takes the same arguments and runs the same script
+On Windows, `scripts\release.ps1` takes the same arguments and runs the same script
 through Git Bash, so PowerShell works without opening a second shell:
 
 ```powershell
-scriptselease.ps1 1.0.0 --dry-run
+scripts\release.ps1 1.0.0 --dry-run
 ```
 
 The checks live in `release.sh` only. The wrapper locates Git Bash and hands over, so
