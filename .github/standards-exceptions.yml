@@ -6,17 +6,5 @@
 
 repo: SpiralGenesis
 
-exceptions:
-  - rule: N6-CI-01
-    type: transitional
-    reason: >
-      Still runs a full local copy of the DCO workflow rather than calling the shared
-      reusable one. Swapping to the stub renames the reported check from `Check Sign-off`
-      to `dco / Check Sign-off`, and this repository has a required-status-check list, so
-      the swap has to be sequenced against it (N6-CI-03) rather than bundled with
-      unrelated changes. `Check Sign-off` is not currently in that list, so the rename
-      blocks nothing today - it is separated for reviewability, not because it is unsafe.
-      A follow-up pull request makes the swap and removes this entry.
-    approved_by: bharathasl74185@gmail.com
-    approved_on: 2026-08-19
-    revisit_by: 2026-09-19
+# This repository has no exceptions: it conforms to every rule in the register.
+exceptions: []
