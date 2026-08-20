@@ -1,0 +1,22 @@
+# Actions are pinned to commit SHAs, not tags, so nothing updates them on its own. That
+# is the trade the pinning makes: a tag cannot be repointed under us, but a pin goes
+# stale in silence. This is the other half of it.
+#
+# Actions only. Gradle dependencies are deliberately not covered here - a server plugin
+# is compiled against a specific API version and a bot bumping that is a compatibility
+# question, not a security one.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      # Conventional Commits, per CONTRIBUTING.md 3.5. Dependabot does not sign off its
+      # commits, so its pull requests fail DCO and have to be signed off on rebase.
+      prefix: ci
+    labels:
+      - dependencies
+    open-pull-requests-limit: 5
