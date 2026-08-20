@@ -9,7 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Allocation for Java players is no longer gated on AuthMe specifically. It now waits for
+  the player's first action that no other plugin cancelled, which is how *every* login
+  plugin enforces its limbo, so AuthMe, nLogin, LibreLogin, OpeNLogin and anything else are
+  all covered without SpiralGenesis depending on any of them. Previously a server running
+  any login plugin other than AuthMe silently took the "no login plugin" path and allocated
+  players while they were still held in limbo, permanently burning a spiral index per
+  connection. AuthMe remains a fast path where installed, allocating on its login event
+  instead of the next action, and a failure to bind its API now logs a warning and falls
+  through to the generic gate rather than breaking plugin enable.
+
 ### Added
+- `allocation.trigger` chooses when Java players are allocated: `FIRST_ACTION` (default,
+  gates behind any login plugin) or `ON_JOIN` (for online-mode servers, and networks that
+  authenticate at the proxy or on a separate backend).
+- `allocation.action-timeout-seconds` (default 120) allocates a held player anyway if
+  nothing they do is ever uncancelled, so an unreadable limbo delays players rather than
+  stranding them. Logged at warning when it fires. Set to `0` to wait indefinitely.
+- The startup log now states which allocation trigger is in effect and which known login
+  plugins were detected, and warns when `ON_JOIN` is set on a server that has one.
 - Minecraft 26.1 and 26.2 are now supported and declared on both registries. CI boots the
   plugin on Paper and Folia at 26.2 as well as 1.20.4 and runs allocation against real
   terrain on each, so the supported range is verified rather than assumed. Note that

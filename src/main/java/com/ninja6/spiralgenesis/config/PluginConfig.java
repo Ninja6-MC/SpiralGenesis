@@ -22,6 +22,9 @@ public class PluginConfig {
     static final int MAX_PIT_DEPTH = 128;
     static final int MIN_ROUGHNESS = 1;
     static final int MAX_ROUGHNESS = 128;
+    /** Below this the backstop could fire before a player has finished typing a password. */
+    static final int MIN_ACTION_TIMEOUT = 15;
+    static final int MAX_ACTION_TIMEOUT = 3600;
 
     private final String worldName;
     private int originX;
@@ -35,6 +38,8 @@ public class PluginConfig {
     private final int heightCeiling;
     private final int maxPitDepth;
     private final int maxRoughness;
+    private final AllocationTrigger allocationTrigger;
+    private final int actionTimeoutSeconds;
 
     public PluginConfig(FileConfiguration config) {
         String configuredWorld = config.getString("origin.world", "world");
@@ -61,6 +66,14 @@ public class PluginConfig {
                 MIN_PIT_DEPTH, MAX_PIT_DEPTH);
         this.maxRoughness = clamp(config.getInt("safety.max-roughness", 12),
                 MIN_ROUGHNESS, MAX_ROUGHNESS);
+
+        this.allocationTrigger = AllocationTrigger.parse(
+                config.getString("allocation.trigger"), AllocationTrigger.FIRST_ACTION);
+        // 0 disables the backstop entirely, so it is preserved rather than clamped up.
+        int configuredTimeout = config.getInt("allocation.action-timeout-seconds", 120);
+        this.actionTimeoutSeconds = configuredTimeout <= 0
+                ? 0
+                : clamp(configuredTimeout, MIN_ACTION_TIMEOUT, MAX_ACTION_TIMEOUT);
     }
 
     private static int clamp(int value, int min, int max) {
@@ -121,5 +134,14 @@ public class PluginConfig {
 
     public int getMaxRoughness() {
         return maxRoughness;
+    }
+
+    public AllocationTrigger getAllocationTrigger() {
+        return allocationTrigger;
+    }
+
+    /** Seconds before the gate opens regardless, or 0 to wait indefinitely. */
+    public int getActionTimeoutSeconds() {
+        return actionTimeoutSeconds;
     }
 }

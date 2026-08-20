@@ -38,8 +38,11 @@ thread, and the player keeps that spot as their respawn point for good.
 4. Stand where you want the spiral to begin and run `/sgen setcenter`.
 5. That's it. The next player to join gets plot #1.
 
-Optional: install **Floodgate** if you run Bedrock cross-play, and/or **AuthMe-Reloaded**
-if your Java players log in with a password. SpiralGenesis detects both automatically.
+Optional: install **Floodgate** if you run Bedrock cross-play. If your Java players log in
+with a password, any login plugin works (AuthMe, nLogin, LibreLogin and the rest) with no
+configuration: SpiralGenesis waits for the player to be released from limbo before placing
+them. On an online-mode server, or a network authenticating at the proxy, set
+`allocation.trigger: ON_JOIN` to place players the moment they connect.
 
 > **Pregenerate your world first.** Allocation generates chunks as it searches. On a fresh
 > world that is fine, but a pregenerated area makes first joins near-instant. See
@@ -58,8 +61,9 @@ if your Java players log in with a password. SpiralGenesis detects both automati
 * **Respawns at home.** Die without a bed or anchor and you return to your own plot, not to
   world spawn.
 * **Cross-play aware.** Bedrock players (Geyser/Floodgate) are placed the moment they join.
-  Java players behind AuthMe are held until `/login` or `/register` completes, so nobody
-  loads chunks before authenticating.
+  Java players behind any login plugin are held until they authenticate, so nobody burns a
+  plot before proving who they are. This works without naming a login plugin, so it covers
+  AuthMe, nLogin, LibreLogin and anything else.
 * **Doesn't stall the server.** Chunks load through Paper's async API and each candidate
   spot is checked on its own tick. Saves are batched off the main thread.
 * **Runs on Folia.** The same jar uses region, entity and async schedulers throughout.
@@ -197,8 +201,12 @@ the startup log for `Could not find target world`.
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.
 
-**AuthMe players get placed before logging in.** Make sure AuthMe is installed and loading;
-without it SpiralGenesis falls back to placing players on join.
+**Players get placed before logging in.** Check `allocation.trigger` is `FIRST_ACTION`, not
+`ON_JOIN`. The startup log states which trigger is active and which login plugins it saw.
+
+**Players never get placed.** Something is cancelling every action they take, so the gate
+never opens. The console warns when the `action-timeout-seconds` backstop fires; if you see
+that repeatedly, an anti-cheat or region plugin is the usual cause.
 
 **Someone landed somewhere terrible.** Run `/sgen simulate 50` — the per-rule rejection
 breakdown usually shows the rule that needs loosening, most often `min-surface-y` or

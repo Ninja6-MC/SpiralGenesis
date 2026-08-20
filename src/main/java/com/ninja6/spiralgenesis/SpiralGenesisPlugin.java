@@ -4,7 +4,9 @@ import com.ninja6.spiralgenesis.commands.SpiralCommand;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.hook.AuthMeHook;
 import com.ninja6.spiralgenesis.hook.FloodgateHook;
+import com.ninja6.spiralgenesis.config.AllocationTrigger;
 import com.ninja6.spiralgenesis.listeners.AuthMeHookListener;
+import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.DataStorage;
@@ -15,6 +17,7 @@ import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +33,18 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private SpawnManager spawnManager;
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
+    private PlayerActionGateListener actionGate;
+
+    /**
+     * Login plugins this project is aware of, for reporting only.
+     *
+     * <p>Never branched on. The gate works by observing that <em>something</em> is holding
+     * the player, which is what lets it cover login plugins not on this list, including
+     * ones that do not exist yet. The list exists so an administrator can read which mode
+     * was chosen out of the startup log instead of inferring it from player behaviour.
+     */
+    private static final List<String> KNOWN_LOGIN_PLUGINS = List.of(
+            "AuthMe", "nLogin", "LibreLogin", "OpeNLogin", "UserLogin", "JPremium");
 
     /** Players with an allocation currently in flight; guards against double assignment. */
     private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
@@ -48,12 +63,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         initSpawnManager();
 
         // Register event listeners
-        getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this), this);
+        this.actionGate = new PlayerActionGateListener(this, this::handlePlayerFirstJoin,
+                () -> pluginConfig.getActionTimeoutSeconds());
+        getServer().getPluginManager().registerEvents(actionGate, this);
+        getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this, actionGate), this);
 
-        if (authMeHook.isInstalled()) {
-            getLogger().info("Detected AuthMe-Reloaded! Enabling authentication-gated spawn listener.");
-            getServer().getPluginManager().registerEvents(new AuthMeHookListener(this), this);
-        }
+        registerAuthMeAdapter();
+        reportAllocationTrigger();
 
         if (floodgateHook.isInstalled()) {
             getLogger().info("Detected Geyser/Floodgate! Enabling Bedrock auto-authentication hooks.");
@@ -76,6 +92,46 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             dataStorage.shutdown();
         }
         getLogger().info("SpiralGenesis disabled.");
+    }
+
+    /**
+     * Registers the AuthMe fast path, if AuthMe is present.
+     *
+     * <p>Optional in the strong sense: {@link AuthMeHookListener} names AuthMe's event
+     * classes directly, so registering it resolves them, and a version whose events have
+     * moved would throw here. Allocation does not depend on this succeeding - the action
+     * gate covers AuthMe like any other login plugin - so a failure is reported and
+     * swallowed rather than taking the whole plugin's enable down with it.
+     */
+    private void registerAuthMeAdapter() {
+        if (!authMeHook.isInstalled()) {
+            return;
+        }
+        try {
+            getServer().getPluginManager().registerEvents(new AuthMeHookListener(this), this);
+            getLogger().info("Detected AuthMe-Reloaded; allocating on its login event.");
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "AuthMe is installed but its API could not be bound. "
+                    + "Falling back to the generic action gate.", t);
+        }
+    }
+
+    /** States which gating mode is in effect, and why, while the log is still readable. */
+    private void reportAllocationTrigger() {
+        List<String> found = KNOWN_LOGIN_PLUGINS.stream()
+                .filter(name -> getServer().getPluginManager().getPlugin(name) != null)
+                .toList();
+        String detected = found.isEmpty() ? "none detected" : String.join(", ", found);
+
+        if (pluginConfig.getAllocationTrigger() == AllocationTrigger.ON_JOIN) {
+            getLogger().info("Allocation trigger: ON_JOIN (login plugins: " + detected + ").");
+            if (!found.isEmpty()) {
+                getLogger().warning("ON_JOIN allocates before " + detected + " has authenticated "
+                        + "anyone. Use FIRST_ACTION unless this server authenticates elsewhere.");
+            }
+            return;
+        }
+        getLogger().info("Allocation trigger: FIRST_ACTION (login plugins: " + detected + ").");
     }
 
     public void reload() {

@@ -154,20 +154,44 @@ cannot fit that many without the search leaving the cell.
 2. `PlayerJoinEvent` fires. If the UUID is absent from `data.yml`, allocation runs and the
    player is teleported to the result.
 
-### Java behind AuthMe-Reloaded
+### Java (`allocation.trigger: FIRST_ACTION`, the default)
 
-1. Java client connects; AuthMe holds the player in limbo at its own lobby.
-2. Player runs `/register <password> <password>` or `/login <password>`.
-3. AuthMe's `RegisterEvent` / `LoginEvent` fires. If the UUID is absent from `data.yml`,
-   allocation runs, coordinates are saved, and the player is teleported.
-4. Returning players have their respawn point restored.
+1. Java client connects. `PlayerJoinEvent` fires and the player is **held**, not allocated.
+2. If a login plugin is installed it holds the player in limbo, cancelling their movement
+   and interactions. SpiralGenesis observes only uncancelled actions, so it waits.
+3. The player authenticates. Their actions stop being cancelled.
+4. Their first uncancelled movement, interaction or item drop allocates the plot, saves the
+   coordinates, and teleports them.
+5. Returning players have their respawn point restored.
 
-Gating on the AuthMe event rather than on join is deliberate: it stops unauthenticated
-sessions from loading chunks.
+Where no login plugin is installed, nothing cancels anything and step 4 happens on the
+player's first step, effectively immediately.
 
-### Java without AuthMe
+This is deliberately **not** tied to a particular login plugin. There is no shared
+authentication API in this ecosystem, but every login plugin enforces limbo the same way,
+by cancelling what an unauthenticated player does. Gating on that covers AuthMe, nLogin,
+LibreLogin, OpeNLogin and anything else, including plugins that do not exist yet.
+
+If AuthMe specifically is installed, its `RegisterEvent` / `LoginEvent` allocates the player
+the instant they authenticate rather than on their next action. This is a convenience, not a
+requirement: allocation is idempotent, so whichever path fires first wins, and if the AuthMe
+API cannot be bound the action gate still covers it. A warning is logged in that case.
+
+`allocation.action-timeout-seconds` (default 120) is the backstop. A player connected that
+long without producing a single uncancelled action is allocated anyway, with a warning. This
+prevents a login plugin whose limbo cannot be read from leaving players permanently
+unallocated. Set it to `0` to wait indefinitely instead.
+
+### Java (`allocation.trigger: ON_JOIN`)
 
 Allocation runs on `PlayerJoinEvent`, exactly as it does for Bedrock.
+
+Correct on an online-mode server, and on a network that authenticates at the proxy or on a
+separate backend server, because a player reaching this server is already authenticated.
+**Do not use it on a server running a login plugin locally**: it allocates before the player
+has proven anything, which permanently burns a spiral index per connection and races the
+login plugin's own position restore. SpiralGenesis logs a warning at startup if it sees a
+known login plugin while this trigger is set.
 
 ### Respawn
 
@@ -275,7 +299,8 @@ Worth running once on a staging server before going live:
 | Sequential allocation | Join with 4 test accounts in sequence. | Plots at (0,0), (N,0), (N,N), (0,N) offsets. |
 | Ocean skipping | Set the origin so a cell centre lands in deep ocean. | Cell skipped, next index allocated on dry land. |
 | Bedrock first join | Connect a Bedrock client via Geyser/Floodgate. | Allocated and teleported on join. |
-| AuthMe gating | Connect a Java client with AuthMe installed. | No allocation until `/register` or `/login`. |
+| Action gating | Connect a Java client with any login plugin installed. | No allocation until `/register` or `/login` completes. |
+| Gate backstop | Connect, then stand still past `action-timeout-seconds`. | Allocated anyway, with a warning in the console. |
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
 
@@ -293,7 +318,8 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | Rejection reasons | `manager/RejectionReason.java` | The rule names reported by simulation | §3 |
 | Simulation | `manager/SpawnSimulator.java` | `/sgen simulate` dry runs | §7 |
 | Join lifecycle | `listeners/PlayerSpawnListener.java` | First-join and respawn hooks | §5 |
-| Java auth gating | `listeners/AuthMeHookListener.java` | Defers allocation until AuthMe login | §5 |
+| Action gating | `listeners/PlayerActionGateListener.java` | Holds allocation until an uncancelled action | §5 |
+| AuthMe fast path | `listeners/AuthMeHookListener.java` | Optional: allocates on AuthMe login | §5 |
 | Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players | §5 |
 | AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5 |
 | Persistence | `storage/YamlDataStorage.java` | Per-player registry in `data.yml` | §6 |
