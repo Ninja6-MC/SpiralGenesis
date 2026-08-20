@@ -13,10 +13,41 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # Grouped, and that is the load-bearing part. Ungrouped, Dependabot opens one pull
+    # request per action, and the first batch on 2026-08-20 showed what that costs:
+    # `upload-artifact` was proposed for 7.0.1 while `download-artifact` stayed on 4.3.0,
+    # held back behind the pull-request cap. Those two majors have to match - ci.yml
+    # uploads in `build` and downloads in `smoke` - and `gradle/actions/setup-gradle` and
+    # `.../wrapper-validation` are the same repository and want the same commit.
+    #
+    # A per-action pull request also goes GREEN on that split, because its own run both
+    # uploads and downloads at the version under test. The incompatibility only appears
+    # once it merges alongside the stale pin. Grouping removes the failure rather than
+    # relying on CI to catch it.
+    #
+    # Majors are separated so a v4 -> v7 jump, which needs its release notes read, never
+    # rides along with routine patches.
+    groups:
+      actions:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+      actions-major:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - major
     commit-message:
-      # Conventional Commits, per CONTRIBUTING.md 3.5. Dependabot does not sign off its
-      # commits, so its pull requests fail DCO and have to be signed off on rebase.
+      # Conventional Commits, per CONTRIBUTING.md 3.5. Dependabot signs off its own
+      # commits - `Signed-off-by: dependabot[bot] <support@github.com>` - so its pull
+      # requests pass the DCO check unaided. Verified against seven of them, 2026-08-20.
       prefix: ci
     labels:
       - dependencies
+    # One pull request per group, so this is a backstop rather than a limit that
+    # shapes anything. It is what split the first batch when updates were ungrouped.
     open-pull-requests-limit: 5
