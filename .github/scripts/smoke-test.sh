@@ -136,6 +136,13 @@ mkfifo stdin.pipe
 # NOTE: this script is Linux-only in practice. Reading stdin from a FIFO crashes the JVM
 # on Windows - jansi's native DLL faults with an access violation during library loading,
 # before the server starts. Use scripts/dev-server.sh for local testing on Windows.
+#
+# On a Windows machine with WSL it does run, which is worth knowing before assuming a
+# change here can only be verified by pushing. Two things matter: install a Linux JDK
+# inside the distribution rather than reaching for the Windows one, and keep WORKDIR on
+# the distribution's own filesystem, because mkfifo does not work under /mnt.
+#
+#   wsl -d Ubuntu -e bash -lc #     "cd /root/smoke && ./smoke-test.sh paper 1.20.4 ./SpiralGenesis.jar ./TestLimbo.jar"
 java -Xms1G -Xmx2G -jar server.jar --nogui < stdin.pipe > server.log 2>&1 &
 SERVER_PID=$!
 
