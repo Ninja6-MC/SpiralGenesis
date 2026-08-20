@@ -4,6 +4,14 @@ name: Standards
 
 on: pull_request
 
+# The caller's top-level grant. A called workflow's permissions are CAPPED by what the
+# caller grants, so this has to cover what the reusable workflow asks for - it requests
+# `contents: read` and nothing more, so this is exactly enough. Do not tighten it to
+# `permissions: {}`: exceeding the cap is a hard `startup_failure` with no job and no
+# message anywhere in the API, the same failure already recorded against scorecard.yml.
+permissions:
+  contents: read
+
 # NOTE the doubled `.github`. A reusable workflow is referenced as
 # {owner}/{repo}/.github/workflows/{file}@{ref} - and here the repo is itself named
 # `.github`, so the segment appears twice. Written once it resolves to the path
