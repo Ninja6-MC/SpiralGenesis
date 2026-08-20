@@ -63,11 +63,26 @@ jobs:
       - name: Build Shadow JAR
         run: ./gradlew shadowJar --no-daemon
 
+      # The stand-in login plugin. Built here rather than in the smoke job so the fixture
+      # is compiled once against the same API as the plugin it is testing.
+      - name: Build Test Limbo Fixture
+        run: ./gradlew testLimboJar --no-daemon
+
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: SpiralGenesis-SNAPSHOT
           path: build/libs/*.jar
+          retention-days: 7
+
+      # A separate artifact, not folded into the one above: the smoke job picks the plugin
+      # jar out of a directory, and a second jar sitting beside it invites the wrong one
+      # being installed as the plugin under test.
+      - name: Upload Test Limbo Fixture
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: TestLimbo-fixture
+          path: build/test-fixtures/TestLimbo.jar
           retention-days: 7
 
   # Gate for the icons job below. A job-level `if` cannot see which files changed, and
@@ -181,6 +196,29 @@ jobs:
           # 60 samples, where the default seed produced none. It exists to exercise the
           # fallback path, which every other entry proves is never reached, so it carries a
           # small allowance and a lower floor rather than the zero-tolerance defaults.
+          # Allocation is gated behind a login plugin's limbo, and the three implementations
+          # read so far suppress player actions in materially different ways. TestLimbo
+          # reproduces each; these entries prove the gate reads all three on a live server,
+          # where handler ordering is decided by the server rather than by our source. They
+          # carry a small sample count because allocation is not what they are testing.
+          - label: 'paper 1.20.4 limbo pins (authme)'
+            platform: paper
+            minecraft: '1.20.4'
+            java: '21'
+            limbo_mode: 'PIN'
+            samples: '5'
+          - label: 'folia 1.20.4 limbo cancels (librelogin)'
+            platform: folia
+            minecraft: '1.20.4'
+            java: '21'
+            limbo_mode: 'CANCEL'
+            samples: '5'
+          - label: 'paper 1.21.11 limbo permits falling (openlogin)'
+            platform: paper
+            minecraft: '1.21.11'
+            java: '21'
+            limbo_mode: 'PIN_ALLOW_FALL'
+            samples: '5'
           - label: 'paper 1.20.4 mountainous'
             platform: paper
             minecraft: '1.20.4'
@@ -212,6 +250,13 @@ jobs:
           name: SpiralGenesis-SNAPSHOT
           path: dist
 
+      - name: Download Test Limbo Fixture
+        if: matrix.limbo_mode != ''
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: TestLimbo-fixture
+          path: fixture
+
       - name: Boot Server and Verify Plugin Loads
         env:
           LEVEL_SEED: ${{ matrix.seed || 'spiralgenesis' }}
@@ -219,11 +264,17 @@ jobs:
           MIN_SURFACE_Y: ${{ matrix.min_surface_y || '63' }}
           SIMULATE_SAMPLES: ${{ matrix.samples || '25' }}
           SIMULATE_TIMEOUT: ${{ matrix.simulate_timeout || '240' }}
+          LIMBO_MODE: ${{ matrix.limbo_mode || 'PIN' }}
         run: |
           chmod +x .github/scripts/smoke-test.sh
-          JAR="$(find dist -name '*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
+          JAR="$(find dist -name 'SpiralGenesis*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
+          LIMBO=""
+          if [ -n "${{ matrix.limbo_mode }}" ]; then
+            LIMBO="$(find fixture -name 'TestLimbo*.jar' | head -1)"
+            echo "Installing limbo fixture $LIMBO in mode $LIMBO_MODE"
+          fi
           echo "Testing with $JAR"
-          .github/scripts/smoke-test.sh "${{ matrix.platform }}" "${{ matrix.minecraft }}" "$JAR"
+          .github/scripts/smoke-test.sh "${{ matrix.platform }}" "${{ matrix.minecraft }}" "$JAR" $LIMBO
 
       - name: Upload Server Log
         if: always()

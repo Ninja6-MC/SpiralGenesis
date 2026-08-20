@@ -3,7 +3,12 @@
 # Boots a throwaway Paper or Folia server with the built plugin installed, waits for
 # startup to complete, then shuts it down and asserts the plugin loaded cleanly.
 #
-# Usage: smoke-test.sh <paper|folia> <mc-version> <path-to-plugin-jar>
+# Usage: smoke-test.sh <paper|folia> <mc-version> <path-to-plugin-jar> [test-limbo-jar]
+#
+# The optional fourth argument installs the TestLimbo fixture alongside the plugin. It
+# stands in for a real login plugin, reproducing what AuthMe, OpeNLogin and LibreLogin were
+# each observed to do, so the allocation gate is exercised against a second plugin competing
+# for the same events rather than against an assumption.
 #
 # Exits non-zero if the server fails to start, the plugin fails to enable, or the log
 # contains a plugin-related exception. The full server log is left at $WORKDIR/server.log
@@ -14,6 +19,11 @@ set -euo pipefail
 PLATFORM="${1:?usage: smoke-test.sh <paper|folia> <mc-version> <plugin-jar>}"
 MC_VERSION="${2:?missing minecraft version}"
 PLUGIN_JAR="${3:?missing plugin jar path}"
+LIMBO_JAR="${4:-}"
+# Which limbo the fixture imitates: PIN (AuthMe), PIN_ALLOW_FALL (OpeNLogin) or CANCEL
+# (LibreLogin). They suppress player actions in materially different ways, so the mode is a
+# matrix axis rather than a constant.
+LIMBO_MODE="${LIMBO_MODE:-PIN}"
 
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-90}"
@@ -106,6 +116,17 @@ PROPS
 cp "$PLUGIN_JAR" plugins/
 echo "Installed plugin: $(basename "$PLUGIN_JAR")"
 
+if [[ -n "$LIMBO_JAR" ]]; then
+    if [[ ! -f "$LIMBO_JAR" ]]; then
+        echo "::error::TestLimbo jar not found: $LIMBO_JAR"
+        exit 1
+    fi
+    cp "$LIMBO_JAR" plugins/
+    mkdir -p plugins/TestLimbo
+    echo "mode: $LIMBO_MODE" > plugins/TestLimbo/config.yml
+    echo "Installed limbo fixture: $(basename "$LIMBO_JAR") (mode $LIMBO_MODE)"
+fi
+
 # ---------------------------------------------------------------------------
 # Boot, wait for readiness, shut down
 # ---------------------------------------------------------------------------
@@ -164,6 +185,18 @@ if [[ "$booted" -eq 1 ]]; then
         fi
         sleep 1
     done
+
+    # Ask the fixture who is registered for the gate's events, and in what order. This is
+    # the one assertion here that a unit test cannot make: the gate reads a cancellation
+    # verdict, which is only meaningful if it runs after everything able to cancel, and that
+    # ordering is a property of the live server rather than of our source.
+    if [[ -n "$LIMBO_JAR" ]]; then
+        echo "testlimbo handlers" >&3 || true
+        for ((i = 0; i < 30; i++)); do
+            grep -q 'TESTLIMBO handlers PlayerInteractEvent' server.log 2>/dev/null && break
+            sleep 1
+        done
+    fi
 
     echo "Requesting graceful shutdown..."
     echo "stop" >&3 || true
@@ -263,6 +296,41 @@ else
     if awk -v r="$RATIO" -v m="$MAX_INDEX_RATIO" 'BEGIN { exit !(r > m) }'; then
         fail "Index burn ratio $RATIO exceeds $MAX_INDEX_RATIO - the safety thresholds are rejecting too much terrain."
     fi
+fi
+
+# ---------------------------------------------------------------------------
+# Allocation gate assertions
+# ---------------------------------------------------------------------------
+grep -q 'Allocation trigger: FIRST_ACTION' server.log     || fail "Plugin did not report the FIRST_ACTION allocation trigger at startup."
+
+if [[ -n "$LIMBO_JAR" ]]; then
+    grep -qi 'Enabling TestLimbo' server.log         || fail "The TestLimbo fixture never enabled, so the gate was not exercised."
+
+    grep -q "TESTLIMBO enabled mode=$LIMBO_MODE" server.log         || fail "TestLimbo did not start in mode $LIMBO_MODE."
+
+    # SpiralGenesis reports detected login plugins by name. TestLimbo is deliberately not on
+    # that list, which is the point: the gate must work against a plugin it has never heard
+    # of, so seeing "none detected" here alongside a working gate is the result we want.
+    grep -q 'Allocation trigger: FIRST_ACTION (login plugins: none detected)' server.log         || echo "note: startup line did not read 'none detected'; check the log."
+
+    for event in PlayerMoveEvent PlayerInteractEvent; do
+        LINE="$(grep -o "TESTLIMBO handlers $event .*" server.log | tail -1 || true)"
+        if [[ -z "$LINE" ]]; then
+            fail "TestLimbo never reported the handler order for $event."
+            continue
+        fi
+        echo "$LINE"
+
+        if [[ "$LINE" != *"SpiralGenesis@MONITOR"* ]]; then
+            fail "SpiralGenesis is not registered at MONITOR for $event; it cannot read a final cancellation verdict."
+        fi
+
+        # Everything able to suppress the action must be called before the gate reads it.
+        SG_POS="${LINE%%SpiralGenesis@MONITOR*}"
+        if [[ "$SG_POS" != *"TestLimbo@"* ]]; then
+            fail "SpiralGenesis runs before TestLimbo for $event; the gate would read a verdict that has not been cast yet."
+        fi
+    done
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then

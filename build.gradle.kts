@@ -35,6 +35,13 @@ repositories {
     maven("https://oss.sonatype.org/content/repositories/snapshots/")
 }
 
+// A stand-in login plugin, built as its own jar for the CI smoke test only. Kept in a
+// separate source set rather than under src/test so it compiles to a real, installable
+// plugin, and so it can never be picked up by shadowJar and shipped.
+sourceSets {
+    create("testLimbo")
+}
+
 dependencies {
     // PaperMC Server API (1.20.4 target, runtime compatible with 1.20.x - 1.21.x)
     compileOnly("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
@@ -57,6 +64,9 @@ dependencies {
 
     // In-process Bukkit server mock, for exercising allocation against a real World.
     testImplementation("com.github.seeseemelk:MockBukkit-v1.20:3.93.2")
+
+    // The stand-in login plugin compiles against the same server API and bundles nothing.
+    "testLimboCompileOnly"("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
 }
 
 // Hangar publication. Everything is driven by properties and the HANGAR_API_TOKEN
@@ -130,6 +140,21 @@ tasks {
         // No runtime dependencies are bundled (every dependency is compileOnly),
         // so minimize() would have nothing to strip and only risks removing
         // classes that are resolved reflectively.
+    }
+
+    /**
+     * Packages the stand-in login plugin. Deliberately not wired into `build`: it is only
+     * ever wanted by the smoke test, and building it by default would put a second,
+     * confusable jar in build/libs on every developer machine.
+     */
+    register<Jar>("testLimboJar") {
+        archiveBaseName.set("TestLimbo")
+        archiveClassifier.set("")
+        // Unversioned: the smoke test refers to this jar by name, and the fixture has no
+        // version of its own to track.
+        archiveVersion.set("")
+        destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
+        from(sourceSets["testLimbo"].output)
     }
 
     build {
