@@ -32,6 +32,19 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # `gradle/wrapper/gradle-wrapper.jar` is an executable committed to the repository
+      # and run by every job that calls ./gradlew, and no reviewer can read a diff of it.
+      # This checksums it against Gradle's published releases, which is the accepted
+      # answer - deleting the jar is not, the wrapper has to stay.
+      #
+      # Before anything that could execute it, and in every workflow that runs ./gradlew.
+      # Validating after the fact would prove only that the jar which already ran was the
+      # right one.
+      - name: Validate Gradle Wrapper
+        uses: gradle/actions/wrapper-validation@d9c87d481d55275bb5441eef3fe0e46805f9ef70 # v3.5.0
 
       # Resolve the newest version this platform publishes, and the Java it needs.
       # Minecraft 26.1 and newer refuse to boot below Java 25; older lines run on 21.
