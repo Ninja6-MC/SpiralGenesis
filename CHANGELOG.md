@@ -11,9 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Allocation for Java players is no longer gated on AuthMe specifically. It now waits for
-  the player's first action that no other plugin cancelled, which is how *every* login
-  plugin enforces its limbo, so AuthMe, nLogin, LibreLogin, OpeNLogin and anything else are
-  all covered without SpiralGenesis depending on any of them. Previously a server running
+  the player's first action that was not suppressed, which is how *every* login plugin
+  enforces its limbo, so AuthMe, nLogin, LibreLogin, OpeNLogin and anything else are all
+  covered without SpiralGenesis depending on any of them. Suppression is read in both the
+  forms these plugins use: an event cancelled outright, and a move whose destination was
+  rewritten back to its origin, which is how AuthMe pins a player without ever setting the
+  cancel flag. Previously a server running
   any login plugin other than AuthMe silently took the "no login plugin" path and allocated
   players while they were still held in limbo, permanently burning a spiral index per
   connection. AuthMe remains a fast path where installed, allocating on its login event

@@ -59,12 +59,13 @@ safety:
 # unaffected: Floodgate has already authenticated them on join, so they are always
 # allocated there.
 allocation:
-  # FIRST_ACTION - wait until the player does something no other plugin cancelled, then
+  # FIRST_ACTION - wait until the player does something that was not suppressed, then
   #                allocate. Login plugins (AuthMe, nLogin, LibreLogin and the rest) hold
-  #                unauthenticated players by cancelling what they do, so this gates behind
-  #                any of them without depending on a particular one. Where no login plugin
-  #                is installed nothing cancels anything and the first step allocates
-  #                immediately. (Default)
+  #                unauthenticated players by suppressing what they do - cancelling it, or
+  #                pinning them in place - so this gates behind any of them without
+  #                depending on a particular one. Where no login plugin is installed
+  #                nothing is suppressed and the first step allocates immediately.
+  #                (Default)
   # ON_JOIN      - allocate the moment the player joins. Correct on an online-mode server,
   #                and on a network authenticating at the proxy or on a separate backend,
   #                since the player reaching this server is already authenticated. Do not

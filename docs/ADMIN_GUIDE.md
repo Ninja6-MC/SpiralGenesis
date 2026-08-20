@@ -157,9 +157,9 @@ cannot fit that many without the search leaving the cell.
 ### Java (`allocation.trigger: FIRST_ACTION`, the default)
 
 1. Java client connects. `PlayerJoinEvent` fires and the player is **held**, not allocated.
-2. If a login plugin is installed it holds the player in limbo, cancelling their movement
-   and interactions. SpiralGenesis observes only uncancelled actions, so it waits.
-3. The player authenticates. Their actions stop being cancelled.
+2. If a login plugin is installed it holds the player in limbo, suppressing their movement
+   and interactions. SpiralGenesis observes only actions that arrive intact, so it waits.
+3. The player authenticates. Their actions stop being suppressed.
 4. Their first uncancelled movement, interaction or item drop allocates the plot, saves the
    coordinates, and teleports them.
 5. Returning players have their respawn point restored.
@@ -168,9 +168,22 @@ Where no login plugin is installed, nothing cancels anything and step 4 happens 
 player's first step, effectively immediately.
 
 This is deliberately **not** tied to a particular login plugin. There is no shared
-authentication API in this ecosystem, but every login plugin enforces limbo the same way,
-by cancelling what an unauthenticated player does. Gating on that covers AuthMe, nLogin,
-LibreLogin, OpeNLogin and anything else, including plugins that do not exist yet.
+authentication API in this ecosystem, but every login plugin enforces limbo by suppressing
+what an unauthenticated player does. Gating on that covers AuthMe, nLogin, LibreLogin,
+OpeNLogin and anything else, including plugins that do not exist yet.
+
+Suppression takes two forms and the gate reads both. Most actions are cancelled outright.
+Movement often is not: AuthMe pins the player by rewriting the move's destination back to
+its origin without ever setting the cancel flag. The gate therefore checks that a move
+actually changed the block the player occupies, rather than trusting that the event was
+delivered uncancelled.
+
+Two limitations follow from this, both minor. Clicking air cannot open the gate, because
+Bukkit reports every air interaction as cancelled regardless of who is listening; a block
+interaction works. And if AuthMe is configured with `AllowUnauthedMovement` enabled, an
+unauthenticated player really can walk, so movement stops being proof - the gate may open
+early on such a server. Set `allocation.trigger` deliberately if you run that
+configuration.
 
 If AuthMe specifically is installed, its `RegisterEvent` / `LoginEvent` allocates the player
 the instant they authenticate rather than on their next action. This is a convenience, not a

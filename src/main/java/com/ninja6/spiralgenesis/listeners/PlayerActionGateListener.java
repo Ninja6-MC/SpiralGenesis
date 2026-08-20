@@ -21,18 +21,28 @@ import java.util.function.IntSupplier;
  * Holds a player's allocation until they do something no other plugin cancelled.
  *
  * <p>Exists to gate allocation behind authentication without naming an authentication
- * plugin. Every login plugin in this ecosystem enforces its limbo by cancelling what an
- * unauthenticated player does, and none of them share an API, so the cancellation is the
- * only signal common to all of them. Listening at {@link EventPriority#MONITOR} with
- * {@code ignoreCancelled = true} reads the verdict after every other plugin has voted: if
- * anything is still holding the player, these handlers never run.
+ * plugin. None of them share an API, but all of them suppress what an unauthenticated
+ * player does, so suppression is the only signal common to all of them.
  *
- * <p>The inference is deliberately one-directional. An uncancelled action proves nobody is
- * holding the player; a cancelled one proves only that <em>something</em> objected, which
- * may be an anti-cheat or a region plugin rather than a login plugin. That is why several
- * unrelated actions are watched and any one of them releases: they would all have to be
- * suppressed at once for the gate to stay shut, and {@code action-timeout-seconds} bounds
- * even that.
+ * <p>They suppress in two different ways and both are read here, because reading only the
+ * first would leave the gate open on the most common login plugin of all:
+ *
+ * <ul>
+ *   <li><b>Cancelling.</b> Handled by listening at {@link EventPriority#MONITOR} with
+ *       {@code ignoreCancelled = true}, which reads the verdict after every other plugin
+ *       has voted. AuthMe cancels interaction and item drops this way, at {@code LOWEST}.
+ *   <li><b>Rewriting the outcome.</b> AuthMe's move handler runs at {@code HIGHEST} and
+ *       pins the player with {@code event.setTo(event.getFrom())}, never touching the
+ *       cancel flag. Such an event arrives here uncancelled, so {@link #onMove} compares
+ *       the destination against the origin rather than trusting that it was delivered.
+ * </ul>
+ *
+ * <p>The inference is deliberately one-directional. An action that survives intact proves
+ * nobody is holding the player; a suppressed one proves only that <em>something</em>
+ * objected, which may be an anti-cheat or a region plugin rather than a login plugin. That
+ * is why several unrelated actions are watched and any one of them releases: they would all
+ * have to be suppressed at once for the gate to stay shut, and
+ * {@code action-timeout-seconds} bounds even that.
  */
 public class PlayerActionGateListener implements Listener {
 
@@ -118,13 +128,18 @@ public class PlayerActionGateListener implements Listener {
     }
 
     /**
-     * Movement is the primary signal: it is what every login plugin cancels, and the one
-     * action a player cannot avoid producing once they are free.
+     * Movement is the primary signal: it is the one action a player cannot avoid producing
+     * once they are free.
      *
-     * <p>Compared at block granularity because the event also fires on head rotation, and
-     * limbo implementations generally permit looking around while pinning position. Testing
-     * the block the player occupies rather than any coordinate change keeps this trigger
-     * aligned with what those plugins actually cancel.
+     * <p>The destination is compared against the origin rather than taken on trust, which
+     * is what makes this correct against a limbo that pins by rewriting {@code getTo}
+     * instead of cancelling. Verified against AuthMe 5.6.0, whose {@code onPlayerMove}
+     * does exactly that at {@code HIGHEST}; by the time this runs, {@code getTo} has
+     * already been rewritten back to {@code getFrom} and no block has changed.
+     *
+     * <p>Block granularity rather than any coordinate change, because the event also fires
+     * on head rotation and limbo implementations generally permit looking around. It also
+     * matches how AuthMe itself decides a move is worth acting on.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
@@ -142,6 +157,11 @@ public class PlayerActionGateListener implements Listener {
         release(event.getPlayer(), "moved");
     }
 
+    /**
+     * Only block interactions can open the gate. {@link PlayerInteractEvent} denies its
+     * block result whenever there is no block, and {@code isCancelled} reads that field, so
+     * a click on air is indistinguishable from one a plugin vetoed and never arrives here.
+     */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
         if (pending.isEmpty()) {

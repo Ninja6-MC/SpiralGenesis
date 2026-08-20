@@ -5,6 +5,14 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockFace;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
+import org.bukkit.event.block.Action;
+import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -152,6 +160,87 @@ class PlayerActionGateListenerTest {
         server.getPluginManager().callEvent(new PlayerQuitEvent(player, "left"));
 
         assertFalse(gate.isPending(player.getUniqueId()));
+        assertEquals(List.of(), released);
+    }
+
+    /**
+     * Reproduces how AuthMe actually holds a player, which is not by cancelling.
+     *
+     * <p>Verified against {@code fr.xephi.authme.listener.PlayerListener} in the 5.6.0
+     * artifact this project compiles against: {@code onPlayerMove} is annotated
+     * {@code HIGHEST} and pins the player with {@code event.setTo(event.getFrom())}. It
+     * never calls {@code setCancelled}. {@code ignoreCancelled} therefore does nothing for
+     * movement, and the only thing standing between a held player and a burned spiral index
+     * is the gate comparing the destination it is finally handed against the origin.
+     */
+    private static final class PinningLimbo implements Listener {
+        @EventHandler(priority = EventPriority.HIGHEST)
+        public void onMove(PlayerMoveEvent event) {
+            event.setTo(event.getFrom());
+        }
+    }
+
+    @Test
+    @DisplayName("a move pinned with setTo, as AuthMe does it, leaves the player gated")
+    void pinnedMoveDoesNotRelease() {
+        server.getPluginManager().registerEvents(new PinningLimbo(), plugin);
+        PlayerMock player = server.addPlayer("Pinned");
+        gate.markPending(player, "JAVA");
+
+        // Uncancelled throughout: the destination is rewritten, not the cancel flag.
+        simulateMove(player, false);
+
+        assertTrue(gate.isPending(player.getUniqueId()),
+                "a player pinned in place has not proven anything");
+        assertEquals(List.of(), released);
+    }
+
+    /** A block interaction, the only interact shape that can arrive uncancelled. */
+    private PlayerInteractEvent blockInteract(PlayerMock player) {
+        Block block = world.getBlockAt(0, 63, 0);
+        block.setType(Material.STONE);
+        return new PlayerInteractEvent(player, Action.LEFT_CLICK_BLOCK, null, block, BlockFace.UP);
+    }
+
+    @Test
+    @DisplayName("an uncancelled block interaction releases the player")
+    void uncancelledInteractReleases() {
+        PlayerMock player = server.addPlayer("Clicker");
+        gate.markPending(player, "JAVA");
+
+        server.getPluginManager().callEvent(blockInteract(player));
+
+        assertEquals(List.of("Clicker"), released);
+    }
+
+    @Test
+    @DisplayName("a cancelled block interaction leaves the player gated")
+    void cancelledInteractDoesNotRelease() {
+        PlayerMock player = server.addPlayer("Blocked");
+        gate.markPending(player, "JAVA");
+
+        PlayerInteractEvent event = blockInteract(player);
+        event.setCancelled(true);
+        server.getPluginManager().callEvent(event);
+
+        assertTrue(gate.isPending(player.getUniqueId()));
+        assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("clicking air never releases, because Bukkit reports it as cancelled")
+    void airInteractCannotRelease() {
+        PlayerMock player = server.addPlayer("Waving");
+        gate.markPending(player, "JAVA");
+
+        // PlayerInteractEvent sets useInteractedBlock to DENY whenever there is no block,
+        // and isCancelled() reads that field, so an air click is indistinguishable from one
+        // a plugin vetoed. Recorded as a test because it bounds what the interact trigger
+        // can do: only block interactions can ever open the gate.
+        server.getPluginManager().callEvent(new PlayerInteractEvent(
+                player, Action.RIGHT_CLICK_AIR, null, null, null));
+
+        assertTrue(gate.isPending(player.getUniqueId()));
         assertEquals(List.of(), released);
     }
 
