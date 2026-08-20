@@ -13,6 +13,14 @@ safe zone, so a clipped icon cannot ship by accident.
 
 The rules these files implement live in `../../../brand/ICON_PLAN.md` (sibling repo).
 
+**This directory is hand-maintained; `assets/` at the repository root is not.** The two
+have opposite rules and similar names. `assets/` holds machine-synced copies of the
+organisation marks, delivered by pull request from `.github/workflows/sync-assets.yml` in
+the `brand` repository; its master is `src/ninja6-master.svg` there, and a hand edit made
+in `assets/` survives only until the next sync. This plugin's own artwork lives in this
+directory and is generated from `icon-master.svg` beside it. See `N6-REPO-03` in the org
+standards register.
+
 ## What is here
 
 | File | Variant | Used for |
