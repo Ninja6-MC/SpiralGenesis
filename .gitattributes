@@ -30,6 +30,13 @@ gradlew.bat     text eol=crlf
 *.md            text eol=lf
 *.mjs           text eol=lf
 
+# Two files that no extension-based pattern reaches. LICENSE is extensionless by
+# convention, and a pattern for .gitattributes has to name it literally. Both check out
+# CRLF without these lines - verified with `git ls-files --eol`, which reports the index
+# and working-tree endings separately. Grepping for CR does not reliably show this.
+LICENSE         text eol=lf
+.gitattributes  text eol=lf
+
 # Never apply end-of-line conversion to binaries.
 *.jar           binary
 *.png           binary
