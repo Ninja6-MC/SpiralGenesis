@@ -202,6 +202,66 @@ class PlayerActionGateListenerTest {
         return new PlayerInteractEvent(player, Action.LEFT_CLICK_BLOCK, null, block, BlockFace.UP);
     }
 
+    /**
+     * Reproduces OpeNLogin's limbo, which pins like AuthMe but deliberately lets a
+     * descending player through.
+     *
+     * <p>From {@code PlayerGeneralListeners.onPlayerMove}: it returns early when
+     * {@code from.getY() > to.getY()}, so gravity is not fought. An unauthenticated player
+     * who spawns in air therefore emits real, uncancelled, block-changing move events.
+     */
+    private static final class FallThroughLimbo implements Listener {
+        private boolean holding = true;
+
+        @EventHandler(priority = EventPriority.HIGH)
+        public void onMove(PlayerMoveEvent event) {
+            if (!holding) {
+                return; // Authenticated: the limbo stops interfering entirely.
+            }
+            if (event.getFrom().getY() > event.getTo().getY()) {
+                return; // Descending: left alone, exactly as OpeNLogin leaves it.
+            }
+            event.setTo(event.getFrom());
+        }
+    }
+
+    @Test
+    @DisplayName("falling through a limbo that permits it does not release the player")
+    void fallingDoesNotRelease() {
+        server.getPluginManager().registerEvents(new FallThroughLimbo(), plugin);
+        PlayerMock player = server.addPlayer("Falling");
+        gate.markPending(player, "JAVA");
+
+        // Straight down, several blocks: uncancelled, unpinned, and a real block change.
+        for (int y = 80; y > 70; y--) {
+            server.getPluginManager().callEvent(new PlayerMoveEvent(player,
+                    new Location(world, 0.5, y, 0.5), new Location(world, 0.5, y - 1, 0.5)));
+        }
+
+        assertTrue(gate.isPending(player.getUniqueId()),
+                "gravity is not evidence that anyone authenticated");
+        assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("walking out of that same limbo releases once it lets go")
+    void walkingReleasesOnceLimboReleases() {
+        FallThroughLimbo limbo = new FallThroughLimbo();
+        server.getPluginManager().registerEvents(limbo, plugin);
+        PlayerMock player = server.addPlayer("Walking");
+        gate.markPending(player, "JAVA");
+
+        // Level ground while held: the limbo pins it, so the gate must stay shut.
+        simulateMove(player, false);
+        assertEquals(List.of(), released, "still held while the limbo is pinning");
+
+        // The player authenticates and the limbo stops interfering.
+        limbo.holding = false;
+        simulateMove(player, false);
+
+        assertEquals(List.of("Walking"), released, "the same move now proves they are free");
+    }
+
     @Test
     @DisplayName("an uncancelled block interaction releases the player")
     void uncancelledInteractReleases() {

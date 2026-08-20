@@ -172,18 +172,29 @@ authentication API in this ecosystem, but every login plugin enforces limbo by s
 what an unauthenticated player does. Gating on that covers AuthMe, nLogin, LibreLogin,
 OpeNLogin and anything else, including plugins that do not exist yet.
 
-Suppression takes two forms and the gate reads both. Most actions are cancelled outright.
-Movement often is not: AuthMe pins the player by rewriting the move's destination back to
-its origin without ever setting the cancel flag. The gate therefore checks that a move
-actually changed the block the player occupies, rather than trusting that the event was
-delivered uncancelled.
+Suppression takes more than one form and the gate reads all of them. This was verified by
+reading how each plugin actually implements limbo, not assumed:
 
-Two limitations follow from this, both minor. Clicking air cannot open the gate, because
-Bukkit reports every air interaction as cancelled regardless of who is listening; a block
-interaction works. And if AuthMe is configured with `AllowUnauthedMovement` enabled, an
-unauthenticated player really can walk, so movement stops being proof - the gate may open
-early on such a server. Set `allocation.trigger` deliberately if you run that
-configuration.
+| Plugin | Movement | Interaction / drops |
+| :--- | :--- | :--- |
+| AuthMe 5.6.0 | `setTo(from)` at `HIGHEST`, never cancelled | cancelled at `LOWEST` |
+| OpeNLogin | `setTo(from)` at `HIGH`, descent permitted | cancelled at `LOWEST` / `HIGH` |
+| LibreLogin (Paper) | cancelled at `LOWEST` | cancelled at `LOWEST` |
+
+Two of the three never cancel a move at all; they rewrite its destination instead, which
+avoids the "too many packets" disconnect that repeated teleporting causes. An event pinned
+that way arrives uncancelled, so the gate checks that a move actually changed the block the
+player occupies rather than trusting that it was delivered. Only horizontal movement counts,
+because OpeNLogin deliberately lets a descending player fall, so gravity would otherwise
+open the gate for someone who never authenticated.
+
+Three limitations follow, all minor. Clicking air cannot open the gate, because Bukkit
+reports every air interaction as cancelled regardless of who is listening; a block
+interaction works. If AuthMe is configured with `AllowUnauthedMovement` enabled, an
+unauthenticated player really can walk, so movement stops being proof and the gate may open
+early. And `nLogin` and `JPremium` are closed source, so their limbo implementations have
+not been verified the way the three above were; if you run either, watch the startup log and
+confirm players are not placed before they log in.
 
 If AuthMe specifically is installed, its `RegisterEvent` / `LoginEvent` allocates the player
 the instant they authenticate rather than on their next action. This is a convenience, not a

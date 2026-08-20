@@ -14,9 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the player's first action that was not suppressed, which is how *every* login plugin
   enforces its limbo, so AuthMe, nLogin, LibreLogin, OpeNLogin and anything else are all
   covered without SpiralGenesis depending on any of them. Suppression is read in both the
-  forms these plugins use: an event cancelled outright, and a move whose destination was
-  rewritten back to its origin, which is how AuthMe pins a player without ever setting the
-  cancel flag. Previously a server running
+  forms these plugins use, both confirmed by reading their implementations: an event
+  cancelled outright (LibreLogin), and a move whose destination is rewritten back to its
+  origin without the cancel flag ever being set (AuthMe, OpeNLogin). Only horizontal
+  movement opens the gate, because OpeNLogin deliberately permits a held player to fall. Previously a server running
   any login plugin other than AuthMe silently took the "no login plugin" path and allocated
   players while they were still held in limbo, permanently burning a spiral index per
   connection. AuthMe remains a fast path where installed, allocating on its login event

@@ -131,15 +131,25 @@ public class PlayerActionGateListener implements Listener {
      * Movement is the primary signal: it is the one action a player cannot avoid producing
      * once they are free.
      *
-     * <p>The destination is compared against the origin rather than taken on trust, which
-     * is what makes this correct against a limbo that pins by rewriting {@code getTo}
-     * instead of cancelling. Verified against AuthMe 5.6.0, whose {@code onPlayerMove}
-     * does exactly that at {@code HIGHEST}; by the time this runs, {@code getTo} has
-     * already been rewritten back to {@code getFrom} and no block has changed.
+     * <p>Two things about this test are load-bearing, and both come from reading how login
+     * plugins actually implement limbo rather than from assuming they cancel:
      *
-     * <p>Block granularity rather than any coordinate change, because the event also fires
-     * on head rotation and limbo implementations generally permit looking around. It also
-     * matches how AuthMe itself decides a move is worth acting on.
+     * <ul>
+     *   <li><b>The destination is compared, not trusted.</b> AuthMe 5.6.0 and OpeNLogin
+     *       both pin a held player with {@code event.setTo(event.getFrom())} and never
+     *       touch the cancel flag - OpeNLogin's source says why, it avoids a "too many
+     *       packets" disconnect that {@code Player.teleport} causes. Such an event reaches
+     *       this handler uncancelled, and only re-reading {@code getTo} reveals the pin.
+     *       LibreLogin does cancel, which {@code ignoreCancelled} already handles.
+     *   <li><b>Only horizontal movement counts.</b> OpeNLogin returns early without pinning
+     *       when the player is descending, so an unauthenticated player who spawns in air
+     *       falls, producing genuine uncancelled block changes. Ignoring the Y axis closes
+     *       that: falling, jumping and knockback stop being proof of anything, while
+     *       walking, the thing this is actually looking for, still is.
+     * </ul>
+     *
+     * <p>Block granularity rather than raw coordinates, because the event also fires on
+     * head rotation and limbo implementations generally permit looking around.
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
@@ -149,9 +159,7 @@ public class PlayerActionGateListener implements Listener {
         Location to = event.getTo();
         Location from = event.getFrom();
         if (to == null
-                || (to.getBlockX() == from.getBlockX()
-                && to.getBlockY() == from.getBlockY()
-                && to.getBlockZ() == from.getBlockZ())) {
+                || (to.getBlockX() == from.getBlockX() && to.getBlockZ() == from.getBlockZ())) {
             return;
         }
         release(event.getPlayer(), "moved");
