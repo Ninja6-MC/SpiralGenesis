@@ -210,7 +210,7 @@ breakdown usually shows the rule that needs loosening, most often `min-surface-y
 
 * [Admin & architecture guide](docs/ADMIN_GUIDE.md) — terrain rules, lifecycle, storage
   format, sizing, testing matrix.
-* [Changelog](CHANGELOG.md) · [Security policy](SECURITY.md)
+* [Changelog](CHANGELOG.md) · [Security policy](https://github.com/Ninja6-MC/SpiralGenesis/security/policy)
 * Bugs and feature requests: [GitHub Issues](https://github.com/Ninja6-MC/SpiralGenesis/issues)
 * Patches welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and PR rules, and
   [RELEASE_PROCESS.md](RELEASE_PROCESS.md) covers how releases are cut.

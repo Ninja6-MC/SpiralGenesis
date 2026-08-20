@@ -3,12 +3,12 @@
 # org set, config.yml included. Without this file blank issues stay enabled and the
 # security contact link is absent from the chooser. See N6-REPO-02.
 #
-# Adapted from Ninja6-MC/.github: the security link points at this repository's own
-# SECURITY.md, which differs from the org policy.
+# Adapted from Ninja6-MC/.github. This repository publishes no SECURITY.md of its own,
+# so the link points at /security/policy, which renders the inherited org policy.
 blank_issues_enabled: false
 contact_links:
   - name: Security vulnerability
-    url: https://github.com/Ninja6-MC/SpiralGenesis/blob/main/SECURITY.md
+    url: https://github.com/Ninja6-MC/SpiralGenesis/security/policy
     about: Exploits and vulnerabilities go through a private advisory, never a public issue.
   - name: Question or discussion
     url: https://github.com/Ninja6-MC
