@@ -188,6 +188,32 @@ player occupies rather than trusting that it was delivered. Only horizontal move
 because OpeNLogin deliberately lets a descending player fall, so gravity would otherwise
 open the gate for someone who never authenticated.
 
+### When the gate cannot read your login plugin
+
+If players are never placed, or are only placed once `action-timeout-seconds` fires, the
+gate cannot see your login plugin's limbo. A plugin that suppresses actions below the Bukkit
+event layer produces nothing for the gate to observe.
+
+Every login plugin can run console commands on a successful login. Point one at
+SpiralGenesis and the guesswork disappears:
+
+```
+# AuthMe: plugins/AuthMe/commands.yml
+onLogin:
+  placePlayer:
+    command: 'sgen allocate %p'
+    executor: CONSOLE
+```
+
+`/sgen allocate <player>` places a player who has no plot yet and does nothing for anyone
+who already has one, so it is safe to run on every login. It is not `/sgen reassign`, which
+discards an existing plot and consumes a fresh spiral index.
+
+Consult your own plugin's documentation for the equivalent section; the placeholder for the
+player's name differs between them.
+
+### Limitations
+
 Three limitations follow, all minor. Clicking air cannot open the gate, because Bukkit
 reports every air interaction as cancelled regardless of who is listening; a block
 interaction works. If AuthMe is configured with `AllowUnauthedMovement` enabled, an
@@ -327,6 +353,7 @@ Worth running once on a staging server before going live:
 | Gate backstop | Connect, then stand still past `action-timeout-seconds`. | Allocated anyway, with a warning in the console. |
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
+| Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
 
 ---
 

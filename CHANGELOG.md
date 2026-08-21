@@ -31,6 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `allocation.action-timeout-seconds` (default 120) allocates a held player anyway if
   nothing they do is ever uncancelled, so an unreadable limbo delays players rather than
   stranding them. Logged at warning when it fires. Set to `0` to wait indefinitely.
+- `/sgen allocate <player>` places a player the action gate is holding. Intended for a login
+  plugin's own on-login command hook, which gives servers running a plugin the gate cannot
+  read - one suppressing actions below the Bukkit event layer, or a closed-source one like
+  nLogin or JPremium - a supported path that needs no integration on either side. Unlike
+  `/sgen reassign` it never moves a player who already has a plot, so it is safe to run on
+  every login.
 - The startup log now states which allocation trigger is in effect and which known login
   plugins were detected, and warns when `ON_JOIN` is set on a server that has one.
 - Minecraft 26.1 and 26.2 are now supported and declared on both registries. CI boots the

@@ -217,6 +217,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }).whenComplete((ignored, ex) -> allocating.remove(uuid));
     }
 
+    /**
+     * Allocates a held player immediately, bypassing the action gate.
+     *
+     * <p>The escape hatch for a login plugin whose limbo the gate cannot read. nLogin and
+     * JPremium are closed source, so their limbo implementations cannot be verified the way
+     * AuthMe's, OpeNLogin's and LibreLogin's were, and a login plugin that suppresses
+     * actions below the Bukkit event layer would leave a player held until the timeout.
+     * Every such plugin can run a console command on successful login, which makes this
+     * reachable without SpiralGenesis knowing anything about it.
+     *
+     * <p>Idempotent, like every other path into allocation: calling it for a player who
+     * already has a plot does nothing.
+     */
+    public void allocateNow(Player player, String clientType) {
+        if (actionGate != null) {
+            actionGate.forget(player.getUniqueId());
+        }
+        handlePlayerFirstJoin(player, clientType);
+    }
+
     public PluginConfig getPluginConfig() {
         return pluginConfig;
     }

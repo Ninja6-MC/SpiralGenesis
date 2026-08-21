@@ -305,6 +305,21 @@ class PlayerActionGateListenerTest {
     }
 
     @Test
+    @DisplayName("a player allocated externally is dropped without a second release")
+    void forgetPreventsLaterRelease() {
+        PlayerMock player = server.addPlayer("Manual");
+        gate.markPending(player, "JAVA");
+
+        // What /sgen allocate does: it allocates the player itself, then tells the gate to
+        // stop watching, so their next step does not trigger a redundant second attempt.
+        gate.forget(player.getUniqueId());
+        simulateMove(player, false);
+
+        assertFalse(gate.isPending(player.getUniqueId()));
+        assertEquals(List.of(), released, "the gate must not fire for an already-handled player");
+    }
+
+    @Test
     @DisplayName("gated players are tracked independently")
     void playersAreIndependent() {
         PlayerMock first = server.addPlayer("First");

@@ -87,6 +87,16 @@ public class PlayerActionGateListener implements Listener {
     }
 
     /**
+     * Drops a player from the gate without allocating them.
+     *
+     * <p>For a caller that is allocating the player itself, so the gate does not later fire
+     * a second, redundant release for an action they take afterwards.
+     */
+    public void forget(UUID uuid) {
+        pending.remove(uuid);
+    }
+
+    /**
      * Opens the gate for a player, at most once.
      *
      * <p>Removing before invoking the callback rather than after is what makes this safe to

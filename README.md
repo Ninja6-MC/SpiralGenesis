@@ -204,9 +204,11 @@ ground. Pregenerate the area (see the sizing table in the admin guide) and it di
 **Players get placed before logging in.** Check `allocation.trigger` is `FIRST_ACTION`, not
 `ON_JOIN`. The startup log states which trigger is active and which login plugins it saw.
 
-**Players never get placed.** Something is cancelling every action they take, so the gate
+**Players never get placed.** Something is suppressing every action they take, so the gate
 never opens. The console warns when the `action-timeout-seconds` backstop fires; if you see
-that repeatedly, an anti-cheat or region plugin is the usual cause.
+that repeatedly, an anti-cheat or region plugin is the usual cause. If it is your login
+plugin, point its on-login command hook at `sgen allocate %p` and the gate is bypassed
+entirely. See the [admin guide](docs/ADMIN_GUIDE.md#5-join-and-respawn-lifecycle).
 
 **Someone landed somewhere terrible.** Run `/sgen simulate 50` — the per-rule rejection
 breakdown usually shows the rule that needs loosening, most often `min-surface-y` or
