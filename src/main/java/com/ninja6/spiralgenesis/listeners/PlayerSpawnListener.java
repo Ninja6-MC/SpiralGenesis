@@ -108,7 +108,16 @@ public class PlayerSpawnListener implements Listener {
      * unloaded is the ordinary case, and the rare griefed one costs its owner one extra
      * death either way.
      *
-     * <p>Never reached on Folia; see {@link #onPlayerDeath}.
+     * <p>Never reached on Folia <em>for a death respawn</em>; see {@link #onPlayerDeath} for
+     * why. It is still reached there when a player leaves the End, because
+     * {@code EndPortalBlock} fires this event itself with {@code RespawnReason.END_PORTAL}
+     * rather than going through the path Folia stubs out. Verified against folia-1.21.11.
+     *
+     * <p>That case is handled the same as any other: a player with no bed or anchor is sent
+     * to their plot. Whether an End exit should route there is a question nobody has
+     * answered deliberately - it falls out of not filtering on
+     * {@code event.getRespawnReason()}. It is defensible, since the plot is effectively
+     * their home, but it is not a decision anyone recorded.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerRespawn(PlayerRespawnEvent event) {
