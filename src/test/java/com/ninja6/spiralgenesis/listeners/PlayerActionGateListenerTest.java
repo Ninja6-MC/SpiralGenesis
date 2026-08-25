@@ -359,25 +359,6 @@ class PlayerActionGateListenerTest {
     }
 
     @Test
-    @DisplayName("a caller that gives up must leave the player gated for a retry")
-    void abandonedAllocationLeavesPlayerGated() {
-        PlayerMock player = server.addPlayer("Retryable");
-        gate.markPending(player, "JAVA");
-
-        // Stands in for handlePlayerFirstJoin bailing out before it takes ownership - the
-        // spiral world not being loaded yet is the real case, and it is transient. Only a
-        // caller that actually starts allocating may call forget(); one that gives up must
-        // not, or nothing can ever retry: the player is no longer pending, so no action
-        // releases them and the backstop's own pending check fails too.
-        assertTrue(gate.isPending(player.getUniqueId()), "precondition");
-
-        simulateMove(player, false);
-
-        assertEquals(List.of("Retryable"), released,
-                "a player abandoned by one caller must still be releasable by their next action");
-    }
-
-    @Test
     @DisplayName("gated players are tracked independently")
     void playersAreIndependent() {
         PlayerMock first = server.addPlayer("First");

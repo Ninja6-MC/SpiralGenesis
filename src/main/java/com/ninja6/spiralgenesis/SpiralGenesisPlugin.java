@@ -192,11 +192,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
 
         if (spawnManager == null) {
-            // Deliberately still gated. This is usually transient - a world manager that
-            // has not created the target world yet - and initSpawnManager retries above, so
-            // leaving the player pending means their next action, or the backstop, tries
-            // again. Dropping them here would strand them for the rest of the session with
-            // nothing able to retry.
+            // Effectively unreachable: initSpawnManager falls back to the first loaded world,
+            // so this needs Bukkit.getWorlds() to be empty, which cannot be true while a
+            // player is connected. Left as a guard rather than an assertion because the
+            // fallback is a detail of that method, not a contract.
+            //
+            // The player is not dropped from the gate here, which helps only a caller that
+            // did not arrive through the gate itself - AuthMe's listener, or /sgen allocate.
+            // PlayerActionGateListener.release removes them before calling in, so for the
+            // three action paths there is nothing left to retry with. Making that uniform
+            // would mean re-arming the gate, which is not worth doing for a branch that
+            // cannot be reached.
             getLogger().severe("Cannot allocate spawn: SpawnManager world is unavailable!");
             return;
         }
@@ -211,6 +217,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // do, leaving a player who had been allocated on LoginEvent to be released again by
         // their first step. It must not run before the bail-outs above: surrendering the
         // gate without taking ownership loses the player entirely.
+        //
+        // Not covered by a test. MockBukkit implements neither the entity scheduler nor
+        // async chunk loading, so this method cannot be driven from one without a seam of
+        // the kind SpawnManager grew for the same reason. The ordering is load-bearing, so
+        // it is worth a test once that seam exists.
         forgetFromGate(uuid);
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
@@ -287,10 +298,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 applied.complete(null);
                 return null;
             });
-        } catch (Throwable t) {
+        } catch (Exception e) {
+            // Exception, not Throwable: an OutOfMemoryError or StackOverflowError reported as
+            // a per-player allocation failure would leave the server running in a state
+            // nobody has assessed. Releasing the guard first keeps this player allocatable
+            // if the server does survive.
             getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
-                    + " failed before it could start.", t);
+                    + " failed before it could start.", e);
             applied.complete(null);
+        } catch (Throwable t) {
+            applied.complete(null);
+            throw t;
         }
     }
 
