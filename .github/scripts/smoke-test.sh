@@ -20,6 +20,12 @@
 # The bot's protocol version must match the server's, so this is only passed for the matrix
 # entry whose Minecraft version the client library targets.
 #
+# With TELEPORT_CANCEL set, that fifth argument drives a different sequence: the limbo
+# refuses teleports as well as movement, the plugin's own action-timeout backstop allocates
+# a player it then cannot move onto their plot, and the run asserts the teleport is
+# re-asserted once the limbo lets go. Paper only - Folia does not route teleportAsync
+# through PlayerTeleportEvent, so there is nothing there to refuse.
+#
 # Exits non-zero if the server fails to start, the plugin fails to enable, or the log
 # contains a plugin-related exception. The full server log is left at $WORKDIR/server.log
 # for the caller to upload as an artifact.
@@ -42,6 +48,21 @@ BOT_NAME="${BOT_NAME:-GateProbe}"
 # (LibreLogin). They suppress player actions in materially different ways, so the mode is a
 # matrix axis rather than a constant.
 LIMBO_MODE="${LIMBO_MODE:-PIN}"
+# Whether the limbo also refuses teleports while it holds a player, which LibreLogin does.
+# Set for the entries that exercise the teleport re-assert: the plugin's action-timeout
+# backstop allocates a still-held player, the teleport onto that plot is refused, and the
+# retry must land once the limbo lets go. Declared here rather than read inline because the
+# script is `set -u` and the workflow always defines it, empty or not.
+TELEPORT_CANCEL="${TELEPORT_CANCEL:-}"
+# Normalised to empty or `true`, because everything below tests it with -n and the string
+# "false" is not empty. Without this, TELEPORT_CANCEL=false turns the behaviour on while the
+# fixture line prints it as off.
+case "$TELEPORT_CANCEL" in
+    true|TRUE|True|1|yes) TELEPORT_CANCEL=true ;;
+    *) TELEPORT_CANCEL="" ;;
+esac
+# What the backstop is set to for those entries. 15 is the floor PluginConfig clamps to.
+ACTION_TIMEOUT="${ACTION_TIMEOUT:-15}"
 
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-90}"
@@ -96,6 +117,13 @@ if [[ -n "$BOT_JAR" ]]; then
         exit 1
     fi
     BOT_JAR="$(realpath "$BOT_JAR")"
+fi
+# Same reasoning as the two guards above. Every assertion TELEPORT_CANCEL adds is nested
+# inside the bot block, so without a bot the run would exercise none of them and still
+# report PASS - which is the whole failure mode those guards exist to prevent.
+if [[ -n "$TELEPORT_CANCEL" && -z "$BOT_JAR" ]]; then
+    echo "::error::TELEPORT_CANCEL is set but no bot jar was given; there would be nobody to refuse a teleport to."
+    exit 1
 fi
 
 mkdir -p "$WORKDIR/plugins"
@@ -160,7 +188,30 @@ if [[ -n "$LIMBO_JAR" ]]; then
     cp "$LIMBO_JAR" plugins/
     mkdir -p plugins/TestLimbo
     echo "mode: $LIMBO_MODE" > plugins/TestLimbo/config.yml
-    echo "Installed limbo fixture: $(basename "$LIMBO_JAR") (mode $LIMBO_MODE)"
+    if [[ -n "$TELEPORT_CANCEL" ]]; then
+        echo "cancel-teleports: true" >> plugins/TestLimbo/config.yml
+    fi
+    echo "Installed limbo fixture: $(basename "$LIMBO_JAR") (mode $LIMBO_MODE, cancel-teleports=${TELEPORT_CANCEL:-false})"
+fi
+
+# The only entries that need a plugin config. saveDefaultConfig() does not overwrite an
+# existing file, and PluginConfig reads every key with an inline default, so these two lines
+# are a complete config. The trigger is left alone: FIRST_ACTION is what arms the backstop in
+# the first place, and the startup assertion below still expects to see it.
+if [[ -n "$TELEPORT_CANCEL" ]]; then
+    mkdir -p plugins/SpiralGenesis
+    cat > plugins/SpiralGenesis/config.yml <<CONFIG
+allocation:
+  action-timeout-seconds: $ACTION_TIMEOUT
+CONFIG
+    echo "Set action-timeout-seconds to ${ACTION_TIMEOUT}s so the backstop fires while the limbo still holds."
+else
+    # Every other entry runs on the shipped defaults, and must keep doing so even when
+    # WORKDIR is reused - which it is on a developer machine, though never in CI.
+    # saveDefaultConfig() does not overwrite an existing file, so a config left behind by an
+    # earlier TELEPORT_CANCEL run here would quietly give this one a 15s backstop and fail
+    # its gate assertions for a reason that is not in its own diff.
+    rm -f plugins/SpiralGenesis/config.yml
 fi
 
 # ---------------------------------------------------------------------------
@@ -237,7 +288,7 @@ if [[ "$booted" -eq 1 ]]; then
         echo "testlimbo handlers" >&3 || true
         for ((i = 0; i < 30; i++)); do
             # The last event reportHandlers emits, so this waits for the whole sweep.
-            grep -q 'TESTLIMBO handlers PlayerDropItemEvent' server.log 2>/dev/null && break
+            grep -q 'TESTLIMBO handlers PlayerTeleportEvent' server.log 2>/dev/null && break
             sleep 1
         done
     fi
@@ -256,60 +307,116 @@ if [[ "$booted" -eq 1 ]]; then
             sleep 1
         done
 
-        # Held. The limbo is pinning every move, so the gate must not open.
-        sleep "$BOT_HELD_SECONDS"
-        if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
-            HELD_RESULT=allocated
-        else
-            HELD_RESULT=held
-        fi
+        if [[ -n "$TELEPORT_CANCEL" ]]; then
+            # -------------------------------------------------------------------
+            # The teleport is refused, then re-asserted
+            # -------------------------------------------------------------------
+            # A different sequence from the one below, not a variation on it. Here the
+            # limbo refuses teleports as well as movement, so the allocation cannot be
+            # reached by the gate opening - it is reached by the action-timeout backstop
+            # firing while the player is still held, which is the case the plugin logs a
+            # warning for. The plot is then recorded at a location its owner has never
+            # stood at, and the retry on their first free action is what this proves.
+            #
+            # Note what is NOT asserted here: the absence of "Assigned & teleported" says
+            # nothing while teleports are cancelled, because that line is unreachable by
+            # construction. The backstop warning is what proves where the allocation came
+            # from.
+            sleep "$BOT_HELD_SECONDS"
 
-        # Freed. Nothing is suppressing the bot's movement now, so the gate must open.
-        echo "testlimbo release" >&3 || true
-        for ((i = 0; i < BOT_FREED_SECONDS; i++)); do
-            grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null && break
-            sleep 1
-        done
-        if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
-            FREED_RESULT=allocated
-        else
-            FREED_RESULT=held
-        fi
-
-        # -----------------------------------------------------------------------
-        # Ruin the plot the bot was just given, then kill them
-        # -----------------------------------------------------------------------
-        # A stored spawn used to be validated once, at allocation, and never again. Cells
-        # are 500 blocks with no claim system, so this is what any other player could do:
-        # pour lava where somebody stands. The plugin must notice at respawn and move the
-        # owner inside their own cell rather than back into the lava, or off their land.
-        if [[ "$FREED_RESULT" == "allocated" ]]; then
-            PLOT_LINE="$(grep -o "Assigned & teleported $BOT_NAME to plot #.*" server.log | tail -1)"
-            PLOT_INDEX="$(sed -n 's/.*plot #\([0-9]*\).*/\1/p' <<<"$PLOT_LINE")"
-            PLOT_COORDS="$(sed -n 's/.*at (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$PLOT_LINE")"
-            read -r PLOT_X PLOT_Y PLOT_Z <<<"$PLOT_COORDS"
-
-            if [[ -z "${PLOT_X:-}" ]]; then
-                echo "::warning::Could not parse the plot coordinates out of: $PLOT_LINE"
+            for ((i = 0; i < 30; i++)); do
+                grep -q "No uncancelled action from $BOT_NAME within" server.log 2>/dev/null && break
+                sleep 1
+            done
+            if grep -q "No uncancelled action from $BOT_NAME within" server.log 2>/dev/null; then
+                BACKSTOP_RESULT=fired
             else
-                echo "Griefing plot #$PLOT_INDEX at $PLOT_X $PLOT_Y $PLOT_Z..."
-                # The stored point is where the player's feet go, so this is a player
-                # standing in lava, not next to it.
-                echo "setblock $PLOT_X $PLOT_Y $PLOT_Z minecraft:lava" >&3 || true
-                sleep 2
-                echo "kill $BOT_NAME" >&3 || true
+                BACKSTOP_RESULT=none
+            fi
 
-                for ((i = 0; i < BOT_REPAIR_SECONDS; i++)); do
-                    grep -q "Repaired plot #$PLOT_INDEX for $BOT_NAME" server.log 2>/dev/null && break
-                    grep -q "No safe point found among" server.log 2>/dev/null && break
-                    sleep 1
-                done
+            # Both wordings: teleportAsync completing false and completing exceptionally
+            # are separate branches in the plugin and either one leaves the same hole.
+            for ((i = 0; i < 30; i++)); do
+                grep -qE "Assigned $BOT_NAME to plot #[0-9]+ but the teleport (did not complete|failed)" \
+                    server.log 2>/dev/null && break
+                sleep 1
+            done
+            if grep -qE "Assigned $BOT_NAME to plot #[0-9]+ but the teleport (did not complete|failed)" \
+                server.log 2>/dev/null; then
+                UNREACHED_RESULT=unreached
+            else
+                UNREACHED_RESULT=none
+            fi
 
-                REPAIR_LINE="$(grep -o "Repaired plot #$PLOT_INDEX for $BOT_NAME.*" server.log | tail -1 || true)"
-                if [[ -n "$REPAIR_LINE" ]]; then
-                    REPAIR_RESULT=repaired
+            # Freed: the pin and the teleport refusal both lift here. The bot is already
+            # walking, so the gate sees an uncancelled action within a second or two and
+            # the retry follows it.
+            echo "testlimbo release" >&3 || true
+            for ((i = 0; i < BOT_FREED_SECONDS; i++)); do
+                grep -q "Re-asserted the plot teleport for $BOT_NAME" server.log 2>/dev/null && break
+                sleep 1
+            done
+            if grep -q "Re-asserted the plot teleport for $BOT_NAME" server.log 2>/dev/null; then
+                REASSERT_RESULT=reasserted
+            else
+                REASSERT_RESULT=none
+            fi
+        else
+            # Held. The limbo is pinning every move, so the gate must not open.
+            sleep "$BOT_HELD_SECONDS"
+            if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
+                HELD_RESULT=allocated
+            else
+                HELD_RESULT=held
+            fi
+
+            # Freed. Nothing is suppressing the bot's movement now, so the gate must open.
+            echo "testlimbo release" >&3 || true
+            for ((i = 0; i < BOT_FREED_SECONDS; i++)); do
+                grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null && break
+                sleep 1
+            done
+            if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
+                FREED_RESULT=allocated
+            else
+                FREED_RESULT=held
+            fi
+
+            # -----------------------------------------------------------------------
+            # Ruin the plot the bot was just given, then kill them
+            # -----------------------------------------------------------------------
+            # A stored spawn used to be validated once, at allocation, and never again. Cells
+            # are 500 blocks with no claim system, so this is what any other player could do:
+            # pour lava where somebody stands. The plugin must notice at respawn and move the
+            # owner inside their own cell rather than back into the lava, or off their land.
+            if [[ "$FREED_RESULT" == "allocated" ]]; then
+                PLOT_LINE="$(grep -o "Assigned & teleported $BOT_NAME to plot #.*" server.log | tail -1)"
+                PLOT_INDEX="$(sed -n 's/.*plot #\([0-9]*\).*/\1/p' <<<"$PLOT_LINE")"
+                PLOT_COORDS="$(sed -n 's/.*at (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$PLOT_LINE")"
+                read -r PLOT_X PLOT_Y PLOT_Z <<<"$PLOT_COORDS"
+
+                if [[ -z "${PLOT_X:-}" ]]; then
+                    echo "::warning::Could not parse the plot coordinates out of: $PLOT_LINE"
                 else
-                    REPAIR_RESULT=none
+                    echo "Griefing plot #$PLOT_INDEX at $PLOT_X $PLOT_Y $PLOT_Z..."
+                    # The stored point is where the player's feet go, so this is a player
+                    # standing in lava, not next to it.
+                    echo "setblock $PLOT_X $PLOT_Y $PLOT_Z minecraft:lava" >&3 || true
+                    sleep 2
+                    echo "kill $BOT_NAME" >&3 || true
+
+                    for ((i = 0; i < BOT_REPAIR_SECONDS; i++)); do
+                        grep -q "Repaired plot #$PLOT_INDEX for $BOT_NAME" server.log 2>/dev/null && break
+                        grep -q "No safe point found among" server.log 2>/dev/null && break
+                        sleep 1
+                    done
+
+                    REPAIR_LINE="$(grep -o "Repaired plot #$PLOT_INDEX for $BOT_NAME.*" server.log | tail -1 || true)"
+                    if [[ -n "$REPAIR_LINE" ]]; then
+                        REPAIR_RESULT=repaired
+                    else
+                        REPAIR_RESULT=none
+                    fi
                 fi
             fi
         fi
@@ -468,18 +575,66 @@ if [[ -n "$BOT_JAR" ]]; then
     grep -q 'BOT position' bot.log 2>/dev/null \
         || fail "$BOT_NAME never received a spawn position, so it never reached play state."
 
-    # The two halves are only meaningful together. Held-then-allocated is the gate working;
-    # anything else is the gate opening for the wrong reason, or not at all.
-    if [[ "${HELD_RESULT:-}" != "held" ]]; then
-        fail "$BOT_NAME was allocated while the limbo was still holding them."
-    fi
-    if [[ "${FREED_RESULT:-}" != "allocated" ]]; then
-        fail "$BOT_NAME was never allocated within ${BOT_FREED_SECONDS}s of the limbo letting go."
-    fi
+    if [[ -n "$TELEPORT_CANCEL" ]]; then
+        # The fixture has to have been in the mode this entry exists for. Registration is
+        # not enough on its own: a handler that never fires looks identical to one that
+        # cancelled nothing, and whether a platform routes teleportAsync through
+        # PlayerTeleportEvent at all is a property of the server rather than of our source.
+        grep -q 'TESTLIMBO enabled .* cancelTeleports=true' server.log \
+            || fail "TestLimbo did not start with cancel-teleports on, so no teleport was ever refused."
 
-    if [[ "${HELD_RESULT:-}" == "held" && "${FREED_RESULT:-}" == "allocated" ]]; then
-        echo "Gate behaved: $BOT_NAME held while pinned, allocated once free."
-        grep -o "Assigned & teleported $BOT_NAME.*" server.log | tail -1 || true
+        grep -q "TESTLIMBO cancelled PlayerTeleportEvent for $BOT_NAME" server.log \
+            || fail "TestLimbo never cancelled a teleport for $BOT_NAME; this platform may not route teleportAsync through PlayerTeleportEvent."
+
+        # Where the allocation came from. Without this the entry would prove only that a
+        # plot was allocated, not that it was allocated while the player was still held -
+        # which is the entire premise of the unreached state.
+        if [[ "${BACKSTOP_RESULT:-}" != "fired" ]]; then
+            fail "The action-timeout backstop never fired for $BOT_NAME, so nothing allocated them while the limbo held them."
+        fi
+
+        if [[ "${UNREACHED_RESULT:-}" != "unreached" ]]; then
+            fail "$BOT_NAME's allocation teleport was never refused, so the re-assert path was never entered."
+        fi
+
+        if [[ "${REASSERT_RESULT:-}" != "reasserted" ]]; then
+            fail "$BOT_NAME was never re-asserted onto their plot within ${BOT_FREED_SECONDS}s of the limbo letting go."
+        fi
+
+        if [[ "${BACKSTOP_RESULT:-}" == "fired" && "${UNREACHED_RESULT:-}" == "unreached" \
+           && "${REASSERT_RESULT:-}" == "reasserted" ]]; then
+            echo "Re-assert behaved: allocated while held, teleport refused, retried once free."
+            grep -o "Re-asserted the plot teleport for $BOT_NAME.*" server.log | tail -1 || true
+        fi
+
+        # The record is the inconsistency this whole path exists to reconcile, so it is
+        # worth seeing. Read after shutdown, which is the only time it is reliable -
+        # YamlDataStorage flushes on a timer and at stop, not on write - so this says the
+        # plot was recorded, not that it was recorded at the moment of the refusal.
+        DATA_FILE="$WORKDIR/plugins/SpiralGenesis/data.yml"
+        if [[ -f "$DATA_FILE" ]]; then
+            grep -qi "name: $BOT_NAME" "$DATA_FILE" \
+                || fail "data.yml holds no record for $BOT_NAME, so nothing was ever allocated to re-assert."
+            echo "----- data.yml -----"
+            cat "$DATA_FILE"
+            echo "--------------------"
+        else
+            fail "data.yml not found at $DATA_FILE."
+        fi
+    else
+        # The two halves are only meaningful together. Held-then-allocated is the gate working;
+        # anything else is the gate opening for the wrong reason, or not at all.
+        if [[ "${HELD_RESULT:-}" != "held" ]]; then
+            fail "$BOT_NAME was allocated while the limbo was still holding them."
+        fi
+        if [[ "${FREED_RESULT:-}" != "allocated" ]]; then
+            fail "$BOT_NAME was never allocated within ${BOT_FREED_SECONDS}s of the limbo letting go."
+        fi
+
+        if [[ "${HELD_RESULT:-}" == "held" && "${FREED_RESULT:-}" == "allocated" ]]; then
+            echo "Gate behaved: $BOT_NAME held while pinned, allocated once free."
+            grep -o "Assigned & teleported $BOT_NAME.*" server.log | tail -1 || true
+        fi
     fi
 
     # ---------------------------------------------------------------------------

@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- CI now refuses the allocation teleport and asserts the retry lands. The limbo fixture can
+  cancel every `PlayerTeleportEvent` while it holds a player, which is what LibreLogin does,
+  so the action-timeout backstop allocates a plot the player cannot be moved onto - storage
+  claiming a location its owner has never stood at, the one state the teleport re-assert
+  exists to reconcile. The run then releases the limbo and asserts the plot teleport is
+  re-asserted on the player's first uncancelled action. That path had unit-tested bookkeeping
+  and no live coverage at all. Paper only: Folia does not route `teleportAsync` through
+  `PlayerTeleportEvent`, so a login plugin cannot refuse a teleport there by cancelling it -
+  measured, not assumed.
 - The CI protocol client now dies and respawns. The run fills the plot it was just allocated
   with lava, kills it, and asserts it comes back somewhere else inside the same cell with its
   spiral index untouched - end-to-end evidence for respawn revalidation that no unit test can

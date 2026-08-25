@@ -159,9 +159,14 @@ public class PlayerActionGateListener implements Listener {
             plugin.getLogger().fine("Allocation gate opened for " + player.getName() + " (" + why + ").");
             onRelease.accept(player, clientType);
         }
-        // After the allocation branch, not instead of it: a player allocated by this very
-        // action cannot also be owed a retry yet, and one who is owed a retry from an
-        // earlier allocation is not pending. The two never fire for the same action.
+        // After the allocation branch, not instead of it, and the two are not exclusive.
+        // A player allocated through this method is dropped from `pending` on the way, but
+        // one allocated by a path that never consults the gate - the AuthMe hook, or
+        // `sgen allocate` from a login plugin's own hook - keeps their place in it, because
+        // `handlePlayerFirstJoin` forgets them only on its `hasSpawn` branch. Refuse that
+        // player's teleport and both sets hold them at once, so the action that frees them
+        // runs both branches. Safe because `onRelease` is required to be idempotent: the
+        // second allocation returns at `hasSpawn` having done nothing.
         if (unreached.remove(uuid)) {
             plugin.getLogger().fine("Retrying the plot teleport for " + player.getName()
                     + " (" + why + ").");

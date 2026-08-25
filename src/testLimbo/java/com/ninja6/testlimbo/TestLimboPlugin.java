@@ -13,6 +13,7 @@ import org.bukkit.plugin.RegisteredListener;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Locale;
@@ -40,6 +41,13 @@ import java.util.StringJoiner;
  *       cancels outright once it sees the position changed.
  * </ul>
  *
+ * <p>{@code cancel-teleports} is a separate axis from the mode, and deliberately so. It
+ * reproduces LibreLogin's Paper platform again, which cancels every
+ * {@code PlayerTeleportEvent} for as long as its limbo holds the player - the behaviour
+ * that leaves SpiralGenesis with a plot recorded in storage that its owner has never been
+ * moved to. Keeping it off the mode enum means the existing matrix entries are unaffected
+ * by it, and an entry that wants it changes exactly one thing.
+ *
  * <p>Interaction and item drops are cancelled at {@code LOWEST} in every mode, which all
  * three do.
  *
@@ -54,6 +62,14 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
 
     private Mode mode = Mode.PIN;
 
+    /**
+     * Whether to also refuse teleports while holding, the way LibreLogin does.
+     *
+     * <p>Volatile for the same reason {@link #holding} is: on Folia the handler that reads
+     * it runs on a region thread that never synchronised with the one that wrote it here.
+     */
+    private volatile boolean cancelTeleports = false;
+
     /** Whether the limbo is currently holding players, i.e. nobody has "authenticated". */
     private volatile boolean holding = true;
 
@@ -65,9 +81,12 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
         } catch (IllegalArgumentException e) {
             getLogger().warning("Unknown mode '" + configured + "', using PIN.");
         }
+        cancelTeleports = getConfig().getBoolean("cancel-teleports",
+                Boolean.parseBoolean(System.getProperty("testlimbo.cancel-teleports", "false")));
         getServer().getPluginManager().registerEvents(this, this);
         getCommand("testlimbo").setExecutor(this);
-        getLogger().info("TESTLIMBO enabled mode=" + mode + " holding=" + holding);
+        getLogger().info("TESTLIMBO enabled mode=" + mode + " holding=" + holding
+                + " cancelTeleports=" + cancelTeleports);
     }
 
     // ---------------------------------------------------------------------
@@ -115,6 +134,29 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
             return;
         }
         event.setCancelled(true);
+    }
+
+    /**
+     * LibreLogin: refuse to let a held player be moved, by anyone.
+     *
+     * <p>Opt-in, because it changes what every other plugin on the server can do rather than
+     * only what the player can do. It exists for one case: SpiralGenesis allocating a plot
+     * while the limbo still has the player - which its own action-timeout backstop will do -
+     * and then being unable to put them on it. Storage then claims a location its owner has
+     * never stood at, and the re-assert is what reconciles that.
+     *
+     * <p>Logs every cancellation. Whether a given platform routes {@code teleportAsync}
+     * through this event at all is a property of the server rather than of anything here, so
+     * without the line a platform that never fires it is indistinguishable from a plugin that
+     * failed to notice the refusal.
+     */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onTeleport(PlayerTeleportEvent event) {
+        if (!holding || !cancelTeleports) {
+            return;
+        }
+        event.setCancelled(true);
+        getLogger().info("TESTLIMBO cancelled PlayerTeleportEvent for " + event.getPlayer().getName());
     }
 
     @EventHandler(priority = EventPriority.LOWEST)
@@ -169,6 +211,7 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
         report("PlayerMoveEvent", PlayerMoveEvent.getHandlerList());
         report("PlayerInteractEvent", PlayerInteractEvent.getHandlerList());
         report("PlayerDropItemEvent", PlayerDropItemEvent.getHandlerList());
+        report("PlayerTeleportEvent", PlayerTeleportEvent.getHandlerList());
     }
 
     private void report(String eventName, HandlerList handlers) {
