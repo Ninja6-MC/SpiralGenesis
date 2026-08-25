@@ -10,8 +10,10 @@ import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.DataStorage;
+import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
 import org.bukkit.Bukkit;
+import org.bukkit.Location;
 import org.bukkit.World;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
@@ -55,6 +57,15 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     /** Players with an allocation currently in flight; guards against double assignment. */
     private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Players with an in-cell repair in flight.
+     *
+     * <p>A player killed by their own plot respawns into it again seconds later, so without
+     * this a single griefed spawn would start a fresh search per death, each one rewriting
+     * storage under the others.
+     */
+    private final Set<UUID> repairing = ConcurrentHashMap.newKeySet();
+
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -74,6 +85,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         // Register event listeners
         this.actionGate = new PlayerActionGateListener(this, this::handlePlayerFirstJoin,
+                this::reassertSpawnTeleport,
                 () -> pluginConfig.getActionTimeoutSeconds(),
                 () -> String.join(", ", detectedLoginPlugins));
         getServer().getPluginManager().registerEvents(actionGate, this);
@@ -252,20 +264,25 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                             }
                             // Recoverable rather than fatal: the plot is recorded and their
                             // respawn point already points at it. But storage now claims a
-                            // location the player is not standing at and nothing retries, so it
-                            // must not pass silently. A login plugin cancelling teleports for
-                            // unauthenticated players is the likeliest cause.
+                            // location the player is not standing at, so it is marked for a
+                            // retry on their next uncancelled action - a login plugin
+                            // cancelling teleports for unauthenticated players is the
+                            // likeliest cause, and that action is the signal it let go.
+                            markUnreached(player);
                             getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
                                     + " but the teleport did not complete; they are recorded at ("
                                     + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
-                                    + res.location().getBlockZ() + ") without having been moved there.");
+                                    + res.location().getBlockZ() + ") without having been moved there. "
+                                    + "Will retry on their next uncancelled action.");
                         }).exceptionally(ex -> {
                             // thenAccept above runs only on normal completion, so without this
                             // a teleport that fails outright is exactly as silent as the case
                             // the warning was added for.
+                            markUnreached(player);
                             getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
                                     + res.index() + " but the teleport failed; they are recorded there "
-                                    + "without having been moved.", ex);
+                                    + "without having been moved. Will retry on their next "
+                                    + "uncancelled action.", ex);
                             return null;
                         });
                     } finally {
@@ -353,6 +370,186 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     boolean runForPlayer(Player player, Runnable action, Runnable retired) {
         ScheduledTask scheduled = player.getScheduler().run(this, task -> action.run(), retired);
         return scheduled != null;
+    }
+
+    /**
+     * Moves a player off a plot that is no longer safe, without giving up their cell.
+     *
+     * <p>Called from the respawn path, which is synchronous and therefore cannot search for
+     * a replacement point itself. The search stays inside the cell the player already owns:
+     * their builds are there, and advancing their spiral index would mean that making
+     * somebody's spawn lethal is also how you evict them from their land.
+     *
+     * @param confirmFirst re-read the stored point before doing anything. Set when the
+     *                     respawn handler could not judge it inline because its chunk was
+     *                     not resident, which is the ordinary case for a plot nobody is
+     *                     standing on - most of those turn out to be perfectly fine.
+     */
+    public void repairSpawn(Player player, StoredSpawn record, boolean confirmFirst) {
+        SpawnManager manager = spawnManager;
+        Location stored = record.toLocation();
+        if (manager == null || stored == null) {
+            return;
+        }
+
+        UUID uuid = player.getUniqueId();
+        if (!repairing.add(uuid)) {
+            return; // A repair for this player is already running.
+        }
+
+        if (!confirmFirst) {
+            startRepairSearch(player, record, stored);
+            return;
+        }
+
+        // Every hop goes through SpawnManager rather than the region scheduler directly,
+        // and that is not stylistic. Submitting to the region scheduler for a chunk nobody
+        // has loaded queues a task on Folia that may never run: the caller has just sent
+        // this player to world spawn, so the plot's region can be unowned by the time the
+        // repair starts, and the whole repair silently never happened. Verified against a
+        // live Folia server, where exactly that occurred. The manager awaits the chunk
+        // first and only then hops onto the thread owning it, which is the ordering the
+        // candidate probe has always used.
+        manager.revalidate(stored).whenComplete((safe, ex) -> {
+            if (ex != null) {
+                repairing.remove(uuid);
+                getLogger().log(Level.WARNING, "Could not re-check plot #" + record.index()
+                        + " for " + player.getName() + "; leaving it as recorded.", ex);
+                return;
+            }
+            if (Boolean.TRUE.equals(safe)) {
+                repairing.remove(uuid);
+                return; // Fine after all, which is the ordinary outcome.
+            }
+            startRepairSearch(player, record, stored);
+        });
+    }
+
+    /** Announces the repair and hands off to the in-cell search. */
+    private void startRepairSearch(Player player, StoredSpawn record, Location stored) {
+        getLogger().warning("Plot #" + record.index() + " is no longer safe for "
+                + player.getName() + " at (" + stored.getBlockX() + ", "
+                + stored.getBlockY() + ", " + stored.getBlockZ()
+                + "); searching that cell for a replacement point.");
+        try {
+            spawnManager.findSafeSpawnInCell(record.index())
+                    .whenComplete((res, ex) -> applyRepair(player, record, res, ex));
+        } catch (Throwable t) {
+            // The search does real work before it returns a future - it requests the first
+            // chunk - so a throw there escapes before whenComplete is attached, and would
+            // otherwise hold the guard for the life of the process.
+            repairing.remove(player.getUniqueId());
+            getLogger().log(Level.SEVERE, "In-cell search for plot #" + record.index()
+                    + " failed before it could start.", t);
+        }
+    }
+
+    /**
+     * Applies the outcome of an in-cell repair search on the player's own thread.
+     *
+     * <p>Storage is rewritten only when a replacement was found. A cell where every sampled
+     * candidate failed leaves the record alone deliberately: {@code max-candidates} samples
+     * a dozen points out of the hundreds a cell holds, so "no candidate passed" is not
+     * evidence the plot is unusable, and overwriting it would lose the assignment for good.
+     */
+    private void applyRepair(Player player, StoredSpawn record,
+                             SpawnManager.LocationResult res, Throwable error) {
+        UUID uuid = player.getUniqueId();
+        if (error != null) {
+            repairing.remove(uuid);
+            getLogger().log(Level.SEVERE, "In-cell search failed while repairing plot #"
+                    + record.index() + " for " + player.getName() + ".", error);
+            return;
+        }
+
+        ScheduledTask scheduled = player.getScheduler().run(this, task -> {
+            try {
+                if (!player.isOnline()) {
+                    return;
+                }
+                if (res == null) {
+                    World world = Bukkit.getWorld(record.worldName());
+                    getLogger().warning("No safe point found among the "
+                            + pluginConfig.getMaxCandidates() + " sampled candidates in plot #"
+                            + record.index() + "; sending " + player.getName()
+                            + " to world spawn. Their plot assignment is unchanged.");
+                    if (world != null && !player.isDead()) {
+                        player.teleportAsync(world.getSpawnLocation());
+                    }
+                    return;
+                }
+
+                dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
+                        record.gridV(), player.getName(), record.clientType());
+                player.setRespawnLocation(res.location(), true);
+                // A player still on the death screen is not somewhere to be teleported
+                // from; updating their respawn point above is what places them, and it is
+                // also the only lever that works on Folia, whose respawn never consults a
+                // plugin. Anyone already back in the world is moved directly.
+                if (!player.isDead()) {
+                    player.teleportAsync(res.location());
+                }
+                getLogger().info("Repaired plot #" + record.index() + " for " + player.getName()
+                        + "; moved within the same cell to (" + res.location().getBlockX() + ", "
+                        + res.location().getBlockY() + ", " + res.location().getBlockZ() + ").");
+            } finally {
+                repairing.remove(uuid);
+            }
+        }, () -> repairing.remove(uuid));
+
+        if (scheduled == null) {
+            repairing.remove(uuid);
+        }
+    }
+
+    /**
+     * Re-asserts a teleport that was recorded but never carried out.
+     *
+     * <p>Storage claims a location the player has never been to whenever the first-join
+     * teleport is refused, which a login plugin holding an unauthenticated player will do -
+     * LibreLogin cancels every {@code PlayerTeleportEvent} while its limbo has them. That
+     * left an inconsistency nothing ever reconciled. Retrying on the player's next
+     * unsuppressed action is the same signal the allocation gate already trusts, and by
+     * then whatever was refusing teleports has let go.
+     *
+     * <p>Session-scoped: a player who disconnects without ever acting is not re-marked on
+     * their next login, because nothing distinguishes them from someone who reached their
+     * plot and walked away.
+     */
+    private void reassertSpawnTeleport(Player player) {
+        StoredSpawn record = dataStorage.getRecord(player.getUniqueId());
+        Location target = record == null ? null : record.toLocation();
+        if (target == null) {
+            return;
+        }
+        player.getScheduler().run(this, task -> {
+            if (!player.isOnline()) {
+                return;
+            }
+            player.setRespawnLocation(target, true);
+            player.teleportAsync(target).thenAccept(success -> {
+                if (Boolean.TRUE.equals(success)) {
+                    getLogger().info("Re-asserted the plot teleport for " + player.getName()
+                            + " after their first uncancelled action.");
+                    return;
+                }
+                getLogger().warning("Re-asserted plot teleport for " + player.getName()
+                        + " was refused again; they remain recorded at a plot they have not "
+                        + "been moved to. Run 'sgen tp' or investigate what is cancelling "
+                        + "teleports for this player.");
+            }).exceptionally(ex -> {
+                getLogger().log(Level.WARNING, "Re-asserted plot teleport for "
+                        + player.getName() + " failed.", ex);
+                return null;
+            });
+        }, null);
+    }
+
+    /** Queues a teleport retry with the action gate, if there is one. */
+    private void markUnreached(Player player) {
+        if (actionGate != null) {
+            actionGate.markUnreached(player);
+        }
     }
 
     /** Drops a player from the action gate, if there is one. */

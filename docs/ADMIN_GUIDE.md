@@ -250,6 +250,62 @@ The plugin sets the player's respawn location at allocation time and handles
 `PlayerRespawnEvent` at `HIGHEST` priority. A bed or respawn anchor always takes priority;
 the genesis plot is the fallback, replacing world spawn.
 
+The plot is re-checked on the way through, because it was validated once - when it was
+allocated - and cells are 500 blocks wide with no claim or protection system. Anyone can
+flood a spawn, pour lava on it, or dig the ground out from under it, and without a re-check
+the owner respawns into it, dies, and respawns into it again.
+
+The check starts **on death**, not on respawn. That buys the seconds a player spends on the
+death screen, so a plot that can be repaired in time is usually already fixed before they
+click respawn, and it is the only half that works on Folia (see below). It loads the plot's
+chunk, re-checks whether the player still fits, whether the ground is still there, and
+whether anything lethal is at their feet, head or underfoot, and repairs the plot if not.
+
+`PlayerRespawnEvent` then acts as the backstop for a repair that has not finished yet. That
+event is synchronous and cannot wait for a chunk, so it judges only what is already
+resident:
+
+* **Plot chunk loaded and still safe.** Respawn at the plot, as before. Costs nothing extra.
+* **Plot chunk loaded and unsafe.** Respawn at world spawn as a holding position, with the
+  repair already running.
+* **Plot chunk not loaded.** Respawn at the plot as before. Sending every unverifiable
+  respawn to world spawn would penalise the ordinary case - a plot nobody is standing on -
+  to catch the rare one.
+
+> **Folia.** Folia's respawn computes the position itself and never fires
+> `PlayerRespawnEvent`; the method that does fire it throws `UnsupportedOperationException`
+> there. On Folia the whole of the above rests on the death-time repair, which updates the
+> player's respawn point before the respawn reads it. Both platforms are covered by a CI
+> entry that kills a real client in-world and asserts where it comes back.
+
+**Repair never moves a player out of their own cell.** It re-searches the cell they already
+hold, using the same terrain rules and the same `placement.max-candidates` budget as
+allocation, and their spiral index does not advance. That is deliberate: relocating them
+would make griefing somebody's spawn a way to evict them from their land. On success the new
+point is written to `data.yml` under the same index, their respawn point is updated, and they
+are teleported to it - logged at `INFO`.
+
+If every sampled candidate in the cell fails, the player is sent to world spawn with a
+warning and **their plot assignment is left unchanged**. `max-candidates` defaults to 12 of
+the 961 points that fit a 500-block cell, so "no candidate passed" is not evidence the plot
+is unusable, and discarding the assignment over it would lose their land for good. Raise
+`placement.max-candidates` if you see this warning repeatedly.
+
+### Re-asserting a teleport that never happened
+
+Allocation records the plot and then teleports the player to it. A login plugin holding an
+unauthenticated player can refuse that teleport - LibreLogin cancels every
+`PlayerTeleportEvent` while its limbo has them - which used to leave `data.yml` claiming a
+location the player had never been to, with nothing to reconcile it.
+
+The teleport is now retried once, on that player's next uncancelled action: the same signal
+the allocation gate uses, and by then whatever was refusing teleports has let go. Both the
+original failure and the retry are logged.
+
+This is session-scoped. A player who disconnects before producing any action is not retried
+on their next login, because nothing recorded distinguishes them from a player who reached
+their plot and walked away. `/sgen tp` and `/sgen setspawn` remain the manual remedies.
+
 ---
 
 ## 6. Stored data
@@ -353,6 +409,7 @@ Worth running once on a staging server before going live:
 | Action gating | Connect a Java client with any login plugin installed. | No allocation until `/register` or `/login` completes. |
 | Gate backstop | Connect, then stand still past `action-timeout-seconds`. | Allocated anyway, with a warning in the console. |
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
+| Griefed plot | Pour lava on a player's plot, then `/kill` them. | Moved to another point in the same cell; index unchanged in `data.yml`. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
 | Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
 
@@ -366,14 +423,14 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | Component | File | Responsibility | Section |
 | :--- | :--- | :--- | :--- |
 | Spiral math | `math/SpiralMath.java` | Index → grid and grid → world transforms | §2 |
-| Allocation | `manager/SpawnManager.java` | Cell and candidate search, async probing | §1, §3 |
+| Allocation | `manager/SpawnManager.java` | Cell and candidate search, async probing, revalidation | §1, §3, §5 |
 | Rejection reasons | `manager/RejectionReason.java` | The rule names reported by simulation | §3 |
 | Simulation | `manager/SpawnSimulator.java` | `/sgen simulate` dry runs | §7 |
 | Join lifecycle | `listeners/PlayerSpawnListener.java` | First-join and respawn hooks | §5 |
 | Action gating | `listeners/PlayerActionGateListener.java` | Holds allocation until an uncancelled action | §5 |
 | AuthMe fast path | `listeners/AuthMeHookListener.java` | Optional: allocates on AuthMe login | §5 |
 | Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players | §5 |
-| AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5 |
+| AuthMe bridge | `hook/AuthMeHook.java` | Detects whether AuthMe is installed | §5 |
 | Persistence | `storage/YamlDataStorage.java` | Per-player registry in `data.yml` | §6 |
 | Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
 | Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |

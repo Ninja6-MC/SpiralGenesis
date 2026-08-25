@@ -224,17 +224,28 @@ jobs:
             java: '21'
             limbo_mode: 'PIN_ALLOW_FALL'
             samples: '5'
-          # The only entry that connects an actual player. A real protocol client joins,
-          # is held by the limbo, is released, and must then be allocated - which exercises
+          # The two entries that connect an actual player. A real protocol client joins, is
+          # held by the limbo, is released, and must then be allocated - which exercises
           # PlayerJoinEvent, the gate holding and releasing, and the teleport, none of which
-          # any other entry reaches.
+          # any other entry reaches. It then has its plot filled with lava and is killed, so
+          # respawn revalidation is exercised too.
           #
           # Pinned to 1.21.11 because the client library's protocol version has to match the
-          # server's exactly. Other Minecraft versions in this matrix have their own client
-          # builds available; a second entry is only worth adding if a version-specific
-          # difference in the join path is ever suspected.
+          # server's exactly.
+          #
+          # Both platforms, and that is not redundancy. Folia's respawn never fires
+          # PlayerRespawnEvent - PlayerList.respawn, the method that does, throws
+          # UnsupportedOperationException there - so revalidation has a Folia-only path, and
+          # a Paper-only bot run passed while Folia silently did nothing at all.
           - label: 'paper 1.21.11 real player through the gate'
             platform: paper
+            minecraft: '1.21.11'
+            java: '21'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            samples: '5'
+          - label: 'folia 1.21.11 real player through the gate'
+            platform: folia
             minecraft: '1.21.11'
             java: '21'
             limbo_mode: 'PIN'

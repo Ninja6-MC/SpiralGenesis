@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- The CI protocol client now dies and respawns. The run fills the plot it was just allocated
+  with lava, kills it, and asserts it comes back somewhere else inside the same cell with its
+  spiral index untouched - end-to-end evidence for respawn revalidation that no unit test can
+  provide. It runs on Folia as well as Paper, which is what revealed that Folia never
+  delivers `PlayerRespawnEvent`.
 - CI now drives allocation with a real player. A protocol client joins the test server over
   the wire, so the server creates a genuine player and runs the join listeners; the run holds
   it in limbo, asserts nothing was allocated, releases the limbo, and asserts allocation
@@ -33,7 +38,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of the next action, and a failure to bind its API now logs a warning and falls
   through to the generic gate rather than breaking plugin enable.
 
+### Removed
+- `AuthMeHook.isAuthenticated`. It had no callers and failed open, returning `true` on any
+  `Throwable`, so anything that had used it would have treated an AuthMe API breakage as
+  proof of authentication.
+
 ### Fixed
+- A stored spawn was validated once, when it was allocated, and never again. Cells are 500
+  blocks wide and the plugin has no claim or protection system, so anyone could flood a
+  plot, pour lava on it or dig out the ground, and its owner would then respawn into it,
+  die, and respawn into it again. The stored point is now re-checked against live blocks on
+  death, which uses the time the player spends on the death screen and is also the only
+  moment Folia offers - Folia's respawn computes its own position and never fires
+  `PlayerRespawnEvent`, whose usual source throws `UnsupportedOperationException` there.
+  `PlayerRespawnEvent` remains as a backstop on Paper for a repair that has not finished
+  yet: it is synchronous and cannot await a chunk load, so it judges a resident plot inline
+  and lets an unloaded one through, rather than penalising the ordinary case - a plot nobody
+  is standing on - to catch the rare one. A plot that fails is repaired by
+  re-searching **the same cell**, and the player's spiral index never advances - their
+  builds are in that cell, and relocating them would make griefing a spawn a way to evict
+  its owner. If every sampled candidate in the cell fails, the player is sent to world
+  spawn with a warning and their assignment is left alone: `placement.max-candidates`
+  samples 12 of the 961 points a cell holds, so that is not evidence the plot is unusable.
+- A plot recorded in `data.yml` but never actually reached is now reconciled. A login plugin
+  that cancels teleports for unauthenticated players (LibreLogin cancels every
+  `PlayerTeleportEvent` in limbo) left storage claiming a location the player had never
+  been to, and nothing ever retried. The teleport is re-asserted once on that player's next
+  uncancelled action - the same signal the allocation gate already trusts, by which point
+  whatever was refusing teleports has let go.
 - A player could be allocated twice, consuming two spiral indices, which are never
   reclaimed. The in-flight guard was released when the apply task was *scheduled* rather
   than when it ran, leaving a window in which storage still reported the player unassigned

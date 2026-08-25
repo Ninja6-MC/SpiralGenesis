@@ -12,9 +12,11 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.function.Supplier;
 
@@ -49,6 +51,7 @@ public class PlayerActionGateListener implements Listener {
 
     private final JavaPlugin plugin;
     private final BiConsumer<Player, String> onRelease;
+    private final Consumer<Player> onReassert;
     private final IntSupplier timeoutSeconds;
     private final Supplier<String> detectedLoginPlugins;
 
@@ -56,9 +59,21 @@ public class PlayerActionGateListener implements Listener {
     private final Map<UUID, String> pending = new ConcurrentHashMap<>();
 
     /**
+     * Players whose plot is recorded but whose teleport onto it never completed.
+     *
+     * <p>Separate from {@link #pending} because the two are not alternatives: a player can
+     * be allocated, refused the teleport, and only then produce the action that proves
+     * nothing is holding them any more. They ride the same signal for the same reason, and
+     * a single action settles both.
+     */
+    private final Set<UUID> unreached = ConcurrentHashMap.newKeySet();
+
+    /**
      * @param onRelease invoked with the player and their client type once the gate opens;
      *                  must be idempotent, since a login-plugin adapter may have allocated
      *                  the same player already
+     * @param onReassert invoked once for a player marked by {@link #markUnreached}, to
+     *                   retry a teleport that storage recorded but the server refused
      * @param timeoutSeconds allocate anyway after this long, or 0 to wait indefinitely.
      *                       Read per player rather than captured, so {@code /sgen reload}
      *                       takes effect without re-registering the listener.
@@ -69,10 +84,12 @@ public class PlayerActionGateListener implements Listener {
      *                             login plugin sends them somewhere there is nothing to find
      */
     public PlayerActionGateListener(JavaPlugin plugin, BiConsumer<Player, String> onRelease,
+                                    Consumer<Player> onReassert,
                                     IntSupplier timeoutSeconds,
                                     Supplier<String> detectedLoginPlugins) {
         this.plugin = plugin;
         this.onRelease = onRelease;
+        this.onReassert = onReassert;
         this.timeoutSeconds = timeoutSeconds;
         this.detectedLoginPlugins = detectedLoginPlugins;
     }
@@ -96,6 +113,23 @@ public class PlayerActionGateListener implements Listener {
     }
 
     /**
+     * Registers a player whose plot was recorded but whose teleport onto it was refused.
+     *
+     * <p>No timeout is armed. The backstop on {@link #markPending} exists because a player
+     * with no plot at all is worse off the longer they wait; this player already has one,
+     * and re-firing a teleport at whatever is still refusing them would only repeat the
+     * failure.
+     */
+    public void markUnreached(Player player) {
+        unreached.add(player.getUniqueId());
+    }
+
+    /** Whether this player is still owed a teleport retry. Package-private for tests. */
+    boolean isUnreached(UUID uuid) {
+        return unreached.contains(uuid);
+    }
+
+    /**
      * Drops a player from the gate without allocating them.
      *
      * <p>For a caller that is allocating the player itself, so the gate does not later fire
@@ -103,6 +137,11 @@ public class PlayerActionGateListener implements Listener {
      */
     public void forget(UUID uuid) {
         pending.remove(uuid);
+    }
+
+    /** Whether any player is being watched, for either reason. */
+    private boolean watching() {
+        return !pending.isEmpty() || !unreached.isEmpty();
     }
 
     /**
@@ -114,12 +153,20 @@ public class PlayerActionGateListener implements Listener {
      * proceeds.
      */
     private void release(Player player, String why) {
-        String clientType = pending.remove(player.getUniqueId());
-        if (clientType == null) {
-            return;
+        UUID uuid = player.getUniqueId();
+        String clientType = pending.remove(uuid);
+        if (clientType != null) {
+            plugin.getLogger().fine("Allocation gate opened for " + player.getName() + " (" + why + ").");
+            onRelease.accept(player, clientType);
         }
-        plugin.getLogger().fine("Allocation gate opened for " + player.getName() + " (" + why + ").");
-        onRelease.accept(player, clientType);
+        // After the allocation branch, not instead of it: a player allocated by this very
+        // action cannot also be owed a retry yet, and one who is owed a retry from an
+        // earlier allocation is not pending. The two never fire for the same action.
+        if (unreached.remove(uuid)) {
+            plugin.getLogger().fine("Retrying the plot teleport for " + player.getName()
+                    + " (" + why + ").");
+            onReassert.accept(player);
+        }
     }
 
     /**
@@ -182,7 +229,7 @@ public class PlayerActionGateListener implements Listener {
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onMove(PlayerMoveEvent event) {
-        if (pending.isEmpty()) {
+        if (!watching()) {
             return;
         }
         Location to = event.getTo();
@@ -210,7 +257,7 @@ public class PlayerActionGateListener implements Listener {
      */
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onInteract(PlayerInteractEvent event) {
-        if (pending.isEmpty()) {
+        if (!watching()) {
             return;
         }
         release(event.getPlayer(), "interacted");
@@ -218,7 +265,7 @@ public class PlayerActionGateListener implements Listener {
 
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public void onDropItem(PlayerDropItemEvent event) {
-        if (pending.isEmpty()) {
+        if (!watching()) {
             return;
         }
         release(event.getPlayer(), "dropped an item");
@@ -227,9 +274,16 @@ public class PlayerActionGateListener implements Listener {
     /**
      * Forgets a player who left before acting. Their index was never reserved, so nothing
      * is leaked by dropping them.
+     *
+     * <p>A pending teleport retry is dropped with them, and is not restored on their next
+     * login: nothing on disk distinguishes a player who was never moved to their plot from
+     * one who was moved and then walked away, and yanking the second kind back would be the
+     * worse mistake.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        pending.remove(event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+        pending.remove(uuid);
+        unreached.remove(uuid);
     }
 }

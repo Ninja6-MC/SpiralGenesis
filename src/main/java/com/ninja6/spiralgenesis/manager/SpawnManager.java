@@ -108,8 +108,127 @@ public class SpawnManager {
      */
     public CompletableFuture<LocationResult> allocateNextSafeSpawn(IntSupplier indexSupplier) {
         CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        nextCell(new Scan(indexSupplier, result));
+        nextCell(new Scan(indexSupplier, false, result));
         return result;
+    }
+
+    /**
+     * Searches one already-owned cell for a safe point, without ever leaving it.
+     *
+     * <p>For repairing a plot that was safe when it was allocated and is not any more.
+     * The spiral index is supplied rather than claimed, and the scan cannot advance to
+     * another cell no matter how the search goes: the owner's builds are inside this cell,
+     * and moving them out of it would turn griefing a spawn into a way to evict its owner.
+     *
+     * <p>Unlike allocation there is no least-bad fallback. A cell where every candidate
+     * fails resolves to {@code null}, because putting the player back on a point already
+     * known to be lethal is worse than sending them somewhere unremarkable.
+     *
+     * @param index the spiral index the player already holds
+     * @return a future resolving to a safe point in that cell, or {@code null} if the
+     *         sampled candidates all failed
+     */
+    public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
+        CompletableFuture<LocationResult> result = new CompletableFuture<>();
+        nextCell(new Scan(() -> index, true, result));
+        return result;
+    }
+
+    /**
+     * Cheap, synchronous re-check of a point that was validated once, at allocation.
+     *
+     * <p>Every read is in the column the player would stand in, so this touches exactly one
+     * chunk and no heightmap. That is what makes it callable from
+     * {@code PlayerRespawnEvent}, which is synchronous and cannot await anything.
+     *
+     * <p>It repeats the lethal subset of {@link #score}: whether the player fits, whether
+     * the ground is still under them, and whether anything that kills is at their feet,
+     * head or underfoot. The quality checks (ocean biome, pit, roughness) are deliberately
+     * left out - terrain shape is not what a griefer changes, and re-running them would
+     * relocate players over a plot that merely scores worse than it did.
+     *
+     * <p>The caller must already own the chunk this location is in.
+     */
+    public boolean isSafeNow(Location location) {
+        int x = location.getBlockX();
+        int y = location.getBlockY();
+        int z = location.getBlockZ();
+
+        // Walled in, or dug out from under: both leave a stored point the player cannot
+        // simply stand on.
+        if (!isPassable(world.getBlockAt(x, y, z)) || !isPassable(world.getBlockAt(x, y + 1, z))) {
+            return false;
+        }
+        if (isPassable(world.getBlockAt(x, y - 1, z))) {
+            return false;
+        }
+
+        // Flooding shows up at the feet and head; lava poured on the plot shows up
+        // underfoot once it settles into the surface block allocation approved.
+        return !isHazard(x, y, z) && !isHazard(x, y + 1, z) && !isHazard(x, y - 1, z);
+    }
+
+    /**
+     * What a stored point can still be used for, as far as a synchronous caller can tell.
+     */
+    public enum SpawnVerdict {
+        /** Re-checked against live blocks and still safe. */
+        USABLE,
+        /** Re-checked and no longer safe: something lethal or impassable is there now. */
+        UNSAFE,
+        /** Not resident, so not checkable without loading a chunk the caller cannot await. */
+        UNVERIFIED
+    }
+
+    /**
+     * Re-checks a stored point, without ever loading a chunk to do it.
+     *
+     * <p>The three-way answer exists because {@code PlayerRespawnEvent} is synchronous.
+     * Loading a chunk to reach a verdict is not on the table there, so the honest options
+     * are to answer from what is already resident or to say so and let the caller correct
+     * afterwards.
+     */
+    public SpawnVerdict verifyStoredSpawn(Location stored) {
+        if (!isChunkResident(stored)) {
+            return SpawnVerdict.UNVERIFIED;
+        }
+        return isSafeNow(stored) ? SpawnVerdict.USABLE : SpawnVerdict.UNSAFE;
+    }
+
+    /**
+     * Re-checks a stored point whose chunk is not resident, loading it first.
+     *
+     * <p>The asynchronous counterpart to {@link #verifyStoredSpawn}, for a caller that can
+     * wait. It loads the chunk and then hops onto the thread that owns it, exactly as the
+     * candidate probe does - which is the only ordering Folia permits, and the reason this
+     * is here rather than in the caller: submitting to the region scheduler for a chunk
+     * nobody has loaded queues a task that may never run.
+     *
+     * @return a future resolving to whether the point is still safe
+     */
+    public CompletableFuture<Boolean> revalidate(Location stored) {
+        CompletableFuture<Boolean> result = new CompletableFuture<>();
+        int chunkX = stored.getBlockX() >> 4;
+        int chunkZ = stored.getBlockZ() >> 4;
+        loadChunk(chunkX, chunkZ).whenComplete((chunk, error) -> {
+            if (error != null) {
+                result.completeExceptionally(error);
+                return;
+            }
+            runOnRegion(result, chunkX, chunkZ, () -> result.complete(isSafeNow(stored)));
+        });
+        return result;
+    }
+
+    /**
+     * Whether the chunk holding this point is resident right now.
+     *
+     * <p>Package-private seam, for the same reason as {@link #loadChunk}: what tests need
+     * to control is whether the caller takes the cheap inline path, not chunk residency
+     * itself.
+     */
+    boolean isChunkResident(Location location) {
+        return world.isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4);
     }
 
     /**
@@ -183,6 +302,12 @@ public class SpawnManager {
     private void finishCell(Scan scan) {
         if (scan.bestInCell != null) {
             scan.result.complete(scan.resultFor(scan.bestInCell, false));
+            return;
+        }
+        if (scan.cellOnly) {
+            // Note this is max-candidates points, not the whole cell: 12 of the 961 that
+            // fit a 500-block cell by default. The caller reports it as such.
+            scan.result.complete(null);
             return;
         }
         if (scan.attempt < config.getMaxScanAttempts()) {
@@ -402,7 +527,7 @@ public class SpawnManager {
      * <p>Package-private so tests can run the action inline; MockBukkit does not implement
      * the region schedulers.
      */
-    void runOnRegion(CompletableFuture<LocationResult> result,
+    void runOnRegion(CompletableFuture<?> result,
                      int chunkX, int chunkZ, Runnable action) {
         dispatch(result, () -> plugin.getServer().getRegionScheduler()
                 .execute(plugin, world, chunkX, chunkZ, guard(result, action)));
@@ -413,12 +538,12 @@ public class SpawnManager {
      *
      * <p>Package-private for the same reason as {@link #runOnRegion}.
      */
-    void runGlobally(CompletableFuture<LocationResult> result, Runnable action) {
+    void runGlobally(CompletableFuture<?> result, Runnable action) {
         dispatch(result, () -> plugin.getServer().getGlobalRegionScheduler()
                 .execute(plugin, guard(result, action)));
     }
 
-    private void dispatch(CompletableFuture<LocationResult> result, Runnable submit) {
+    private void dispatch(CompletableFuture<?> result, Runnable submit) {
         try {
             submit.run();
         } catch (IllegalStateException e) {
@@ -427,7 +552,7 @@ public class SpawnManager {
         }
     }
 
-    private Runnable guard(CompletableFuture<LocationResult> result, Runnable action) {
+    private Runnable guard(CompletableFuture<?> result, Runnable action) {
         return () -> {
             try {
                 action.run();
@@ -446,6 +571,8 @@ public class SpawnManager {
      */
     private static final class Scan {
         private final IntSupplier indexSupplier;
+        /** Pins the scan to the single cell it starts in; see {@link #findSafeSpawnInCell}. */
+        private final boolean cellOnly;
         private final CompletableFuture<LocationResult> result;
 
         private int attempt;
@@ -460,8 +587,10 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(IntSupplier indexSupplier, CompletableFuture<LocationResult> result) {
+        private Scan(IntSupplier indexSupplier, boolean cellOnly,
+                     CompletableFuture<LocationResult> result) {
             this.indexSupplier = indexSupplier;
+            this.cellOnly = cellOnly;
             this.result = result;
         }
 

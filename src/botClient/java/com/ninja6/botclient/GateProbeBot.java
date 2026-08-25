@@ -7,8 +7,12 @@ import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
 import org.geysermc.mcprotocollib.network.factory.ClientNetworkSessionFactory;
 import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.MinecraftProtocol;
+import org.geysermc.mcprotocollib.protocol.data.game.ClientCommand;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundLoginPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundRespawnPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerCombatKillPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerPositionPacket;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientCommandPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundAcceptTeleportationPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
 
@@ -19,7 +23,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * A real Minecraft client that joins, walks, and reports what happened. Never shipped.
+ * A real Minecraft client that joins, walks, dies, respawns, and reports what happened.
+ * Never shipped.
  *
  * <p>Exists because the allocation gate decides when to place a player, and until now
  * nothing had ever driven that decision with an actual player. The unit tests reproduce a
@@ -36,6 +41,11 @@ import java.util.concurrent.atomic.AtomicReference;
  * first movement that survives whatever is suppressing it, so the honest test is to keep
  * moving throughout and let the server decide when that becomes true - the caller flips the
  * limbo mid-run and watches for the log line to appear.
+ *
+ * <p>It also answers the death screen. Respawn is the only way to exercise revalidation of a
+ * stored spawn, and a client that never clicks "respawn" never fires
+ * {@code PlayerRespawnEvent} at all, so the caller can ruin the bot's plot from the console,
+ * kill it, and read where the server puts it back.
  */
 public final class GateProbeBot {
 
@@ -87,6 +97,16 @@ public final class GateProbeBot {
                     report(String.format(Locale.ROOT, "position x=%.1f y=%.1f z=%.1f",
                             pos.getPosition().getX(), pos.getPosition().getY(), pos.getPosition().getZ()));
                     spawned.countDown();
+                } else if (packet instanceof ClientboundPlayerCombatKillPacket) {
+                    // A real client shows the death screen and waits for the player to click
+                    // respawn; nothing server-side fires PlayerRespawnEvent until that
+                    // arrives. Sending it immediately is what makes a death testable at all.
+                    report("died");
+                    s.send(new ServerboundClientCommandPacket(ClientCommand.RESPAWN));
+                } else if (packet instanceof ClientboundRespawnPacket) {
+                    // The position that follows this is where the server decided to put us,
+                    // which for SpiralGenesis is the whole answer to "where do I respawn".
+                    report("respawned");
                 }
             }
 
