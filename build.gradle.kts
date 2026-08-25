@@ -40,6 +40,7 @@ repositories {
 // plugin, and so it can never be picked up by shadowJar and shipped.
 sourceSets {
     create("testLimbo")
+    create("botClient")
 }
 
 dependencies {
@@ -67,6 +68,10 @@ dependencies {
 
     // The stand-in login plugin compiles against the same server API and bundles nothing.
     "testLimboCompileOnly"("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+
+    // A real protocol client, for driving an actual player connection in CI. From the
+    // GeyserMC repository already declared above for Floodgate.
+    "botClientImplementation"("org.geysermc.mcprotocollib:protocol:1.21.11-SNAPSHOT")
 }
 
 // Hangar publication. Everything is driven by properties and the HANGAR_API_TOKEN
@@ -155,6 +160,24 @@ tasks {
         archiveVersion.set("")
         destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
         from(sourceSets["testLimbo"].output)
+    }
+
+    /**
+     * Packages the protocol client as a runnable fat jar. Like testLimboJar, deliberately
+     * not wired into `build`: only the smoke test wants it.
+     */
+    register<Jar>("botClientJar") {
+        archiveBaseName.set("GateProbeBot")
+        archiveClassifier.set("")
+        archiveVersion.set("")
+        destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
+        manifest { attributes["Main-Class"] = "com.ninja6.botclient.GateProbeBot" }
+        from(sourceSets["botClient"].output)
+        // Runs as its own process against a live server, so unlike the plugin it does need
+        // its dependencies inside it.
+        from(configurations["botClientRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) })
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "module-info.class")
     }
 
     build {

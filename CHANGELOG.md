@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- CI now drives allocation with a real player. A protocol client joins the test server over
+  the wire, so the server creates a genuine player and runs the join listeners; the run holds
+  it in limbo, asserts nothing was allocated, releases the limbo, and asserts allocation
+  followed. Until now nothing had ever exercised `PlayerJoinEvent`, the gate holding or
+  releasing anyone, or the teleport - allocation was reached only through `/sgen simulate`,
+  which calls the allocator directly.
+
 ### Changed
 - Allocation for Java players is no longer gated on AuthMe specifically. It now waits for
   the player's first action that was not suppressed, which is how *every* login plugin

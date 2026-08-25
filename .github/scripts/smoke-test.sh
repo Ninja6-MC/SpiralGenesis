@@ -3,16 +3,20 @@
 # Boots a throwaway Paper or Folia server with the built plugin installed, waits for
 # startup to complete, then shuts it down and asserts the plugin loaded cleanly.
 #
-# Usage: smoke-test.sh <paper|folia> <mc-version> <path-to-plugin-jar> [test-limbo-jar]
+# Usage: smoke-test.sh <paper|folia> <mc-version> <path-to-plugin-jar> [test-limbo-jar] [bot-jar]
 #
 # The optional fourth argument installs the TestLimbo fixture alongside the plugin. It
 # stands in for a real login plugin, reproducing what AuthMe, OpeNLogin and LibreLogin were
 # each observed to do.
 #
-# What that buys is wiring, not behaviour. No player connects here, so the gate never holds
-# or releases anyone; what is checked is that both plugins enable together and that the gate
-# registers where it has to relative to a competing plugin. Its actual decisions are covered
-# by the unit tests.
+# On its own that buys wiring, not behaviour: it checks that both plugins enable together and
+# that the gate registers where it has to relative to a competing plugin.
+#
+# The optional fifth argument adds behaviour. It is a real protocol client that joins the
+# server, so the server creates a genuine Player and runs every listener. The run then holds
+# it in limbo, confirms nothing was allocated, releases the limbo, and confirms allocation
+# followed. The bot's protocol version must match the server's, so this is only passed for
+# the matrix entry whose Minecraft version the client library targets.
 #
 # Exits non-zero if the server fails to start, the plugin fails to enable, or the log
 # contains a plugin-related exception. The full server log is left at $WORKDIR/server.log
@@ -24,6 +28,11 @@ PLATFORM="${1:?usage: smoke-test.sh <paper|folia> <mc-version> <plugin-jar>}"
 MC_VERSION="${2:?missing minecraft version}"
 PLUGIN_JAR="${3:?missing plugin jar path}"
 LIMBO_JAR="${4:-}"
+BOT_JAR="${5:-}"
+# The bot walks throughout; these bound how long it is watched on each side of the release.
+BOT_HELD_SECONDS="${BOT_HELD_SECONDS:-15}"
+BOT_FREED_SECONDS="${BOT_FREED_SECONDS:-25}"
+BOT_NAME="${BOT_NAME:-GateProbe}"
 # Which limbo the fixture imitates: PIN (AuthMe), PIN_ALLOW_FALL (OpeNLogin) or CANCEL
 # (LibreLogin). They suppress player actions in materially different ways, so the mode is a
 # matrix axis rather than a constant.
@@ -68,6 +77,17 @@ if [[ -n "$LIMBO_JAR" ]]; then
         exit 1
     fi
     LIMBO_JAR="$(realpath "$LIMBO_JAR")"
+fi
+if [[ -n "$BOT_JAR" ]]; then
+    if [[ ! -f "$BOT_JAR" ]]; then
+        echo "::error::Bot jar not found: $BOT_JAR"
+        exit 1
+    fi
+    if [[ -z "$LIMBO_JAR" ]]; then
+        echo "::error::A bot run needs the limbo fixture too; there is nothing to hold the player."
+        exit 1
+    fi
+    BOT_JAR="$(realpath "$BOT_JAR")"
 fi
 
 mkdir -p "$WORKDIR/plugins"
@@ -214,6 +234,47 @@ if [[ "$booted" -eq 1 ]]; then
         done
     fi
 
+    # ---------------------------------------------------------------------------
+    # Drive a real player through the gate
+    # ---------------------------------------------------------------------------
+    if [[ -n "$BOT_JAR" ]]; then
+        BOT_TOTAL=$((BOT_HELD_SECONDS + BOT_FREED_SECONDS + 10))
+        echo "Connecting $BOT_NAME for ${BOT_TOTAL}s..."
+        java -jar "$BOT_JAR" 127.0.0.1 25565 "$BOT_NAME" "$BOT_TOTAL" > bot.log 2>&1 &
+        BOT_PID=$!
+
+        for ((i = 0; i < 60; i++)); do
+            grep -q 'BOT position' bot.log 2>/dev/null && break
+            sleep 1
+        done
+
+        # Held. The limbo is pinning every move, so the gate must not open.
+        sleep "$BOT_HELD_SECONDS"
+        if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
+            HELD_RESULT=allocated
+        else
+            HELD_RESULT=held
+        fi
+
+        # Freed. Nothing is suppressing the bot's movement now, so the gate must open.
+        echo "testlimbo release" >&3 || true
+        for ((i = 0; i < BOT_FREED_SECONDS; i++)); do
+            grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null && break
+            sleep 1
+        done
+        if grep -q "Assigned & teleported $BOT_NAME" server.log 2>/dev/null; then
+            FREED_RESULT=allocated
+        else
+            FREED_RESULT=held
+        fi
+
+        kill "$BOT_PID" 2>/dev/null || true
+        wait "$BOT_PID" 2>/dev/null || true
+        echo "----- bot log -----"
+        grep '^BOT ' bot.log || true
+        echo "-------------------"
+    fi
+
     echo "Requesting graceful shutdown..."
     echo "stop" >&3 || true
     for ((i = 0; i < STOP_TIMEOUT; i++)); do
@@ -349,6 +410,31 @@ if [[ -n "$LIMBO_JAR" ]]; then
             fail "TestLimbo registered no handler for $event; nothing was competing with the gate."
         fi
     done
+fi
+
+# ---------------------------------------------------------------------------
+# Real-player assertions
+# ---------------------------------------------------------------------------
+if [[ -n "$BOT_JAR" ]]; then
+    grep -q "$BOT_NAME joined the game" server.log \
+        || fail "$BOT_NAME never joined; the bot could not reach the server."
+
+    grep -q 'BOT position' bot.log 2>/dev/null \
+        || fail "$BOT_NAME never received a spawn position, so it never reached play state."
+
+    # The two halves are only meaningful together. Held-then-allocated is the gate working;
+    # anything else is the gate opening for the wrong reason, or not at all.
+    if [[ "${HELD_RESULT:-}" != "held" ]]; then
+        fail "$BOT_NAME was allocated while the limbo was still holding them."
+    fi
+    if [[ "${FREED_RESULT:-}" != "allocated" ]]; then
+        fail "$BOT_NAME was never allocated within ${BOT_FREED_SECONDS}s of the limbo letting go."
+    fi
+
+    if [[ "${HELD_RESULT:-}" == "held" && "${FREED_RESULT:-}" == "allocated" ]]; then
+        echo "Gate behaved: $BOT_NAME held while pinned, allocated once free."
+        grep -o "Assigned & teleported $BOT_NAME.*" server.log | tail -1 || true
+    fi
 fi
 
 if [[ "$FAILED" -ne 0 ]]; then
