@@ -11,5 +11,15 @@ trim_trailing_whitespace = true
 [*.{yml,yaml}]
 indent_size = 2
 
+# Web and data files. The ecosystems these belong to settle on two spaces almost
+# universally, and every formatter in them defaults to it, so a repository written
+# in them would otherwise have to deviate from this file to be idiomatic - which is
+# exactly what TextureStudio and Keyframe both did, independently, before this
+# stanza existed. Scoping it here keeps one canonical copy for every repository
+# rather than one exception per web project. Java, Gradle and PowerShell keep the
+# four-space default above.
+[*.{js,mjs,cjs,ts,json,html,css,svg}]
+indent_size = 2
+
 [*.md]
 trim_trailing_whitespace = false
