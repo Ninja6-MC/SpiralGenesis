@@ -278,9 +278,56 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.RED + "That plot's world is not currently loaded.");
             return;
         }
-        player.teleportAsync(loc).thenAccept(success -> {
-            player.sendMessage(ChatColor.GREEN + "Teleported to " + args[1] + "'s genesis spawn.");
+
+        SpawnManager spawnManager = plugin.getSpawnManager();
+        if (spawnManager == null) {
+            teleportToPlot(player, loc, args[1], null); // Nothing available to re-check with.
+            return;
+        }
+
+        // The re-check cannot happen here. Reading a block on Folia is only legal from the
+        // thread owning its chunk, and that chunk is usually not even loaded - nobody is
+        // standing on the plot, which is why the admin is going. SpawnManager awaits the
+        // chunk and only then hops onto its owner, which is the one ordering Folia permits.
+        sender.sendMessage(ChatColor.YELLOW + "Checking " + args[1] + "'s plot...");
+        spawnManager.revalidate(loc).whenComplete((safe, ex) -> {
+            String warning;
+            if (ex != null) {
+                plugin.getLogger().log(Level.WARNING, "Could not re-check " + args[1]
+                        + "'s plot before teleporting " + player.getName() + " to it.", ex);
+                warning = "That plot could not be re-checked; you are arriving without knowing.";
+            } else if (Boolean.TRUE.equals(safe)) {
+                warning = null;
+            } else {
+                warning = "That plot is no longer safe to stand on. Going anyway - watch yourself.";
+            }
+            teleportToPlot(player, loc, args[1], warning);
         });
+    }
+
+    /**
+     * Sends the admin to a plot, warning first when it did not pass its re-check.
+     *
+     * <p>Warn and proceed, rather than refuse or relocate. Going to look at a plot that has
+     * been flooded, dug out or set on fire is a legitimate reason to run this command, and
+     * this is the remedy both the admin guide and the refused-teleport warning name - so
+     * blocking it would take the tool away from the situation it exists for. Relocating the
+     * admin would be worse: they asked for a specific point, not a nearby safe one.
+     *
+     * <p>The warning goes out before the teleport rather than after it, so an admin who did
+     * not expect a hazard reads it while they can still act on it.
+     */
+    private void teleportToPlot(Player player, Location loc, String owner, String warning) {
+        // Player state belongs to the thread owning that player: the entity scheduler on
+        // Folia, the main thread on Paper. The re-check above resolves on the thread owning
+        // the plot's region, which is neither.
+        player.getScheduler().run(plugin, task -> {
+            if (warning != null) {
+                player.sendMessage(ChatColor.RED + warning);
+            }
+            player.teleportAsync(loc).thenAccept(success ->
+                    player.sendMessage(ChatColor.GREEN + "Teleported to " + owner + "'s genesis spawn."));
+        }, null);
     }
 
     private void handleInfo(CommandSender sender, String[] args) {

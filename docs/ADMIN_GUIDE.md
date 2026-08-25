@@ -306,6 +306,30 @@ This is session-scoped. A player who disconnects before producing any action is 
 on their next login, because nothing recorded distinguishes them from a player who reached
 their plot and walked away. `/sgen tp` and `/sgen setspawn` remain the manual remedies.
 
+### Visiting a plot with `/sgen tp`
+
+`/sgen tp <player>` re-checks the plot before it sends you, using the same live-block check
+the respawn path uses, and then **teleports you either way**. A plot that fails the check
+gets you a warning first:
+
+```
+That plot is no longer safe to stand on. Going anyway - watch yourself.
+```
+
+It warns rather than refuses because seeing the damage is the reason to run it. This is the
+command the section above and the refused-teleport warning both name as the manual remedy,
+so a version that declined to go where it was pointed would be useless for the case it
+exists to serve. It does not relocate you either: you asked for one specific point, not a
+safe point near it.
+
+The check loads the plot's chunk, so there is a short pause before you move; the plot is
+almost never resident when you run this, since nobody is standing on it. If the check itself
+fails - the chunk cannot be loaded, say - you are told so, sent anyway, and the cause is
+logged at `WARNING`.
+
+Nothing here repairs the plot. `/sgen tp` is for looking; `/sgen setspawn` and
+`/sgen reassign` are for fixing.
+
 ---
 
 ## 6. Stored data
@@ -411,6 +435,7 @@ Worth running once on a staging server before going live:
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
 | Griefed plot | Pour lava on a player's plot, then `/kill` them. | Moved to another point in the same cell; index unchanged in `data.yml`. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
+| Visiting a griefed plot | Pour lava on a plot, then `/sgen tp <player>`. | Warned that it is no longer safe, and teleported there anyway. |
 | Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
 
 ---
