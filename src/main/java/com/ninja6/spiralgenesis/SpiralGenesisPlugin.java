@@ -512,9 +512,22 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * unsuppressed action is the same signal the allocation gate already trusts, and by
      * then whatever was refusing teleports has let go.
      *
-     * <p>Session-scoped: a player who disconnects without ever acting is not re-marked on
-     * their next login, because nothing distinguishes them from someone who reached their
-     * plot and walked away.
+     * <p>Paper only, in practice. Measured on folia 1.21.11 build 14: a plugin registered
+     * for {@code PlayerTeleportEvent} is never called for a {@code teleportAsync}, and the
+     * teleport completes, where the identical run on Paper is refused. So on Folia this
+     * path is not reachable by a login plugin cancelling teleports - it remains reachable
+     * through the other ways a teleport can fail, which is why the mark is set on the
+     * future's failure rather than on any particular cause.
+     *
+     * <p>Session-scoped, and deliberately left that way. Two things make it defensible.
+     * Nothing on disk distinguishes a player who was never moved to their plot from one who
+     * was moved and walked away, so a flag in {@link StoredSpawn} would have to guess which
+     * it was looking at, and guessing wrong yanks a settled player off whatever they have
+     * built. And the case largely repairs itself: {@code setRespawnLocation} is applied
+     * before the teleport is ever attempted, so an affected player arrives at their plot on
+     * their next death whether or not this ever fires. Persisting the mark would buy the
+     * difference between "on your next action" and "on your next action or death", at the
+     * cost of a schema change and a heuristic that can be wrong.
      */
     private void reassertSpawnTeleport(Player player) {
         StoredSpawn record = dataStorage.getRecord(player.getUniqueId());

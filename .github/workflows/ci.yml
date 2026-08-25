@@ -279,6 +279,37 @@ jobs:
             limbo_mode: 'PIN'
             bot: 'true'
             samples: '5'
+          # Exercises the teleport re-assert. The limbo refuses teleports as well as
+          # movement - LibreLogin cancels every PlayerTeleportEvent while it holds a player -
+          # so the plugin's own action-timeout backstop allocates a player it then cannot
+          # move. Storage claims a plot its owner has never stood at, which is the state the
+          # re-assert exists to reconcile, and until now the one thing it had never run
+          # against.
+          #
+          # PIN rather than CANCEL, and that is deliberate: only the teleport flag differs
+          # from the two entries above, so a failure here is about teleports rather than
+          # about a limbo mode the bot has never been driven through.
+          #
+          # PAPER ONLY, and not for want of trying. Measured on folia 1.21.11 build 14:
+          # the fixture registers for PlayerTeleportEvent - the handler sweep prints
+          # `TestLimbo@LOWEST` for it - and is then never called, while the same
+          # teleportAsync that Paper refuses completes successfully with the limbo still
+          # holding. Paper fires the event freely in the identical run, roughly once a
+          # second. So Folia does not route teleportAsync through PlayerTeleportEvent, and a
+          # login plugin cannot refuse a teleport there by cancelling it. A Folia entry
+          # would assert only that, which is a fact about Folia rather than about this
+          # plugin. Consequence worth knowing: reassertSpawnTeleport's Folia scheduler path
+          # is still uncovered, and this is not the lever that will cover it.
+          - label: 'paper 1.21.11 teleport refused then re-asserted'
+            platform: paper
+            minecraft: '1.21.11'
+            java: '21'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            teleport_cancel: 'true'
+            # Longer than the 15s backstop, so it has fired before anything is asserted.
+            bot_held_seconds: '25'
+            samples: '5'
           - label: 'paper 1.20.4 mountainous'
             platform: paper
             minecraft: '1.20.4'
@@ -325,6 +356,8 @@ jobs:
           SIMULATE_SAMPLES: ${{ matrix.samples || '25' }}
           SIMULATE_TIMEOUT: ${{ matrix.simulate_timeout || '240' }}
           LIMBO_MODE: ${{ matrix.limbo_mode || 'PIN' }}
+          TELEPORT_CANCEL: ${{ matrix.teleport_cancel || '' }}
+          BOT_HELD_SECONDS: ${{ matrix.bot_held_seconds || '15' }}
         run: |
           chmod +x .github/scripts/smoke-test.sh
           JAR="$(find dist -name 'SpiralGenesis*.jar' ! -name '*-sources.jar' ! -name '*-javadoc.jar' | head -1)"
