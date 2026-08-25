@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proof of authentication.
 
 ### Fixed
+- `/sgen tp` sent an admin to a stored plot after checking only that the record existed and
+  its world was loaded, while the respawn path re-checked the same point against live
+  blocks. Both `docs/ADMIN_GUIDE.md` and the warning logged when a plot teleport is refused
+  name `/sgen tp` as the manual remedy, so the documented fix could drop an admin into the
+  exact hazard revalidation exists to prevent. The command now re-checks the plot first and
+  warns before it goes. It still goes: looking at a plot that has been flooded or dug out is
+  the reason to run it, so refusing would remove the tool from the case it serves, and
+  relocating the admin would answer a question they did not ask. The check runs through
+  `SpawnManager`, which awaits the chunk before reading a block - the only ordering Folia
+  permits, and necessary here because the plot is almost never resident.
 - A stored spawn was validated once, when it was allocated, and never again. Cells are 500
   blocks wide and the plugin has no claim or protection system, so anyone could flood a
   plot, pour lava on it or dig out the ground, and its owner would then respawn into it,
