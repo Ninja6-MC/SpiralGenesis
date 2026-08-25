@@ -128,7 +128,7 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
-| `/sgen tp <player>` | Teleport yourself to a player's plot. |
+| `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
 | `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
 | `/sgen reload` | Reload `config.yml`. |
