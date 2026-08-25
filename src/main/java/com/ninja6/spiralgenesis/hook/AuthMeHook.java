@@ -1,10 +1,13 @@
 package com.ninja6.spiralgenesis.hook;
 
 import org.bukkit.Bukkit;
-import org.bukkit.entity.Player;
 
 /**
  * Adapter hook for AuthMe-Reloaded Java authentication.
+ *
+ * <p>Presence only. Allocation is driven by {@code AuthMeHookListener} reacting to AuthMe's
+ * own login events, and by the generic action gate behind it, so nothing here needs to ask
+ * AuthMe about a player's state.
  */
 public class AuthMeHook {
 
@@ -16,16 +19,5 @@ public class AuthMeHook {
 
     public boolean isInstalled() {
         return installed;
-    }
-
-    public boolean isAuthenticated(Player player) {
-        if (!installed) {
-            return true;
-        }
-        try {
-            return fr.xephi.authme.api.v3.AuthMeApi.getInstance().isAuthenticated(player);
-        } catch (Throwable t) {
-            return true;
-        }
     }
 }

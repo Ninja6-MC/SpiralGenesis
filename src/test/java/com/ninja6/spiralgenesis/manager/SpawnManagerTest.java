@@ -26,7 +26,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -89,17 +91,17 @@ class SpawnManagerTest {
         }
 
         @Override
-        void runOnRegion(CompletableFuture<LocationResult> result,
+        void runOnRegion(CompletableFuture<?> result,
                          int chunkX, int chunkZ, Runnable action) {
             runInline(result, action);
         }
 
         @Override
-        void runGlobally(CompletableFuture<LocationResult> result, Runnable action) {
+        void runGlobally(CompletableFuture<?> result, Runnable action) {
             runInline(result, action);
         }
 
-        private static void runInline(CompletableFuture<LocationResult> result, Runnable action) {
+        private static void runInline(CompletableFuture<?> result, Runnable action) {
             try {
                 action.run();
             } catch (Throwable t) {
@@ -546,6 +548,132 @@ class SpawnManagerTest {
 
         assertEquals(1000.5, loc.getX(), 1e-9);
         assertEquals(-499.5, loc.getZ(), 1e-9);
+    }
+
+    // --- Revalidation of a plot that was safe when it was allocated -------------------
+
+    /**
+     * The point a fresh allocation of the origin cell's centre produces, with its chunk
+     * resident.
+     *
+     * <p>Loading it explicitly is the whole point: MockBukkit answers block reads from a
+     * lazily built store without ever marking a chunk loaded, so an unloaded plot is the
+     * default here and residency has to be arranged rather than assumed. Verified by
+     * decompiling {@code WorldMock}, and by these tests reporting UNVERIFIED before the
+     * load call was added.
+     */
+    private Location originCentreSpawn() {
+        world.loadChunk(0, 0);
+        return new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+    }
+
+    @Test
+    @DisplayName("An untouched plot still verifies as usable")
+    void untouchedPlotIsStillUsable() {
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("A plot flooded after allocation no longer verifies")
+    void floodedPlotIsUnsafe() {
+        // Lava poured where the owner stands: the case the whole revalidation exists for.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.LAVA);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("A plot whose ground was dug out no longer verifies")
+    void hollowedPlotIsUnsafe() {
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("A hazard underfoot is caught even when the column itself is clear")
+    void hazardousGroundIsUnsafe() {
+        // Solid, so the passability checks all pass; it is the material rule that has to
+        // fire here, exactly as it did when the point was first scored.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.PACKED_ICE);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("An unloaded plot reports as unverified rather than guessing")
+    void unloadedPlotIsUnverified() {
+        // Nothing is wrong with this plot; the point is that a synchronous caller cannot
+        // find that out without loading a chunk, and must not pretend otherwise. No chunk
+        // is loaded here, which is the state a plot nobody is standing on is normally in.
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNVERIFIED,
+                manager.verifyStoredSpawn(new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5)));
+    }
+
+    @Test
+    @DisplayName("The asynchronous re-check loads the chunk before judging the point")
+    void asyncRevalidateAnswersForAnUnloadedPlot() throws Exception {
+        // The same point verifyStoredSpawn declines to judge, because its chunk is not
+        // resident. Loading it first is what turns UNVERIFIED into an actual answer.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNVERIFIED, manager.verifyStoredSpawn(stored));
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.LAVA);
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("Repairing a plot searches its own cell and claims no new index")
+    void inCellRepairKeepsTheCell() throws Exception {
+        // Cell 1 is the owner's. Its centre is ruined, so the repair has to find another
+        // point inside it rather than moving the owner off their land.
+        makeHazard(1, 0, Material.LAVA);
+
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, res.index(), "the spiral index must not advance");
+        assertEquals(1, res.gridU());
+        assertEquals(0, res.gridV());
+        assertEquals(0, indices.get(), "an in-cell repair claims no index at all");
+        assertNotEquals(CELL + 0.5, res.location().getX(), "should have moved off the ruined centre");
+
+        double bound = CELL / 2.0 + 0.5;
+        assertTrue(Math.abs(res.location().getX() - CELL) <= bound,
+                "repair left the owner's cell: " + res.location().getX());
+        assertTrue(Math.abs(res.location().getZ()) <= bound,
+                "repair left the owner's cell: " + res.location().getZ());
+    }
+
+    @Test
+    @DisplayName("A cell where every sampled candidate fails resolves to nothing, not to a bad point")
+    void inCellRepairGivesUpRatherThanReturningAnUnsafePoint() throws Exception {
+        makeCellOcean(1, 0);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+                "allocation's least-bad fallback must not apply to a repair");
     }
 
     /**

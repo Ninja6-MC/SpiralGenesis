@@ -15,8 +15,10 @@
 # The optional fifth argument adds behaviour. It is a real protocol client that joins the
 # server, so the server creates a genuine Player and runs every listener. The run then holds
 # it in limbo, confirms nothing was allocated, releases the limbo, and confirms allocation
-# followed. The bot's protocol version must match the server's, so this is only passed for
-# the matrix entry whose Minecraft version the client library targets.
+# followed. It then fills the plot the bot was just given with lava, kills the bot, and
+# confirms it respawns somewhere else inside the same cell rather than back into the lava.
+# The bot's protocol version must match the server's, so this is only passed for the matrix
+# entry whose Minecraft version the client library targets.
 #
 # Exits non-zero if the server fails to start, the plugin fails to enable, or the log
 # contains a plugin-related exception. The full server log is left at $WORKDIR/server.log
@@ -32,6 +34,9 @@ BOT_JAR="${5:-}"
 # The bot walks throughout; these bound how long it is watched on each side of the release.
 BOT_HELD_SECONDS="${BOT_HELD_SECONDS:-15}"
 BOT_FREED_SECONDS="${BOT_FREED_SECONDS:-25}"
+# How long to wait for the respawn revalidation to notice a ruined plot and repair it. The
+# in-cell search probes one candidate per tick and may generate chunks, so it is not instant.
+BOT_REPAIR_SECONDS="${BOT_REPAIR_SECONDS:-40}"
 BOT_NAME="${BOT_NAME:-GateProbe}"
 # Which limbo the fixture imitates: PIN (AuthMe), PIN_ALLOW_FALL (OpeNLogin) or CANCEL
 # (LibreLogin). They suppress player actions in materially different ways, so the mode is a
@@ -62,6 +67,9 @@ MAX_FALLBACKS="${MAX_FALLBACKS:-0}"
 # Must track the safety.min-surface-y default in src/main/resources/config.yml; the
 # simulation runs against a stock config.
 MIN_SURFACE_Y="${MIN_SURFACE_Y:-63}"
+# Likewise the cell-size default. Used to check that a repaired spawn stayed inside the
+# cell its owner already holds.
+CELL_SIZE="${CELL_SIZE:-500}"
 
 if [[ ! -f "$PLUGIN_JAR" ]]; then
     echo "::error::Plugin jar not found: $PLUGIN_JAR"
@@ -238,7 +246,7 @@ if [[ "$booted" -eq 1 ]]; then
     # Drive a real player through the gate
     # ---------------------------------------------------------------------------
     if [[ -n "$BOT_JAR" ]]; then
-        BOT_TOTAL=$((BOT_HELD_SECONDS + BOT_FREED_SECONDS + 10))
+        BOT_TOTAL=$((BOT_HELD_SECONDS + BOT_FREED_SECONDS + BOT_REPAIR_SECONDS + 20))
         echo "Connecting $BOT_NAME for ${BOT_TOTAL}s..."
         java -jar "$BOT_JAR" 127.0.0.1 25565 "$BOT_NAME" "$BOT_TOTAL" > bot.log 2>&1 &
         BOT_PID=$!
@@ -266,6 +274,44 @@ if [[ "$booted" -eq 1 ]]; then
             FREED_RESULT=allocated
         else
             FREED_RESULT=held
+        fi
+
+        # -----------------------------------------------------------------------
+        # Ruin the plot the bot was just given, then kill them
+        # -----------------------------------------------------------------------
+        # A stored spawn used to be validated once, at allocation, and never again. Cells
+        # are 500 blocks with no claim system, so this is what any other player could do:
+        # pour lava where somebody stands. The plugin must notice at respawn and move the
+        # owner inside their own cell rather than back into the lava, or off their land.
+        if [[ "$FREED_RESULT" == "allocated" ]]; then
+            PLOT_LINE="$(grep -o "Assigned & teleported $BOT_NAME to plot #.*" server.log | tail -1)"
+            PLOT_INDEX="$(sed -n 's/.*plot #\([0-9]*\).*/\1/p' <<<"$PLOT_LINE")"
+            PLOT_COORDS="$(sed -n 's/.*at (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$PLOT_LINE")"
+            read -r PLOT_X PLOT_Y PLOT_Z <<<"$PLOT_COORDS"
+
+            if [[ -z "${PLOT_X:-}" ]]; then
+                echo "::warning::Could not parse the plot coordinates out of: $PLOT_LINE"
+            else
+                echo "Griefing plot #$PLOT_INDEX at $PLOT_X $PLOT_Y $PLOT_Z..."
+                # The stored point is where the player's feet go, so this is a player
+                # standing in lava, not next to it.
+                echo "setblock $PLOT_X $PLOT_Y $PLOT_Z minecraft:lava" >&3 || true
+                sleep 2
+                echo "kill $BOT_NAME" >&3 || true
+
+                for ((i = 0; i < BOT_REPAIR_SECONDS; i++)); do
+                    grep -q "Repaired plot #$PLOT_INDEX for $BOT_NAME" server.log 2>/dev/null && break
+                    grep -q "No safe point found among" server.log 2>/dev/null && break
+                    sleep 1
+                done
+
+                REPAIR_LINE="$(grep -o "Repaired plot #$PLOT_INDEX for $BOT_NAME.*" server.log | tail -1 || true)"
+                if [[ -n "$REPAIR_LINE" ]]; then
+                    REPAIR_RESULT=repaired
+                else
+                    REPAIR_RESULT=none
+                fi
+            fi
         fi
 
         kill "$BOT_PID" 2>/dev/null || true
@@ -434,6 +480,55 @@ if [[ -n "$BOT_JAR" ]]; then
     if [[ "${HELD_RESULT:-}" == "held" && "${FREED_RESULT:-}" == "allocated" ]]; then
         echo "Gate behaved: $BOT_NAME held while pinned, allocated once free."
         grep -o "Assigned & teleported $BOT_NAME.*" server.log | tail -1 || true
+    fi
+
+    # ---------------------------------------------------------------------------
+    # Respawn revalidation
+    # ---------------------------------------------------------------------------
+    if [[ "${FREED_RESULT:-}" == "allocated" && -n "${PLOT_INDEX:-}" ]]; then
+        grep -q 'BOT died' bot.log 2>/dev/null \
+            || fail "$BOT_NAME never registered a death, so respawn was never exercised."
+
+        grep -q "Plot #$PLOT_INDEX is no longer safe for $BOT_NAME" server.log \
+            || fail "Respawn did not revalidate plot #$PLOT_INDEX after it was filled with lava."
+
+        if [[ "${REPAIR_RESULT:-}" != "repaired" ]]; then
+            fail "Plot #$PLOT_INDEX was never repaired within ${BOT_REPAIR_SECONDS}s of the death."
+        else
+            echo "$REPAIR_LINE"
+            NEW_COORDS="$(sed -n 's/.*same cell to (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$REPAIR_LINE")"
+            read -r NEW_X NEW_Y NEW_Z <<<"$NEW_COORDS"
+
+            # The point of the repair is that it moves the owner without moving their land.
+            if [[ "$NEW_X" == "$PLOT_X" && "$NEW_Z" == "$PLOT_Z" ]]; then
+                fail "Repair returned the same point ($NEW_X, $NEW_Z) that was just made lethal."
+            fi
+
+            # The cell is cell-size wide and centred on the plot's own grid cell, so a
+            # replacement further than half a cell from the original means the search left
+            # the owner's land - which would make griefing a spawn a way to evict its owner.
+            CELL_HALF=$(( CELL_SIZE / 2 ))
+            if (( NEW_X - PLOT_X > CELL_HALF || PLOT_X - NEW_X > CELL_HALF \
+               || NEW_Z - PLOT_Z > CELL_HALF || PLOT_Z - NEW_Z > CELL_HALF )); then
+                fail "Repair moved $BOT_NAME from ($PLOT_X, $PLOT_Z) to ($NEW_X, $NEW_Z), further than half a cell."
+            fi
+
+            # data.yml is the record that matters: the index must be untouched, and the
+            # coordinates must be the repaired ones rather than the lava.
+            DATA_FILE="$WORKDIR/plugins/SpiralGenesis/data.yml"
+            if [[ -f "$DATA_FILE" ]]; then
+                if ! grep -q "assigned-index: $PLOT_INDEX" "$DATA_FILE"; then
+                    fail "data.yml no longer records index $PLOT_INDEX; the repair advanced the spiral."
+                fi
+                echo "----- data.yml -----"
+                cat "$DATA_FILE"
+                echo "--------------------"
+            else
+                echo "::warning::data.yml not found at $DATA_FILE."
+            fi
+
+            echo "Revalidation behaved: plot #$PLOT_INDEX repaired inside its own cell."
+        fi
     fi
 fi
 

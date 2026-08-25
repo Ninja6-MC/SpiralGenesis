@@ -46,6 +46,7 @@ class PlayerActionGateListenerTest {
     private JavaPlugin plugin;
     private WorldMock world;
     private List<String> released;
+    private List<String> reasserted;
     private PlayerActionGateListener gate;
 
     @BeforeEach
@@ -54,10 +55,12 @@ class PlayerActionGateListenerTest {
         plugin = MockBukkit.createMockPlugin("SpiralGenesisTest");
         world = server.addSimpleWorld("world");
         released = new ArrayList<>();
+        reasserted = new ArrayList<>();
         // Timeout disabled: the backstop needs Paper's entity scheduler, which MockBukkit
         // does not implement, and every case here is about the action path.
         gate = new PlayerActionGateListener(plugin,
-                (player, type) -> released.add(player.getName()), () -> 0, () -> "");
+                (player, type) -> released.add(player.getName()),
+                player -> reasserted.add(player.getName()), () -> 0, () -> "");
         server.getPluginManager().registerEvents(gate, plugin);
     }
 
@@ -370,5 +373,71 @@ class PlayerActionGateListenerTest {
 
         assertEquals(List.of("First"), released);
         assertTrue(gate.isPending(second.getUniqueId()), "the other player stays gated");
+    }
+
+    // --- Retrying a teleport that was recorded but never carried out ------------------
+
+    @Test
+    @DisplayName("a recorded-but-unreached plot is retried on the first uncancelled action")
+    void unreachedPlotIsRetriedOnAction() {
+        PlayerMock player = server.addPlayer("Stranded");
+        gate.markUnreached(player);
+
+        simulateMove(player, false);
+
+        assertEquals(List.of("Stranded"), reasserted);
+        assertFalse(gate.isUnreached(player.getUniqueId()), "the retry is owed only once");
+        assertEquals(List.of(), released, "an unreached player has a plot already");
+    }
+
+    @Test
+    @DisplayName("a suppressed action does not trigger the retry")
+    void unreachedPlotIsNotRetriedWhileHeld() {
+        PlayerMock player = server.addPlayer("StillHeld");
+        gate.markUnreached(player);
+
+        // The very situation that caused the missed teleport: a login plugin is still
+        // holding them, so retrying now would just be refused again.
+        simulateMove(player, true);
+
+        assertEquals(List.of(), reasserted);
+        assertTrue(gate.isUnreached(player.getUniqueId()), "still owed a retry");
+    }
+
+    @Test
+    @DisplayName("the retry fires once, not on every subsequent action")
+    void retryIsNotRepeated() {
+        PlayerMock player = server.addPlayer("Repeater");
+        gate.markUnreached(player);
+
+        simulateMove(player, false);
+        simulateMove(player, false);
+        simulateMove(player, false);
+
+        assertEquals(List.of("Repeater"), reasserted);
+    }
+
+    @Test
+    @DisplayName("leaving before acting drops the retry rather than deferring it")
+    void quitDropsTheRetry() {
+        PlayerMock player = server.addPlayer("Quitter");
+        gate.markUnreached(player);
+
+        server.getPluginManager().callEvent(new PlayerQuitEvent(player, "left"));
+        simulateMove(player, false);
+
+        assertEquals(List.of(), reasserted);
+        assertFalse(gate.isUnreached(player.getUniqueId()));
+    }
+
+    @Test
+    @DisplayName("a player who is neither gated nor owed a retry is left alone")
+    void ordinaryPlayerTriggersNothing() {
+        PlayerMock player = server.addPlayer("Ordinary");
+
+        simulateMove(player, false);
+
+        assertEquals(List.of(), released);
+        assertEquals(List.of(), reasserted);
     }
 }
