@@ -141,7 +141,7 @@ public class PlayerActionGateListener implements Listener {
      * Movement is the primary signal: it is the one action a player cannot avoid producing
      * once they are free.
      *
-     * <p>Two things about this test are load-bearing, and both come from reading how login
+     * <p>Three things about this test are load-bearing, and all come from reading how login
      * plugins actually implement limbo rather than from assuming they cancel:
      *
      * <ul>
@@ -151,11 +151,13 @@ public class PlayerActionGateListener implements Listener {
      *       packets" disconnect that {@code Player.teleport} causes. Such an event reaches
      *       this handler uncancelled, and only re-reading {@code getTo} reveals the pin.
      *       LibreLogin does cancel, which {@code ignoreCancelled} already handles.
-     *   <li><b>Only horizontal movement counts.</b> OpeNLogin returns early without pinning
-     *       when the player is descending, so an unauthenticated player who spawns in air
-     *       falls, producing genuine uncancelled block changes. Ignoring the Y axis closes
-     *       that: falling, jumping and knockback stop being proof of anything, while
-     *       walking, the thing this is actually looking for, still is.
+     *   <li><b>Descending movement never counts.</b> OpeNLogin returns early without
+     *       pinning whenever the player is descending, and its check has no block-column
+     *       test, so a held player falling <em>with horizontal drift</em> emits genuine
+     *       uncancelled block changes. Ignoring the Y axis alone does not close that, since
+     *       such a move does change X or Z; the descent itself has to suppress the release.
+     *       AuthMe is stricter here - it exempts only straight-down movement - but the
+     *       weaker of the two is what this has to survive.
      * </ul>
      *
      * <p>Block granularity rather than raw coordinates, because the event also fires on
@@ -168,8 +170,17 @@ public class PlayerActionGateListener implements Listener {
         }
         Location to = event.getTo();
         Location from = event.getFrom();
-        if (to == null
-                || (to.getBlockX() == from.getBlockX() && to.getBlockZ() == from.getBlockZ())) {
+        if (to == null) {
+            return;
+        }
+        // Losing height means gravity may be doing the work rather than the player, and at
+        // least one limbo implementation declines to interfere with a falling player at all.
+        // Waiting for a move that is level or climbing costs a held player nothing: once
+        // they are free, walking produces those continuously.
+        if (to.getY() < from.getY()) {
+            return;
+        }
+        if (to.getBlockX() == from.getBlockX() && to.getBlockZ() == from.getBlockZ()) {
             return;
         }
         release(event.getPlayer(), "moved");

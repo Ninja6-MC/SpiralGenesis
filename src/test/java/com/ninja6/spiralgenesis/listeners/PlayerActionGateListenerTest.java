@@ -218,8 +218,10 @@ class PlayerActionGateListenerTest {
             if (!holding) {
                 return; // Authenticated: the limbo stops interfering entirely.
             }
+            // OpeNLogin's real condition, which has no block-column test: any descending
+            // move is left alone, however far it moves horizontally.
             if (event.getFrom().getY() > event.getTo().getY()) {
-                return; // Descending: left alone, exactly as OpeNLogin leaves it.
+                return;
             }
             event.setTo(event.getFrom());
         }
@@ -241,6 +243,42 @@ class PlayerActionGateListenerTest {
         assertTrue(gate.isPending(player.getUniqueId()),
                 "gravity is not evidence that anyone authenticated");
         assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("falling with horizontal drift does not release, though it changes block")
+    void driftingFallDoesNotRelease() {
+        server.getPluginManager().registerEvents(new FallThroughLimbo(), plugin);
+        PlayerMock player = server.addPlayer("Drifting");
+        gate.markPending(player, "JAVA");
+
+        // The case ignoring the Y axis alone does not cover: OpeNLogin declines to pin a
+        // descending player at all, so this arrives uncancelled AND crosses block
+        // boundaries in X and Z. Air control produces exactly this within a few blocks of
+        // any fall, and a held player who spawns above ground is falling by definition.
+        for (int i = 0; i < 10; i++) {
+            server.getPluginManager().callEvent(new PlayerMoveEvent(player,
+                    new Location(world, 0.5 + i, 80 - i, 0.5 + i),
+                    new Location(world, 1.5 + i, 79 - i, 1.5 + i)));
+        }
+
+        assertTrue(gate.isPending(player.getUniqueId()),
+                "falling is not evidence of authentication, whichever way it drifts");
+        assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("climbing while moving does release")
+    void ascendingMoveReleases() {
+        PlayerMock player = server.addPlayer("Climbing");
+        gate.markPending(player, "JAVA");
+
+        // Guards the descent rule against being written as "ignore any vertical change":
+        // walking up a slope is ordinary player movement and must still count.
+        server.getPluginManager().callEvent(new PlayerMoveEvent(player,
+                new Location(world, 0.5, 64, 0.5), new Location(world, 1.5, 65, 0.5)));
+
+        assertEquals(List.of("Climbing"), released);
     }
 
     @Test

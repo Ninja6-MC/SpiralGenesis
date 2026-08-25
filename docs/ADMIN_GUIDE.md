@@ -184,9 +184,10 @@ reading how each plugin actually implements limbo, not assumed:
 Two of the three never cancel a move at all; they rewrite its destination instead, which
 avoids the "too many packets" disconnect that repeated teleporting causes. An event pinned
 that way arrives uncancelled, so the gate checks that a move actually changed the block the
-player occupies rather than trusting that it was delivered. Only horizontal movement counts,
-because OpeNLogin deliberately lets a descending player fall, so gravity would otherwise
-open the gate for someone who never authenticated.
+player occupies rather than trusting that it was delivered. Descending movement never counts,
+because OpeNLogin declines to pin a falling player at all and applies no block-column test
+when doing so, so a held player drifting sideways as they fall would otherwise open the
+gate. Once free, walking produces level moves continuously, so this costs nothing.
 
 ### When the gate cannot read your login plugin
 

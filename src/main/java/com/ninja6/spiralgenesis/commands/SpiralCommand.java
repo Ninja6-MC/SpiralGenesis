@@ -183,7 +183,12 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.YELLOW + "Allocating " + target.getName() + "...");
         plugin.getLogger().info(sender.getName() + " released " + target.getName()
                 + " from the allocation gate manually.");
-        plugin.allocateNow(target, "JAVA");
+        // Asking Floodgate rather than assuming: this command is reachable for a Bedrock
+        // player whose detection failed at join, and the client type is written to data.yml
+        // permanently.
+        String clientType = plugin.getFloodgateHook().isBedrockPlayer(target.getUniqueId())
+                ? "BEDROCK" : "JAVA";
+        plugin.allocateNow(target, clientType);
     }
 
     private void handleReassign(CommandSender sender, String[] args) {

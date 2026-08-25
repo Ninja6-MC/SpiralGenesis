@@ -1,5 +1,6 @@
 package com.ninja6.testlimbo;
 
+import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -30,7 +31,9 @@ import java.util.StringJoiner;
  *
  * <ul>
  *   <li>{@code PIN} - AuthMe 5.6.0. {@code onPlayerMove} at {@code HIGHEST} calls
- *       {@code event.setTo(event.getFrom())} and never sets the cancel flag.
+ *       {@code event.setTo(event.getFrom())} and never sets the cancel flag. It exempts a
+ *       move only when the block column is unchanged <em>and</em> the player is not
+ *       climbing, so straight-down falling is left alone and drifting is not.
  *   <li>{@code PIN_ALLOW_FALL} - OpeNLogin. The same pin at {@code HIGH}, except it returns
  *       early while the player is descending rather than fighting gravity.
  *   <li>{@code CANCEL} - LibreLogin's Paper platform. {@code onMove} at {@code LOWEST}
@@ -66,16 +69,33 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
     // Limbo enforcement
     // ---------------------------------------------------------------------
 
-    /** AuthMe and OpeNLogin: pin without cancelling. Priority matches AuthMe's. */
+    /**
+     * AuthMe and OpeNLogin: pin without cancelling.
+     *
+     * <p>The two differ in what they exempt, and the difference is the whole point of
+     * having both modes. AuthMe exempts a move only when the block column is unchanged and
+     * the player is not climbing. OpeNLogin exempts <em>any</em> descending move with no
+     * block-column test at all, so a held player falling with horizontal drift is left
+     * entirely alone - which is the case a gate reading only cancellation would miss.
+     */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onMovePinning(PlayerMoveEvent event) {
         if (!holding || mode == Mode.CANCEL || event.getTo() == null) {
             return;
         }
-        if (mode == Mode.PIN_ALLOW_FALL && event.getFrom().getY() > event.getTo().getY()) {
-            return; // Descending: OpeNLogin leaves gravity alone.
+        Location from = event.getFrom();
+        Location to = event.getTo();
+
+        if (mode == Mode.PIN_ALLOW_FALL) {
+            if (from.getY() > to.getY()) {
+                return; // Descending, drift or not: OpeNLogin leaves gravity alone.
+            }
+        } else if (from.getBlockX() == to.getBlockX()
+                && from.getBlockZ() == to.getBlockZ()
+                && from.getY() - to.getY() >= 0) {
+            return; // Straight down or stationary: what AuthMe declines to fight.
         }
-        event.setTo(event.getFrom());
+        event.setTo(from);
     }
 
     /** LibreLogin: cancel outright, at the priority it uses. */
@@ -143,6 +163,7 @@ public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExec
     private void reportHandlers() {
         report("PlayerMoveEvent", PlayerMoveEvent.getHandlerList());
         report("PlayerInteractEvent", PlayerInteractEvent.getHandlerList());
+        report("PlayerDropItemEvent", PlayerDropItemEvent.getHandlerList());
     }
 
     private void report(String eventName, HandlerList handlers) {

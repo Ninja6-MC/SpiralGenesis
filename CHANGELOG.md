@@ -16,13 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   covered without SpiralGenesis depending on any of them. Suppression is read in both the
   forms these plugins use, both confirmed by reading their implementations: an event
   cancelled outright (LibreLogin), and a move whose destination is rewritten back to its
-  origin without the cancel flag ever being set (AuthMe, OpeNLogin). Only horizontal
-  movement opens the gate, because OpeNLogin deliberately permits a held player to fall. Previously a server running
+  origin without the cancel flag ever being set (AuthMe, OpeNLogin). Descending movement
+  never opens the gate, because OpeNLogin declines to pin a falling player at all and
+  applies no block-column test when doing so. Previously a server running
   any login plugin other than AuthMe silently took the "no login plugin" path and allocated
   players while they were still held in limbo, permanently burning a spiral index per
   connection. AuthMe remains a fast path where installed, allocating on its login event
   instead of the next action, and a failure to bind its API now logs a warning and falls
   through to the generic gate rather than breaking plugin enable.
+
+### Fixed
+- A player could be allocated twice, consuming two spiral indices, which are never
+  reclaimed. The in-flight guard was released when the apply task was *scheduled* rather
+  than when it ran, leaving a window in which storage still reported the player unassigned
+  and nothing guarded them. The AuthMe fast path supplied the second caller: it allocated on
+  `LoginEvent` without dropping the player from the action gate, so their next step released
+  them again. Allocation now drops the player from the gate on every path, and holds the
+  guard until the assignment has been written.
+- A teleport that did not complete is no longer silent. The plot is recorded and the respawn
+  point set before the teleport is attempted, so a cancelled teleport left storage claiming a
+  location the player had never been moved to, with nothing logged and nothing retrying. A
+  login plugin that cancels teleports for unauthenticated players triggers exactly this.
 
 ### Added
 - `allocation.trigger` chooses when Java players are allocated: `FIRST_ACTION` (default,

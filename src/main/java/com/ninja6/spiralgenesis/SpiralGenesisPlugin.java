@@ -15,11 +15,13 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -172,6 +174,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public void handlePlayerFirstJoin(Player player, String clientType) {
         UUID uuid = player.getUniqueId();
+
+        // Every path into allocation passes through here, so this is the one place that can
+        // guarantee the gate stops watching a player somebody else is already allocating.
+        // Doing it in the callers instead is what let the AuthMe fast path leave a player
+        // pending: allocated on LoginEvent, then released again by their first step, with
+        // the in-flight guard below too narrow to catch the second call.
+        if (actionGate != null) {
+            actionGate.forget(uuid);
+        }
+
         if (dataStorage.hasSpawn(uuid)) {
             return;
         }
@@ -191,30 +203,64 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
 
+        // Completed once the outcome is settled either way, and what the in-flight guard is
+        // released on. Chaining that release onto the allocation future instead cleared it
+        // as soon as the entity task was *scheduled*, leaving at least a tick in which
+        // storage still reported the player unassigned and nothing guarded them - wide
+        // enough for a second caller to reserve a second index and burn it.
+        CompletableFuture<Void> applied = new CompletableFuture<>();
+        applied.whenComplete((ignored, ex) -> allocating.remove(uuid));
+
         // The index is claimed atomically inside the scan, so concurrent joins never
         // resolve to the same grid cell.
         spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
             // Player state must be touched on the thread owning that player. The entity
             // scheduler is that thread on Folia and the main thread on Paper; it also drops
             // the task automatically if the player disconnects before it runs.
-            player.getScheduler().run(this, task -> {
-                if (!player.isOnline()) return;
+            ScheduledTask scheduled = player.getScheduler().run(this, task -> {
+                try {
+                    if (!player.isOnline()) return;
 
-                dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
+                    dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
-                player.setRespawnLocation(res.location(), true);
-                player.teleportAsync(res.location()).thenAccept(success -> {
-                    if (success) {
-                        getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
-                                " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
-                    }
-                });
-            }, () -> getLogger().fine("Player " + player.getName()
-                    + " disconnected before their plot could be applied; index already reserved."));
+                    player.setRespawnLocation(res.location(), true);
+                    player.teleportAsync(res.location()).thenAccept(success -> {
+                        if (Boolean.TRUE.equals(success)) {
+                            getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
+                                    " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                            return;
+                        }
+                        // Recoverable rather than fatal: the plot is recorded and their
+                        // respawn point already points at it. But storage now claims a
+                        // location the player is not standing at and nothing retries, so it
+                        // must not pass silently. A login plugin cancelling teleports for
+                        // unauthenticated players is the likeliest cause.
+                        getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
+                                + " but the teleport did not complete; they are recorded at ("
+                                + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
+                                + res.location().getBlockZ() + ") without having been moved there.");
+                    });
+                } finally {
+                    // Inside the task, so the guard outlives the write that makes
+                    // hasSpawn() true rather than being released before it.
+                    applied.complete(null);
+                }
+            }, () -> {
+                getLogger().fine("Player " + player.getName()
+                        + " disconnected before their plot could be applied; index already reserved.");
+                applied.complete(null);
+            });
+
+            // A null task means the scheduler refused the work outright, in which case
+            // neither callback above ever runs and the guard would leak.
+            if (scheduled == null) {
+                applied.complete(null);
+            }
         }).exceptionally(ex -> {
             getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
+            applied.complete(null);
             return null;
-        }).whenComplete((ignored, ex) -> allocating.remove(uuid));
+        });
     }
 
     /**
@@ -231,9 +277,6 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * already has a plot does nothing.
      */
     public void allocateNow(Player player, String clientType) {
-        if (actionGate != null) {
-            actionGate.forget(player.getUniqueId());
-        }
         handlePlayerFirstJoin(player, clientType);
     }
 

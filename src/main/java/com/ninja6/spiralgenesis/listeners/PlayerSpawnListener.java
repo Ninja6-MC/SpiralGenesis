@@ -37,8 +37,9 @@ public class PlayerSpawnListener implements Listener {
         }
 
         // Held until the player proves nothing is holding them. An installed login plugin
-        // adapter may still allocate them sooner; handlePlayerFirstJoin is idempotent, so
-        // whichever path arrives first wins and the other is a no-op.
+        // adapter may still allocate them sooner, in which case that path drops the player
+        // from the gate on its way through handlePlayerFirstJoin, so this one cannot fire
+        // afterwards. That hand-off is what keeps the two from each reserving an index.
         gate.markPending(player, "JAVA");
     }
 

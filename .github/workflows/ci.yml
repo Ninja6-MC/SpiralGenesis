@@ -196,11 +196,16 @@ jobs:
           # 60 samples, where the default seed produced none. It exists to exercise the
           # fallback path, which every other entry proves is never reached, so it carries a
           # small allowance and a lower floor rather than the zero-tolerance defaults.
-          # Allocation is gated behind a login plugin's limbo, and the three implementations
-          # read so far suppress player actions in materially different ways. TestLimbo
-          # reproduces each; these entries prove the gate reads all three on a live server,
-          # where handler ordering is decided by the server rather than by our source. They
-          # carry a small sample count because allocation is not what they are testing.
+          # A second plugin competing for the same events, reproducing what each of the
+          # three readable login plugins actually does. These entries verify wiring on a
+          # live server - that both plugins enable together, and that the gate registers
+          # where it must relative to the limbo - which is decided by the server rather
+          # than by our source and so cannot be unit tested.
+          #
+          # They do NOT verify the gate's behaviour: nothing here connects a player, so
+          # LIMBO_MODE selects which limbo is installed, not which outcome is asserted.
+          # Behaviour is covered by the unit tests until a client joins in CI.
+          # They carry a small sample count because allocation is not what they test.
           - label: 'paper 1.20.4 limbo pins (authme)'
             platform: paper
             minecraft: '1.20.4'
@@ -271,6 +276,13 @@ jobs:
           LIMBO=""
           if [ -n "${{ matrix.limbo_mode }}" ]; then
             LIMBO="$(find fixture -name 'TestLimbo*.jar' | head -1)"
+            # find exits 0 on no match, so without this an artifact that failed to
+            # download would invoke the script with three arguments, skip every gate
+            # assertion inside its `if [ -n "$LIMBO_JAR" ]` block, and report PASS.
+            if [ -z "$LIMBO" ]; then
+              echo "::error::limbo_mode is ${{ matrix.limbo_mode }} but no TestLimbo jar was downloaded."
+              exit 1
+            fi
             echo "Installing limbo fixture $LIMBO in mode $LIMBO_MODE"
           fi
           echo "Testing with $JAR"

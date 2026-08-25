@@ -7,8 +7,12 @@
 #
 # The optional fourth argument installs the TestLimbo fixture alongside the plugin. It
 # stands in for a real login plugin, reproducing what AuthMe, OpeNLogin and LibreLogin were
-# each observed to do, so the allocation gate is exercised against a second plugin competing
-# for the same events rather than against an assumption.
+# each observed to do.
+#
+# What that buys is wiring, not behaviour. No player connects here, so the gate never holds
+# or releases anyone; what is checked is that both plugins enable together and that the gate
+# registers where it has to relative to a competing plugin. Its actual decisions are covered
+# by the unit tests.
 #
 # Exits non-zero if the server fails to start, the plugin fails to enable, or the log
 # contains a plugin-related exception. The full server log is left at $WORKDIR/server.log
@@ -55,8 +59,16 @@ if [[ ! -f "$PLUGIN_JAR" ]]; then
     exit 1
 fi
 
-# Resolve before the cd below, or a relative path stops pointing at the jar.
+# Resolve before the cd below, or a relative path stops pointing at the jar. This applies
+# to the fixture too: CI passes its path straight out of `find`, which is relative.
 PLUGIN_JAR="$(realpath "$PLUGIN_JAR")"
+if [[ -n "$LIMBO_JAR" ]]; then
+    if [[ ! -f "$LIMBO_JAR" ]]; then
+        echo "::error::TestLimbo jar not found: $LIMBO_JAR"
+        exit 1
+    fi
+    LIMBO_JAR="$(realpath "$LIMBO_JAR")"
+fi
 
 mkdir -p "$WORKDIR/plugins"
 cd "$WORKDIR"
@@ -117,10 +129,6 @@ cp "$PLUGIN_JAR" plugins/
 echo "Installed plugin: $(basename "$PLUGIN_JAR")"
 
 if [[ -n "$LIMBO_JAR" ]]; then
-    if [[ ! -f "$LIMBO_JAR" ]]; then
-        echo "::error::TestLimbo jar not found: $LIMBO_JAR"
-        exit 1
-    fi
     cp "$LIMBO_JAR" plugins/
     mkdir -p plugins/TestLimbo
     echo "mode: $LIMBO_MODE" > plugins/TestLimbo/config.yml
@@ -320,7 +328,7 @@ if [[ -n "$LIMBO_JAR" ]]; then
     # of, so seeing "none detected" here alongside a working gate is the result we want.
     grep -q 'Allocation trigger: FIRST_ACTION (login plugins: none detected)' server.log         || echo "note: startup line did not read 'none detected'; check the log."
 
-    for event in PlayerMoveEvent PlayerInteractEvent; do
+    for event in PlayerMoveEvent PlayerInteractEvent PlayerDropItemEvent; do
         LINE="$(grep -o "TESTLIMBO handlers $event .*" server.log | tail -1 || true)"
         if [[ -z "$LINE" ]]; then
             fail "TestLimbo never reported the handler order for $event."
@@ -332,10 +340,12 @@ if [[ -n "$LIMBO_JAR" ]]; then
             fail "SpiralGenesis is not registered at MONITOR for $event; it cannot read a final cancellation verdict."
         fi
 
-        # Everything able to suppress the action must be called before the gate reads it.
-        SG_POS="${LINE%%SpiralGenesis@MONITOR*}"
-        if [[ "$SG_POS" != *"TestLimbo@"* ]]; then
-            fail "SpiralGenesis runs before TestLimbo for $event; the gate would read a verdict that has not been cast yet."
+        # Not an ordering check: MONITOR is the last bucket by definition, so anything
+        # registered there is already last. This catches the other way the assertion above
+        # could pass vacuously - the fixture failing to register for this event at all,
+        # which would leave nothing competing and make the check meaningless.
+        if [[ "$LINE" != *"TestLimbo@"* ]]; then
+            fail "TestLimbo registered no handler for $event; nothing was competing with the gate."
         fi
     done
 fi
