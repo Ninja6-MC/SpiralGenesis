@@ -228,7 +228,7 @@ the instant they authenticate rather than on their next action. This is a conven
 requirement: allocation is idempotent, so whichever path fires first wins, and if the AuthMe
 API cannot be bound the action gate still covers it. A warning is logged in that case.
 
-`allocation.action-timeout-seconds` (default 120) is the backstop. A player connected that
+`allocation.action-timeout-seconds` (default 300) is the backstop. A player connected that
 long without producing a single uncancelled action is allocated anyway, with a warning. This
 prevents a login plugin whose limbo cannot be read from leaving players permanently
 unallocated. Set it to `0` to wait indefinitely instead.

@@ -42,7 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `allocation.trigger` chooses when Java players are allocated: `FIRST_ACTION` (default,
   gates behind any login plugin) or `ON_JOIN` (for online-mode servers, and networks that
   authenticate at the proxy or on a separate backend).
-- `allocation.action-timeout-seconds` (default 120) allocates a held player anyway if
+- `allocation.action-timeout-seconds` (default 300) allocates a held player anyway if
   nothing they do is ever uncancelled, so an unreadable limbo delays players rather than
   stranding them. Logged at warning when it fires. Set to `0` to wait indefinitely.
 - `/sgen allocate <player>` places a player the action gate is holding. Intended for a login

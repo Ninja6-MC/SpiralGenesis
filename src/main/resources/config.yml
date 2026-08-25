@@ -74,5 +74,7 @@ allocation:
   # FIRST_ACTION only: allocate anyway once a player has been connected this long without
   # producing an uncancelled action, so a login plugin whose limbo this cannot read leaves
   # players delayed rather than permanently unallocated. Logged at warning when it fires.
-  # Set to 0 to wait indefinitely instead. Clamped to 15-3600.
-  action-timeout-seconds: 120
+  # Set to 0 to wait indefinitely instead, at the cost of stranding players permanently if
+  # the limbo cannot be read. Generous by default: a first-time player reading the rules
+  # while choosing a password should never trip it. Clamped to 15-3600.
+  action-timeout-seconds: 300

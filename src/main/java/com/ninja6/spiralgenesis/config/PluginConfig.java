@@ -70,7 +70,7 @@ public class PluginConfig {
         this.allocationTrigger = AllocationTrigger.parse(
                 config.getString("allocation.trigger"), AllocationTrigger.FIRST_ACTION);
         // 0 disables the backstop entirely, so it is preserved rather than clamped up.
-        int configuredTimeout = config.getInt("allocation.action-timeout-seconds", 120);
+        int configuredTimeout = config.getInt("allocation.action-timeout-seconds", 300);
         this.actionTimeoutSeconds = configuredTimeout <= 0
                 ? 0
                 : clamp(configuredTimeout, MIN_ACTION_TIMEOUT, MAX_ACTION_TIMEOUT);

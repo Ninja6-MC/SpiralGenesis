@@ -56,7 +56,8 @@ class PlayerActionGateListenerTest {
         released = new ArrayList<>();
         // Timeout disabled: the backstop needs Paper's entity scheduler, which MockBukkit
         // does not implement, and every case here is about the action path.
-        gate = new PlayerActionGateListener(plugin, (player, type) -> released.add(player.getName()), () -> 0);
+        gate = new PlayerActionGateListener(plugin,
+                (player, type) -> released.add(player.getName()), () -> 0, () -> "");
         server.getPluginManager().registerEvents(gate, plugin);
     }
 

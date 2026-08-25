@@ -16,6 +16,7 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 
 /**
  * Holds a player's allocation until they do something no other plugin cancelled.
@@ -49,6 +50,7 @@ public class PlayerActionGateListener implements Listener {
     private final JavaPlugin plugin;
     private final BiConsumer<Player, String> onRelease;
     private final IntSupplier timeoutSeconds;
+    private final Supplier<String> detectedLoginPlugins;
 
     /** Players awaiting a first action, mapped to the client type to allocate them as. */
     private final Map<UUID, String> pending = new ConcurrentHashMap<>();
@@ -60,12 +62,19 @@ public class PlayerActionGateListener implements Listener {
      * @param timeoutSeconds allocate anyway after this long, or 0 to wait indefinitely.
      *                       Read per player rather than captured, so {@code /sgen reload}
      *                       takes effect without re-registering the listener.
+     * @param detectedLoginPlugins names of the login plugins found at startup, or empty.
+     *                             Used only to word the timeout warning: a server with none
+     *                             installed is far more likely stalled behind an anti-cheat
+     *                             or an idle player, and telling its owner to look at a
+     *                             login plugin sends them somewhere there is nothing to find
      */
     public PlayerActionGateListener(JavaPlugin plugin, BiConsumer<Player, String> onRelease,
-                                    IntSupplier timeoutSeconds) {
+                                    IntSupplier timeoutSeconds,
+                                    Supplier<String> detectedLoginPlugins) {
         this.plugin = plugin;
         this.onRelease = onRelease;
         this.timeoutSeconds = timeoutSeconds;
+        this.detectedLoginPlugins = detectedLoginPlugins;
     }
 
     /**
@@ -120,19 +129,27 @@ public class PlayerActionGateListener implements Listener {
      * owns this player on Folia, and it drops the task automatically when they disconnect,
      * which is why no cleanup is needed on quit beyond forgetting the map entry.
      *
-     * <p>The timeout can fire while a login plugin is still holding the player, which is
-     * the very thing the gate exists to prevent, so it logs at warning rather than
-     * silently. An administrator seeing it repeatedly has a login plugin whose limbo this
-     * gate cannot read, and should switch the trigger to ON_JOIN or report it.
+     * <p>The timeout can fire while a login plugin is still holding the player, which is the
+     * very thing the gate exists to prevent, so it logs at warning rather than silently. The
+     * message names whichever login plugins were actually detected, because the right next
+     * step differs sharply: with one installed, its limbo is unreadable and {@code /sgen
+     * allocate} from its on-login hook is the fix; with none, the cause is something else
+     * entirely and pointing at login plugins wastes the reader's time.
      */
     private void armTimeout(Player player, int timeout) {
         player.getScheduler().runDelayed(plugin, task -> {
             if (!pending.containsKey(player.getUniqueId())) {
                 return;
             }
+            String detected = detectedLoginPlugins.get();
+            String cause = detected.isEmpty()
+                    ? "No login plugin was detected, so this is more likely an anti-cheat or "
+                            + "region plugin suppressing their actions, or simply a player who "
+                            + "has not moved."
+                    : detected + " is installed and may still be holding this player. If this "
+                            + "repeats, run 'sgen allocate <player>' from its on-login hook.";
             plugin.getLogger().warning("No uncancelled action from " + player.getName() + " within "
-                    + timeout + "s; allocating anyway. If a login plugin is installed, it may "
-                    + "still be holding this player.");
+                    + timeout + "s; allocating anyway. " + cause);
             release(player, "timeout");
         }, null, timeout * 20L);
     }

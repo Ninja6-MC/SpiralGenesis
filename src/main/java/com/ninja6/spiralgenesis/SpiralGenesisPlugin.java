@@ -37,6 +37,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
 
+    /** Login plugins found at startup. Reported, and used to word the gate's timeout warning. */
+    private List<String> detectedLoginPlugins = List.of();
+
     /**
      * Login plugins this project is aware of, for reporting only.
      *
@@ -64,9 +67,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         initSpawnManager();
 
+        this.detectedLoginPlugins = KNOWN_LOGIN_PLUGINS.stream()
+                .filter(name -> getServer().getPluginManager().getPlugin(name) != null)
+                .toList();
+
         // Register event listeners
         this.actionGate = new PlayerActionGateListener(this, this::handlePlayerFirstJoin,
-                () -> pluginConfig.getActionTimeoutSeconds());
+                () -> pluginConfig.getActionTimeoutSeconds(),
+                () -> String.join(", ", detectedLoginPlugins));
         getServer().getPluginManager().registerEvents(actionGate, this);
         getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this, actionGate), this);
 
@@ -120,9 +128,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     /** States which gating mode is in effect, and why, while the log is still readable. */
     private void reportAllocationTrigger() {
-        List<String> found = KNOWN_LOGIN_PLUGINS.stream()
-                .filter(name -> getServer().getPluginManager().getPlugin(name) != null)
-                .toList();
+        List<String> found = detectedLoginPlugins;
         String detected = found.isEmpty() ? "none detected" : String.join(", ", found);
 
         if (pluginConfig.getAllocationTrigger() == AllocationTrigger.ON_JOIN) {

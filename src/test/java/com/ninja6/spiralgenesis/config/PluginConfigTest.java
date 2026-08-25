@@ -30,7 +30,7 @@ class PluginConfigTest {
         assertEquals(8, config.getMaxPitDepth());
         assertEquals(12, config.getMaxRoughness());
         assertEquals(AllocationTrigger.FIRST_ACTION, config.getAllocationTrigger());
-        assertEquals(120, config.getActionTimeoutSeconds());
+        assertEquals(300, config.getActionTimeoutSeconds());
     }
 
     @Test
