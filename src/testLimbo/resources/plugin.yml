@@ -1,0 +1,14 @@
+# Test fixture only. Built by the `testLimboJar` task and installed by the CI smoke test;
+# it is never part of the shipped SpiralGenesis jar.
+name: TestLimbo
+version: '1.0.0'
+main: com.ninja6.testlimbo.TestLimboPlugin
+api-version: '1.20'
+author: Ninja6-MC
+description: Reproduces the limbo behaviour of real login plugins, for testing.
+folia-supported: true
+
+commands:
+  testlimbo:
+    description: Control the simulated limbo
+    usage: /testlimbo <release|hold|handlers>

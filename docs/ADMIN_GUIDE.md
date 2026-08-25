@@ -154,20 +154,95 @@ cannot fit that many without the search leaving the cell.
 2. `PlayerJoinEvent` fires. If the UUID is absent from `data.yml`, allocation runs and the
    player is teleported to the result.
 
-### Java behind AuthMe-Reloaded
+### Java (`allocation.trigger: FIRST_ACTION`, the default)
 
-1. Java client connects; AuthMe holds the player in limbo at its own lobby.
-2. Player runs `/register <password> <password>` or `/login <password>`.
-3. AuthMe's `RegisterEvent` / `LoginEvent` fires. If the UUID is absent from `data.yml`,
-   allocation runs, coordinates are saved, and the player is teleported.
-4. Returning players have their respawn point restored.
+1. Java client connects. `PlayerJoinEvent` fires and the player is **held**, not allocated.
+2. If a login plugin is installed it holds the player in limbo, suppressing their movement
+   and interactions. SpiralGenesis observes only actions that arrive intact, so it waits.
+3. The player authenticates. Their actions stop being suppressed.
+4. Their first uncancelled movement, interaction or item drop allocates the plot, saves the
+   coordinates, and teleports them.
+5. Returning players have their respawn point restored.
 
-Gating on the AuthMe event rather than on join is deliberate: it stops unauthenticated
-sessions from loading chunks.
+Where no login plugin is installed, nothing cancels anything and step 4 happens on the
+player's first step, effectively immediately.
 
-### Java without AuthMe
+This is deliberately **not** tied to a particular login plugin. There is no shared
+authentication API in this ecosystem, but every login plugin enforces limbo by suppressing
+what an unauthenticated player does. Gating on that covers AuthMe, nLogin, LibreLogin,
+OpeNLogin and anything else, including plugins that do not exist yet.
+
+Suppression takes more than one form and the gate reads all of them. This was verified by
+reading how each plugin actually implements limbo, not assumed:
+
+| Plugin | Movement | Interaction / drops |
+| :--- | :--- | :--- |
+| AuthMe 5.6.0 | `setTo(from)` at `HIGHEST`, never cancelled | cancelled at `LOWEST` |
+| OpeNLogin | `setTo(from)` at `HIGH`, descent permitted | cancelled at `LOWEST` / `HIGH` |
+| LibreLogin (Paper) | cancelled at `LOWEST` | cancelled at `LOWEST` |
+
+Two of the three never cancel a move at all; they rewrite its destination instead, which
+avoids the "too many packets" disconnect that repeated teleporting causes. An event pinned
+that way arrives uncancelled, so the gate checks that a move actually changed the block the
+player occupies rather than trusting that it was delivered. Descending movement never counts,
+because OpeNLogin declines to pin a falling player at all and applies no block-column test
+when doing so, so a held player drifting sideways as they fall would otherwise open the
+gate. Once free, walking produces level moves continuously, so this costs nothing.
+
+### When the gate cannot read your login plugin
+
+If players are never placed, or are only placed once `action-timeout-seconds` fires, the
+gate cannot see your login plugin's limbo. A plugin that suppresses actions below the Bukkit
+event layer produces nothing for the gate to observe.
+
+Every login plugin can run console commands on a successful login. Point one at
+SpiralGenesis and the guesswork disappears:
+
+```
+# AuthMe: plugins/AuthMe/commands.yml
+onLogin:
+  placePlayer:
+    command: 'sgen allocate %p'
+    executor: CONSOLE
+```
+
+`/sgen allocate <player>` places a player who has no plot yet and does nothing for anyone
+who already has one, so it is safe to run on every login. It is not `/sgen reassign`, which
+discards an existing plot and consumes a fresh spiral index.
+
+Consult your own plugin's documentation for the equivalent section; the placeholder for the
+player's name differs between them.
+
+### Limitations
+
+Three limitations follow, all minor. Clicking air cannot open the gate, because Bukkit
+reports every air interaction as cancelled regardless of who is listening; a block
+interaction works. If AuthMe is configured with `AllowUnauthedMovement` enabled, an
+unauthenticated player really can walk, so movement stops being proof and the gate may open
+early. And `nLogin` and `JPremium` are closed source, so their limbo implementations have
+not been verified the way the three above were; if you run either, watch the startup log and
+confirm players are not placed before they log in.
+
+If AuthMe specifically is installed, its `RegisterEvent` / `LoginEvent` allocates the player
+the instant they authenticate rather than on their next action. This is a convenience, not a
+requirement: allocation is idempotent, so whichever path fires first wins, and if the AuthMe
+API cannot be bound the action gate still covers it. A warning is logged in that case.
+
+`allocation.action-timeout-seconds` (default 300) is the backstop. A player connected that
+long without producing a single uncancelled action is allocated anyway, with a warning. This
+prevents a login plugin whose limbo cannot be read from leaving players permanently
+unallocated. Set it to `0` to wait indefinitely instead.
+
+### Java (`allocation.trigger: ON_JOIN`)
 
 Allocation runs on `PlayerJoinEvent`, exactly as it does for Bedrock.
+
+Correct on an online-mode server, and on a network that authenticates at the proxy or on a
+separate backend server, because a player reaching this server is already authenticated.
+**Do not use it on a server running a login plugin locally**: it allocates before the player
+has proven anything, which permanently burns a spiral index per connection and races the
+login plugin's own position restore. SpiralGenesis logs a warning at startup if it sees a
+known login plugin while this trigger is set.
 
 ### Respawn
 
@@ -275,9 +350,11 @@ Worth running once on a staging server before going live:
 | Sequential allocation | Join with 4 test accounts in sequence. | Plots at (0,0), (N,0), (N,N), (0,N) offsets. |
 | Ocean skipping | Set the origin so a cell centre lands in deep ocean. | Cell skipped, next index allocated on dry land. |
 | Bedrock first join | Connect a Bedrock client via Geyser/Floodgate. | Allocated and teleported on join. |
-| AuthMe gating | Connect a Java client with AuthMe installed. | No allocation until `/register` or `/login`. |
+| Action gating | Connect a Java client with any login plugin installed. | No allocation until `/register` or `/login` completes. |
+| Gate backstop | Connect, then stand still past `action-timeout-seconds`. | Allocated anyway, with a warning in the console. |
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
+| Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
 
 ---
 
@@ -293,7 +370,8 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | Rejection reasons | `manager/RejectionReason.java` | The rule names reported by simulation | §3 |
 | Simulation | `manager/SpawnSimulator.java` | `/sgen simulate` dry runs | §7 |
 | Join lifecycle | `listeners/PlayerSpawnListener.java` | First-join and respawn hooks | §5 |
-| Java auth gating | `listeners/AuthMeHookListener.java` | Defers allocation until AuthMe login | §5 |
+| Action gating | `listeners/PlayerActionGateListener.java` | Holds allocation until an uncancelled action | §5 |
+| AuthMe fast path | `listeners/AuthMeHookListener.java` | Optional: allocates on AuthMe login | §5 |
 | Bedrock detection | `hook/FloodgateHook.java` | Identifies Floodgate players | §5 |
 | AuthMe bridge | `hook/AuthMeHook.java` | Soft-dependency wrapper around the AuthMe API | §5 |
 | Persistence | `storage/YamlDataStorage.java` | Per-player registry in `data.yml` | §6 |

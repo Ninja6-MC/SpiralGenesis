@@ -1,6 +1,7 @@
 package com.ninja6.spiralgenesis.listeners;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
+import com.ninja6.spiralgenesis.config.AllocationTrigger;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -12,25 +13,42 @@ import org.bukkit.event.player.PlayerRespawnEvent;
 public class PlayerSpawnListener implements Listener {
 
     private final SpiralGenesisPlugin plugin;
+    private final PlayerActionGateListener gate;
 
-    public PlayerSpawnListener(SpiralGenesisPlugin plugin) {
+    public PlayerSpawnListener(SpiralGenesisPlugin plugin, PlayerActionGateListener gate) {
         this.plugin = plugin;
+        this.gate = gate;
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
 
-        // If Floodgate is installed and player is on Bedrock, allocate spawn immediately on join
+        // Returning players are the common case and have nothing to allocate. Gating them
+        // would arm a timeout per join and, for anyone who joins and then stands still,
+        // fire the backstop warning about a limbo that is not holding them and a login
+        // plugin that may not exist.
+        if (plugin.getDataStorage().hasSpawn(player.getUniqueId())) {
+            return;
+        }
+
+        // Bedrock players are never gated: Floodgate authenticates them against Xbox Live
+        // during the connection itself, so there is no limbo to wait out.
         if (plugin.getFloodgateHook().isBedrockPlayer(player.getUniqueId())) {
             plugin.handlePlayerFirstJoin(player, "BEDROCK");
             return;
         }
 
-        // If AuthMe is NOT installed, allocate Java players immediately on join
-        if (!plugin.getAuthMeHook().isInstalled()) {
+        if (plugin.getPluginConfig().getAllocationTrigger() == AllocationTrigger.ON_JOIN) {
             plugin.handlePlayerFirstJoin(player, "JAVA");
+            return;
         }
+
+        // Held until the player proves nothing is holding them. An installed login plugin
+        // adapter may still allocate them sooner, in which case that path drops the player
+        // from the gate on its way through handlePlayerFirstJoin, so this one cannot fire
+        // afterwards. That hand-off is what keeps the two from each reserving an index.
+        gate.markPending(player, "JAVA");
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)

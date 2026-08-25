@@ -54,3 +54,27 @@ safety:
   # Reject a candidate whose immediate surroundings vary by more than this many blocks,
   # which rules out cliff edges, spikes and jagged terrain. Clamped to 1-128.
   max-roughness: 12
+
+# When a Java player's plot is allocated relative to their connecting. Bedrock players are
+# unaffected: Floodgate has already authenticated them on join, so they are always
+# allocated there.
+allocation:
+  # FIRST_ACTION - wait until the player does something that was not suppressed, then
+  #                allocate. Login plugins (AuthMe, nLogin, LibreLogin and the rest) hold
+  #                unauthenticated players by suppressing what they do - cancelling it, or
+  #                pinning them in place - so this gates behind any of them without
+  #                depending on a particular one. Where no login plugin is installed
+  #                nothing is suppressed and the first step allocates immediately.
+  #                (Default)
+  # ON_JOIN      - allocate the moment the player joins. Correct on an online-mode server,
+  #                and on a network authenticating at the proxy or on a separate backend,
+  #                since the player reaching this server is already authenticated. Do not
+  #                use it on a server running a login plugin locally.
+  trigger: FIRST_ACTION
+  # FIRST_ACTION only: allocate anyway once a player has been connected this long without
+  # producing an uncancelled action, so a login plugin whose limbo this cannot read leaves
+  # players delayed rather than permanently unallocated. Logged at warning when it fires.
+  # Set to 0 to wait indefinitely instead, at the cost of stranding players permanently if
+  # the limbo cannot be read. Generous by default: a first-time player reading the rules
+  # while choosing a password should never trip it. Clamped to 15-3600.
+  action-timeout-seconds: 300

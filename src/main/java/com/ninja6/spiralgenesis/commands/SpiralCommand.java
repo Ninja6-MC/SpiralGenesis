@@ -54,6 +54,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         switch (sub) {
             case "setcenter" -> handleSetCenter(sender, args);
             case "setspawn" -> handleSetSpawn(sender, args);
+            case "allocate" -> handleAllocate(sender, args);
             case "reassign" -> handleReassign(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
@@ -145,6 +146,49 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         plugin.getLogger().info(sender.getName() + " manually set spawn for " + target.getName()
                 + " to (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ()
                 + ") in world '" + loc.getWorld().getName() + "'. The spiral index is unchanged.");
+    }
+
+    /**
+     * Allocates a player who is being held by the action gate.
+     *
+     * <p>Exists to be run from a login plugin's own "commands to execute on login" config,
+     * which every such plugin has. That makes SpiralGenesis usable behind a login plugin it
+     * cannot read - nLogin and JPremium are closed source, and one suppressing actions below
+     * the Bukkit event layer would produce no uncancelled action to gate on - without
+     * SpiralGenesis depending on, or knowing about, that plugin.
+     *
+     * <p>Distinct from {@code reassign}, which discards an existing plot and burns a fresh
+     * spiral index. This only allocates a player who does not have one, so wiring it to
+     * every login is safe: returning players are a no-op rather than being relocated away
+     * from whatever they have built.
+     */
+    private void handleAllocate(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen allocate <player>");
+            return;
+        }
+
+        Player target = Bukkit.getPlayer(args[1]);
+        if (target == null) {
+            sender.sendMessage(ChatColor.RED + "Player not found or offline.");
+            return;
+        }
+
+        if (plugin.getDataStorage().hasSpawn(target.getUniqueId())) {
+            sender.sendMessage(ChatColor.YELLOW + target.getName()
+                    + " already has a plot; nothing to do. Use /sgen reassign to move them.");
+            return;
+        }
+
+        sender.sendMessage(ChatColor.YELLOW + "Allocating " + target.getName() + "...");
+        plugin.getLogger().info(sender.getName() + " released " + target.getName()
+                + " from the allocation gate manually.");
+        // Asking Floodgate rather than assuming: this command is reachable for a Bedrock
+        // player whose detection failed at join, and the client type is written to data.yml
+        // permanently.
+        String clientType = plugin.getFloodgateHook().isBedrockPlayer(target.getUniqueId())
+                ? "BEDROCK" : "JAVA";
+        plugin.allocateNow(target, clientType);
     }
 
     private void handleReassign(CommandSender sender, String[] args) {
@@ -351,6 +395,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Admin Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/sgen setcenter [x z]" + ChatColor.WHITE + " - Sets the global origin.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen setspawn <player> [x y z]" + ChatColor.WHITE + " - Sets a player's spawn.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen allocate <player>" + ChatColor.WHITE + " - Places a player held by the allocation gate.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen reassign <player>" + ChatColor.WHITE + " - Allocates fresh spiral plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
@@ -365,7 +410,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "reassign", "tp", "info", "simulate", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "tp", "info", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {
@@ -375,7 +420,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return matches;
         }
 
-        if (args.length == 2 && Arrays.asList("setspawn", "reassign", "tp", "info").contains(args[0].toLowerCase())) {
+        if (args.length == 2 && Arrays.asList("setspawn", "allocate", "reassign", "tp", "info").contains(args[0].toLowerCase())) {
             List<String> playerNames = new ArrayList<>();
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase().startsWith(args[1].toLowerCase())) {

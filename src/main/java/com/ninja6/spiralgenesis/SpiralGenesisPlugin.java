@@ -4,7 +4,9 @@ import com.ninja6.spiralgenesis.commands.SpiralCommand;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.hook.AuthMeHook;
 import com.ninja6.spiralgenesis.hook.FloodgateHook;
+import com.ninja6.spiralgenesis.config.AllocationTrigger;
 import com.ninja6.spiralgenesis.listeners.AuthMeHookListener;
+import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.DataStorage;
@@ -13,10 +15,13 @@ import org.bukkit.Bukkit;
 import org.bukkit.World;
 import org.bukkit.command.PluginCommand;
 import org.bukkit.entity.Player;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
@@ -30,6 +35,21 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private SpawnManager spawnManager;
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
+    private PlayerActionGateListener actionGate;
+
+    /** Login plugins found at startup. Reported, and used to word the gate's timeout warning. */
+    private List<String> detectedLoginPlugins = List.of();
+
+    /**
+     * Login plugins this project is aware of, for reporting only.
+     *
+     * <p>Never branched on. The gate works by observing that <em>something</em> is holding
+     * the player, which is what lets it cover login plugins not on this list, including
+     * ones that do not exist yet. The list exists so an administrator can read which mode
+     * was chosen out of the startup log instead of inferring it from player behaviour.
+     */
+    private static final List<String> KNOWN_LOGIN_PLUGINS = List.of(
+            "AuthMe", "nLogin", "LibreLogin", "OpeNLogin", "UserLogin", "JPremium");
 
     /** Players with an allocation currently in flight; guards against double assignment. */
     private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
@@ -47,13 +67,19 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         initSpawnManager();
 
-        // Register event listeners
-        getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this), this);
+        this.detectedLoginPlugins = KNOWN_LOGIN_PLUGINS.stream()
+                .filter(name -> getServer().getPluginManager().getPlugin(name) != null)
+                .toList();
 
-        if (authMeHook.isInstalled()) {
-            getLogger().info("Detected AuthMe-Reloaded! Enabling authentication-gated spawn listener.");
-            getServer().getPluginManager().registerEvents(new AuthMeHookListener(this), this);
-        }
+        // Register event listeners
+        this.actionGate = new PlayerActionGateListener(this, this::handlePlayerFirstJoin,
+                () -> pluginConfig.getActionTimeoutSeconds(),
+                () -> String.join(", ", detectedLoginPlugins));
+        getServer().getPluginManager().registerEvents(actionGate, this);
+        getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this, actionGate), this);
+
+        registerAuthMeAdapter();
+        reportAllocationTrigger();
 
         if (floodgateHook.isInstalled()) {
             getLogger().info("Detected Geyser/Floodgate! Enabling Bedrock auto-authentication hooks.");
@@ -76,6 +102,44 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             dataStorage.shutdown();
         }
         getLogger().info("SpiralGenesis disabled.");
+    }
+
+    /**
+     * Registers the AuthMe fast path, if AuthMe is present.
+     *
+     * <p>Optional in the strong sense: {@link AuthMeHookListener} names AuthMe's event
+     * classes directly, so registering it resolves them, and a version whose events have
+     * moved would throw here. Allocation does not depend on this succeeding - the action
+     * gate covers AuthMe like any other login plugin - so a failure is reported and
+     * swallowed rather than taking the whole plugin's enable down with it.
+     */
+    private void registerAuthMeAdapter() {
+        if (!authMeHook.isInstalled()) {
+            return;
+        }
+        try {
+            getServer().getPluginManager().registerEvents(new AuthMeHookListener(this), this);
+            getLogger().info("Detected AuthMe-Reloaded; allocating on its login event.");
+        } catch (Throwable t) {
+            getLogger().log(Level.WARNING, "AuthMe is installed but its API could not be bound. "
+                    + "Falling back to the generic action gate.", t);
+        }
+    }
+
+    /** States which gating mode is in effect, and why, while the log is still readable. */
+    private void reportAllocationTrigger() {
+        List<String> found = detectedLoginPlugins;
+        String detected = found.isEmpty() ? "none detected" : String.join(", ", found);
+
+        if (pluginConfig.getAllocationTrigger() == AllocationTrigger.ON_JOIN) {
+            getLogger().info("Allocation trigger: ON_JOIN (login plugins: " + detected + ").");
+            if (!found.isEmpty()) {
+                getLogger().warning("ON_JOIN allocates before " + detected + " has authenticated "
+                        + "anyone. Use FIRST_ACTION unless this server authenticates elsewhere.");
+            }
+            return;
+        }
+        getLogger().info("Allocation trigger: FIRST_ACTION (login plugins: " + detected + ").");
     }
 
     public void reload() {
@@ -116,7 +180,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public void handlePlayerFirstJoin(Player player, String clientType) {
         UUID uuid = player.getUniqueId();
+
         if (dataStorage.hasSpawn(uuid)) {
+            // Nothing to allocate, so nothing left to wait for either.
+            forgetFromGate(uuid);
             return;
         }
 
@@ -125,6 +192,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
 
         if (spawnManager == null) {
+            // Effectively unreachable: initSpawnManager falls back to the first loaded world,
+            // so this needs Bukkit.getWorlds() to be empty, which cannot be true while a
+            // player is connected. Left as a guard rather than an assertion because the
+            // fallback is a detail of that method, not a contract.
+            //
+            // The player is not dropped from the gate here, which helps only a caller that
+            // did not arrive through the gate itself - AuthMe's listener, or /sgen allocate.
+            // PlayerActionGateListener.release removes them before calling in, so for the
+            // three action paths there is nothing left to retry with. Making that uniform
+            // would mean re-arming the gate, which is not worth doing for a branch that
+            // cannot be reached.
             getLogger().severe("Cannot allocate spawn: SpawnManager world is unavailable!");
             return;
         }
@@ -133,32 +211,129 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return; // An allocation for this player is already in flight.
         }
 
+        // Ownership is now taken, and only now. Every path into allocation passes through
+        // here, so this is the one place that can guarantee the gate stops watching a
+        // player somebody else is allocating - which is what the AuthMe fast path failed to
+        // do, leaving a player who had been allocated on LoginEvent to be released again by
+        // their first step. It must not run before the bail-outs above: surrendering the
+        // gate without taking ownership loses the player entirely.
+        //
+        // Not covered by a test. MockBukkit implements neither the entity scheduler nor
+        // async chunk loading, so this method cannot be driven from one without a seam of
+        // the kind SpawnManager grew for the same reason. The ordering is load-bearing, so
+        // it is worth a test once that seam exists.
+        forgetFromGate(uuid);
+
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
+
+        // Completed once the outcome is settled either way, and what the in-flight guard is
+        // released on. Chaining that release onto the allocation future instead cleared it
+        // as soon as the entity task was *scheduled*, leaving at least a tick in which
+        // storage still reported the player unassigned and nothing guarded them - wide
+        // enough for a second caller to reserve a second index and burn it.
+        CompletableFuture<Void> applied = new CompletableFuture<>();
+        applied.whenComplete((ignored, ex) -> allocating.remove(uuid));
 
         // The index is claimed atomically inside the scan, so concurrent joins never
         // resolve to the same grid cell.
-        spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
-            // Player state must be touched on the thread owning that player. The entity
-            // scheduler is that thread on Folia and the main thread on Paper; it also drops
-            // the task automatically if the player disconnects before it runs.
-            player.getScheduler().run(this, task -> {
-                if (!player.isOnline()) return;
+        //
+        // Wrapped because allocateNextSafeSpawn does real work on this thread before it
+        // returns a future - it claims an index and requests the first chunk - so a throw
+        // there escapes before exceptionally() below is ever attached. That would leave the
+        // guard held for the lifetime of the process, and a player permanently unallocatable.
+        try {
+            spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
+                // Player state must be touched on the thread owning that player. The entity
+                // scheduler is that thread on Folia and the main thread on Paper; it also drops
+                // the task automatically if the player disconnects before it runs.
+                ScheduledTask scheduled = player.getScheduler().run(this, task -> {
+                    try {
+                        if (!player.isOnline()) return;
 
-                dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
+                        dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
-                player.setRespawnLocation(res.location(), true);
-                player.teleportAsync(res.location()).thenAccept(success -> {
-                    if (success) {
-                        getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
-                                " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                        player.setRespawnLocation(res.location(), true);
+                        player.teleportAsync(res.location()).thenAccept(success -> {
+                            if (Boolean.TRUE.equals(success)) {
+                                getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
+                                        " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                                return;
+                            }
+                            // Recoverable rather than fatal: the plot is recorded and their
+                            // respawn point already points at it. But storage now claims a
+                            // location the player is not standing at and nothing retries, so it
+                            // must not pass silently. A login plugin cancelling teleports for
+                            // unauthenticated players is the likeliest cause.
+                            getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
+                                    + " but the teleport did not complete; they are recorded at ("
+                                    + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
+                                    + res.location().getBlockZ() + ") without having been moved there.");
+                        }).exceptionally(ex -> {
+                            // thenAccept above runs only on normal completion, so without this
+                            // a teleport that fails outright is exactly as silent as the case
+                            // the warning was added for.
+                            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
+                                    + res.index() + " but the teleport failed; they are recorded there "
+                                    + "without having been moved.", ex);
+                            return null;
+                        });
+                    } finally {
+                        // Inside the task, so the guard outlives the write that makes
+                        // hasSpawn() true rather than being released before it.
+                        applied.complete(null);
                     }
+                }, () -> {
+                    getLogger().fine("Player " + player.getName()
+                            + " disconnected before their plot could be applied; index already reserved.");
+                    applied.complete(null);
                 });
-            }, () -> getLogger().fine("Player " + player.getName()
-                    + " disconnected before their plot could be applied; index already reserved."));
-        }).exceptionally(ex -> {
-            getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
-            return null;
-        }).whenComplete((ignored, ex) -> allocating.remove(uuid));
+
+                // A null task means the scheduler refused the work outright, in which case
+                // neither callback above ever runs and the guard would leak.
+                if (scheduled == null) {
+                    applied.complete(null);
+                }
+            }).exceptionally(ex -> {
+                getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
+                applied.complete(null);
+                return null;
+            });
+        } catch (Exception e) {
+            // Exception, not Throwable: an OutOfMemoryError or StackOverflowError reported as
+            // a per-player allocation failure would leave the server running in a state
+            // nobody has assessed. Releasing the guard first keeps this player allocatable
+            // if the server does survive.
+            getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
+                    + " failed before it could start.", e);
+            applied.complete(null);
+        } catch (Throwable t) {
+            applied.complete(null);
+            throw t;
+        }
+    }
+
+    /** Drops a player from the action gate, if there is one. */
+    private void forgetFromGate(UUID uuid) {
+        if (actionGate != null) {
+            actionGate.forget(uuid);
+        }
+    }
+
+    /**
+     * Allocates a held player immediately, bypassing the action gate.
+     *
+     * <p>The escape hatch for a login plugin whose limbo the gate cannot read. nLogin and
+     * JPremium are closed source, so their limbo implementations cannot be verified the way
+     * AuthMe's, OpeNLogin's and LibreLogin's were, and a login plugin that suppresses
+     * actions below the Bukkit event layer would leave a player held until the timeout.
+     * Every such plugin can run a console command on successful login, which makes this
+     * reachable without SpiralGenesis knowing anything about it.
+     *
+     * <p>Idempotent, like every other path into allocation: calling it for a player who
+     * already has a plot does nothing.
+     */
+    public void allocateNow(Player player, String clientType) {
+        handlePlayerFirstJoin(player, clientType);
     }
 
     public PluginConfig getPluginConfig() {

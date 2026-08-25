@@ -29,6 +29,63 @@ class PluginConfigTest {
         assertEquals(110, config.getHeightCeiling());
         assertEquals(8, config.getMaxPitDepth());
         assertEquals(12, config.getMaxRoughness());
+        assertEquals(AllocationTrigger.FIRST_ACTION, config.getAllocationTrigger());
+        assertEquals(300, config.getActionTimeoutSeconds());
+    }
+
+    @Test
+    @DisplayName("The allocation trigger is read, and an unrecognised one falls back to gating")
+    void testAllocationTrigger() {
+        assertEquals(AllocationTrigger.ON_JOIN, parse("""
+                allocation:
+                  trigger: ON_JOIN
+                """).getAllocationTrigger());
+
+        assertEquals(AllocationTrigger.FIRST_ACTION, parse("""
+                allocation:
+                  trigger: first_action
+                """).getAllocationTrigger());
+
+        // A typo must not silently open the gate: that would allocate players who are
+        // still held in limbo, which is the failure the trigger exists to prevent.
+        assertEquals(AllocationTrigger.FIRST_ACTION, parse("""
+                allocation:
+                  trigger: ON_JOIM
+                """).getAllocationTrigger());
+    }
+
+    @Test
+    @DisplayName("A zero action timeout disables the backstop rather than being clamped up")
+    void testActionTimeoutZeroIsPreserved() {
+        assertEquals(0, parse("""
+                allocation:
+                  action-timeout-seconds: 0
+                """).getActionTimeoutSeconds());
+
+        assertEquals(0, parse("""
+                allocation:
+                  action-timeout-seconds: -5
+                """).getActionTimeoutSeconds());
+    }
+
+    @Test
+    @DisplayName("A non-zero action timeout is clamped away from firing mid-login")
+    void testActionTimeoutClamps() {
+        // A few seconds would fire while the player is still typing their password.
+        assertEquals(PluginConfig.MIN_ACTION_TIMEOUT, parse("""
+                allocation:
+                  action-timeout-seconds: 1
+                """).getActionTimeoutSeconds());
+
+        assertEquals(PluginConfig.MAX_ACTION_TIMEOUT, parse("""
+                allocation:
+                  action-timeout-seconds: 999999
+                """).getActionTimeoutSeconds());
+
+        assertEquals(300, parse("""
+                allocation:
+                  action-timeout-seconds: 300
+                """).getActionTimeoutSeconds());
     }
 
     @Test
