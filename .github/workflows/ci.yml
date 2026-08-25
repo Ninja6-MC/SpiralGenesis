@@ -65,8 +65,8 @@ jobs:
 
       # The stand-in login plugin. Built here rather than in the smoke job so the fixture
       # is compiled once against the same API as the plugin it is testing.
-      - name: Build Test Limbo Fixture
-        run: ./gradlew testLimboJar --no-daemon
+      - name: Build Test Fixtures
+        run: ./gradlew testLimboJar botClientJar --no-daemon
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -78,11 +78,11 @@ jobs:
       # A separate artifact, not folded into the one above: the smoke job picks the plugin
       # jar out of a directory, and a second jar sitting beside it invites the wrong one
       # being installed as the plugin under test.
-      - name: Upload Test Limbo Fixture
+      - name: Upload Test Fixtures
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: TestLimbo-fixture
-          path: build/test-fixtures/TestLimbo.jar
+          name: smoke-fixtures
+          path: build/test-fixtures/*.jar
           retention-days: 7
 
   # Gate for the icons job below. A job-level `if` cannot see which files changed, and
@@ -224,6 +224,22 @@ jobs:
             java: '21'
             limbo_mode: 'PIN_ALLOW_FALL'
             samples: '5'
+          # The only entry that connects an actual player. A real protocol client joins,
+          # is held by the limbo, is released, and must then be allocated - which exercises
+          # PlayerJoinEvent, the gate holding and releasing, and the teleport, none of which
+          # any other entry reaches.
+          #
+          # Pinned to 1.21.11 because the client library's protocol version has to match the
+          # server's exactly. Other Minecraft versions in this matrix have their own client
+          # builds available; a second entry is only worth adding if a version-specific
+          # difference in the join path is ever suspected.
+          - label: 'paper 1.21.11 real player through the gate'
+            platform: paper
+            minecraft: '1.21.11'
+            java: '21'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            samples: '5'
           - label: 'paper 1.20.4 mountainous'
             platform: paper
             minecraft: '1.20.4'
@@ -255,11 +271,11 @@ jobs:
           name: SpiralGenesis-SNAPSHOT
           path: dist
 
-      - name: Download Test Limbo Fixture
+      - name: Download Test Fixtures
         if: matrix.limbo_mode != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: TestLimbo-fixture
+          name: smoke-fixtures
           path: fixture
 
       - name: Boot Server and Verify Plugin Loads
@@ -285,14 +301,27 @@ jobs:
             fi
             echo "Installing limbo fixture $LIMBO in mode $LIMBO_MODE"
           fi
+          BOT=""
+          if [ -n "${{ matrix.bot }}" ]; then
+            BOT="$(find fixture -name 'GateProbeBot*.jar' | head -1)"
+            # Same reasoning as above: an empty argument would silently drop every
+            # real-player assertion and still report success.
+            if [ -z "$BOT" ]; then
+              echo "::error::This entry runs the bot but no GateProbeBot jar was downloaded."
+              exit 1
+            fi
+            echo "Driving a real player with $BOT"
+          fi
           echo "Testing with $JAR"
-          .github/scripts/smoke-test.sh "${{ matrix.platform }}" "${{ matrix.minecraft }}" "$JAR" $LIMBO
+          .github/scripts/smoke-test.sh "${{ matrix.platform }}" "${{ matrix.minecraft }}" "$JAR" $LIMBO $BOT
 
       - name: Upload Server Log
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: server-log-${{ matrix.label }}
-          path: run-${{ matrix.platform }}/server.log
+          path: |
+            run-${{ matrix.platform }}/server.log
+            run-${{ matrix.platform }}/bot.log
           retention-days: 7
           if-no-files-found: warn
