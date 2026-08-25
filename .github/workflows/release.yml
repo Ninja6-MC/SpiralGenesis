@@ -63,7 +63,28 @@ jobs:
       # Before anything that could execute it, and in every workflow that runs ./gradlew.
       # Validating after the fact would prove only that the jar which already ran was the
       # right one.
+      #
+      # The check reaches services.gradle.org, and that call has no retry of its own.
+      # It failed twice on 2026-08-25 with ENETUNREACH and ETIMEDOUT, on unrelated pull
+      # requests, and a re-run cleared it both times. Because the step runs early, a
+      # transient failure costs the whole job; because it runs here in release.yml too,
+      # it can fail a tagged release and force the publish steps to be re-run. So it is
+      # attempted twice before the job is allowed to fail.
+      #
+      # Pinning the expected checksum into this repository would remove the network call
+      # rather than soften it, and was rejected: the guarantee this check provides is
+      # that the checksum comes from a source an attacker editing this repository cannot
+      # also edit. A committed checksum can be changed in the same pull request as the
+      # jar it describes.
       - name: Validate Gradle Wrapper
+        id: wrapper-validation
+        continue-on-error: true
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+
+      # Only reached when the first attempt failed. This one is not tolerated: a wrapper
+      # that fails validation twice fails the job.
+      - name: Validate Gradle Wrapper (retry)
+        if: steps.wrapper-validation.outcome == 'failure'
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
 
       - name: Set up Java 21
