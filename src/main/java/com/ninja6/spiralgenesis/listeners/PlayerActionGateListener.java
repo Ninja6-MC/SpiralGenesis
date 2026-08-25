@@ -190,9 +190,11 @@ public class PlayerActionGateListener implements Listener {
             }
             String detected = detectedLoginPlugins.get();
             String cause = detected.isEmpty()
-                    ? "No login plugin was detected, so this is more likely an anti-cheat or "
-                            + "region plugin suppressing their actions, or simply a player who "
-                            + "has not moved."
+                    ? "No login plugin was detected. The usual cause is a hub or spawn plugin "
+                            + "teleporting players on join: a teleport is not a move event, so a "
+                            + "player who is placed and then stands still produces nothing for the "
+                            + "gate to read. An anti-cheat or region plugin suppressing their "
+                            + "actions would do the same."
                     : detected + " is installed and may still be holding this player. If this "
                             + "repeats, run 'sgen allocate <player>' from its on-login hook.";
             plugin.getLogger().warning("No uncancelled action from " + player.getName() + " within "
