@@ -53,7 +53,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the reason to run it, so refusing would remove the tool from the case it serves, and
   relocating the admin would answer a question they did not ask. The check runs through
   `SpawnManager`, which awaits the chunk before reading a block - the only ordering Folia
-  permits, and necessary here because the plot is almost never resident.
+  permits, and necessary here because the plot is almost never resident. The command also
+  no longer reports success for a teleport that was refused, which matters because it is
+  what the admin guide names when a plot teleport is refused in the first place.
 - A stored spawn was validated once, when it was allocated, and never again. Cells are 500
   blocks wide and the plugin has no claim or protection system, so anyone could flood a
   plot, pour lava on it or dig out the ground, and its owner would then respawn into it,

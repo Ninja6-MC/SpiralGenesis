@@ -325,7 +325,11 @@ safe point near it.
 The check loads the plot's chunk, so there is a short pause before you move; the plot is
 almost never resident when you run this, since nobody is standing on it. If the check itself
 fails - the chunk cannot be loaded, say - you are told so, sent anyway, and the cause is
-logged at `WARNING`.
+logged.
+
+The teleport itself can still be refused, by the same kind of plugin the section above
+describes. `/sgen tp` reports that rather than claiming to have moved you, so running it as
+the manual remedy tells you whether the remedy worked.
 
 Nothing here repairs the plot. `/sgen tp` is for looking; `/sgen setspawn` and
 `/sgen reassign` are for fixing.

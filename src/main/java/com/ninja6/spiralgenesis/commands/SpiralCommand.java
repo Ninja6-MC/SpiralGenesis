@@ -19,6 +19,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
 
 /**
@@ -31,6 +32,13 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
      * count typed on a live server would be a self-inflicted outage.
      */
     private static final int MAX_SIMULATE_SAMPLES = 500;
+
+    /**
+     * Sent when the plot could not be judged either way. The teleport still happens:
+     * a check that failed is not a reason to strand an admin who asked to go.
+     */
+    private static final String UNCHECKED =
+            "That plot could not be re-checked; you are arriving without knowing.";
 
     private final SpiralGenesisPlugin plugin;
 
@@ -290,12 +298,25 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         // standing on the plot, which is why the admin is going. SpawnManager awaits the
         // chunk and only then hops onto its owner, which is the one ordering Folia permits.
         sender.sendMessage(ChatColor.YELLOW + "Checking " + args[1] + "'s plot...");
-        spawnManager.revalidate(loc).whenComplete((safe, ex) -> {
+        CompletableFuture<Boolean> check;
+        try {
+            check = spawnManager.revalidate(loc);
+        } catch (Throwable t) {
+            // The re-check requests the chunk before it returns its future, so a throw
+            // there escapes before anything is attached to it. Warn and proceed still
+            // applies, or the admin is stranded by the check meant to inform them.
+            plugin.getLogger().log(Level.SEVERE, "Re-check of " + args[1]
+                    + "'s plot failed before it could start.", t);
+            teleportToPlot(player, loc, args[1], UNCHECKED);
+            return;
+        }
+
+        check.whenComplete((safe, ex) -> {
             String warning;
             if (ex != null) {
                 plugin.getLogger().log(Level.WARNING, "Could not re-check " + args[1]
                         + "'s plot before teleporting " + player.getName() + " to it.", ex);
-                warning = "That plot could not be re-checked; you are arriving without knowing.";
+                warning = UNCHECKED;
             } else if (Boolean.TRUE.equals(safe)) {
                 warning = null;
             } else {
@@ -325,8 +346,18 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             if (warning != null) {
                 player.sendMessage(ChatColor.RED + warning);
             }
-            player.teleportAsync(loc).thenAccept(success ->
-                    player.sendMessage(ChatColor.GREEN + "Teleported to " + owner + "'s genesis spawn."));
+            player.teleportAsync(loc).thenAccept(success -> {
+                if (Boolean.TRUE.equals(success)) {
+                    player.sendMessage(ChatColor.GREEN + "Teleported to " + owner + "'s genesis spawn.");
+                    return;
+                }
+                // This command is what the admin guide names when a plot teleport is
+                // refused, so a refusal here is the one thing its admin most needs told.
+                // Reporting success regardless would hide it behind a green line.
+                player.sendMessage(ChatColor.RED + "The teleport to " + owner
+                        + "'s genesis spawn did not complete; check the console for a plugin"
+                        + " cancelling teleports.");
+            });
         }, null);
     }
 
