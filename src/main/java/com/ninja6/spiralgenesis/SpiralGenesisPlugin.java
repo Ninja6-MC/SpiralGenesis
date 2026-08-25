@@ -23,6 +23,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
 /**
@@ -158,7 +159,15 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         this.pluginConfig = new PluginConfig(getConfig());
     }
 
-    private void initSpawnManager() {
+    /**
+     * Binds the spawn manager to the configured world, or to the first loaded one.
+     *
+     * <p>Package-private as a test seam: because of that fallback the manager is only ever
+     * absent on a server with no worlds at all, so the branch in
+     * {@link #handlePlayerFirstJoin} that copes with it cannot otherwise be reached from a
+     * test that has a player to allocate.
+     */
+    void initSpawnManager() {
         World world = Bukkit.getWorld(pluginConfig.getWorldName());
         if (world == null && !Bukkit.getWorlds().isEmpty()) {
             world = Bukkit.getWorlds().get(0);
@@ -197,32 +206,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // player is connected. Left as a guard rather than an assertion because the
             // fallback is a detail of that method, not a contract.
             //
-            // The player is not dropped from the gate here, which helps only a caller that
-            // did not arrive through the gate itself - AuthMe's listener, or /sgen allocate.
-            // PlayerActionGateListener.release removes them before calling in, so for the
-            // three action paths there is nothing left to retry with. Making that uniform
-            // would mean re-arming the gate, which is not worth doing for a branch that
-            // cannot be reached.
+            // Returns before takeAllocation, so the player keeps their place in the gate.
             getLogger().severe("Cannot allocate spawn: SpawnManager world is unavailable!");
             return;
         }
 
-        if (!allocating.add(uuid)) {
+        if (!takeAllocation(uuid)) {
             return; // An allocation for this player is already in flight.
         }
-
-        // Ownership is now taken, and only now. Every path into allocation passes through
-        // here, so this is the one place that can guarantee the gate stops watching a
-        // player somebody else is allocating - which is what the AuthMe fast path failed to
-        // do, leaving a player who had been allocated on LoginEvent to be released again by
-        // their first step. It must not run before the bail-outs above: surrendering the
-        // gate without taking ownership loses the player entirely.
-        //
-        // Not covered by a test. MockBukkit implements neither the entity scheduler nor
-        // async chunk loading, so this method cannot be driven from one without a seam of
-        // the kind SpawnManager grew for the same reason. The ordering is load-bearing, so
-        // it is worth a test once that seam exists.
-        forgetFromGate(uuid);
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
 
@@ -242,11 +233,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // there escapes before exceptionally() below is ever attached. That would leave the
         // guard held for the lifetime of the process, and a player permanently unallocatable.
         try {
-            spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
+            allocateSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
                 // Player state must be touched on the thread owning that player. The entity
                 // scheduler is that thread on Folia and the main thread on Paper; it also drops
                 // the task automatically if the player disconnects before it runs.
-                ScheduledTask scheduled = player.getScheduler().run(this, task -> {
+                boolean scheduled = runForPlayer(player, () -> {
                     try {
                         if (!player.isOnline()) return;
 
@@ -288,9 +279,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     applied.complete(null);
                 });
 
-                // A null task means the scheduler refused the work outright, in which case
-                // neither callback above ever runs and the guard would leak.
-                if (scheduled == null) {
+                // A refused task means neither callback above ever runs, and the guard
+                // would leak.
+                if (!scheduled) {
                     applied.complete(null);
                 }
             }).exceptionally(ex -> {
@@ -310,6 +301,58 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             applied.complete(null);
             throw t;
         }
+    }
+
+    /**
+     * Claims the exclusive right to allocate this player, and stops the gate watching them.
+     *
+     * <p>The two halves are one operation and are kept in one place so they cannot drift
+     * apart. Surrendering the gate is only safe once ownership is held: doing it earlier
+     * loses a player whose caller then bails out, since the gate's {@code release} drops
+     * them before calling in and there is nothing left to retry with. Doing it later leaves
+     * the gate free to release the same player again on their next action, which is what the
+     * AuthMe fast path used to do to anyone allocated on {@code LoginEvent}.
+     *
+     * <p>Every caller that reaches allocation passes through here, so a bail-out is
+     * recognisable by returning above it. Both directions are pinned by
+     * {@code AllocationOwnershipTest}.
+     *
+     * @return false if an allocation for this player is already in flight
+     */
+    private boolean takeAllocation(UUID uuid) {
+        if (!allocating.add(uuid)) {
+            return false;
+        }
+        forgetFromGate(uuid);
+        return true;
+    }
+
+    /**
+     * Starts an allocation.
+     *
+     * <p>Package-private as a test seam, for the reason {@link SpawnManager#loadChunk} and
+     * the region hops beside it are: MockBukkit implements neither async chunk loading nor
+     * the region schedulers, and this method builds its own SpawnManager, so those seams
+     * cannot be reached from outside.
+     */
+    CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+        return spawnManager.allocateNextSafeSpawn(indexSupplier);
+    }
+
+    /**
+     * Runs {@code action} on the thread that owns this player, or {@code retired} instead if
+     * they disconnect first.
+     *
+     * <p>Package-private as a test seam: MockBukkit's entity scheduler throws rather than
+     * scheduling. The {@link ScheduledTask} the real scheduler hands the callback is not
+     * used by either of them, so it is not passed on.
+     *
+     * @return false if the scheduler refused the work outright, in which case neither
+     *         callback will ever run
+     */
+    boolean runForPlayer(Player player, Runnable action, Runnable retired) {
+        ScheduledTask scheduled = player.getScheduler().run(this, task -> action.run(), retired);
+        return scheduled != null;
     }
 
     /** Drops a player from the action gate, if there is one. */

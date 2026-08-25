@@ -137,6 +137,37 @@ tasks {
         testLogging {
             events("passed", "skipped", "failed")
         }
+
+        // A skipped test must fail the build, because in this project skipping is not
+        // usually a choice. MockBukkit's UnimplementedOperationException extends JUnit's
+        // TestAbortedException, so a test that touches any mock operation MockBukkit has
+        // not implemented is silently reported as skipped and the build still succeeds.
+        // That is indistinguishable from coverage, which is the one thing test results are
+        // for. Nothing here is deliberately disabled; if that ever changes, this is the
+        // right place to argue about it.
+        val skipped = mutableListOf<String>()
+        addTestListener(object : TestListener {
+            override fun beforeSuite(suite: TestDescriptor) {}
+            override fun afterSuite(suite: TestDescriptor, result: TestResult) {}
+            override fun beforeTest(testDescriptor: TestDescriptor) {}
+            override fun afterTest(testDescriptor: TestDescriptor, result: TestResult) {
+                if (result.resultType == TestResult.ResultType.SKIPPED) {
+                    skipped += "${testDescriptor.className}.${testDescriptor.displayName}"
+                }
+            }
+        })
+        doLast {
+            if (skipped.isNotEmpty()) {
+                throw GradleException(
+                    skipped.joinToString(
+                        separator = System.lineSeparator() + "  - ",
+                        prefix = "Tests were skipped rather than run, which this build treats as "
+                            + "failure. If a mock operation is unimplemented, substitute a seam; "
+                            + "do not let the test abort." + System.lineSeparator() + "  - "
+                    )
+                )
+            }
+        }
     }
 
     shadowJar {
