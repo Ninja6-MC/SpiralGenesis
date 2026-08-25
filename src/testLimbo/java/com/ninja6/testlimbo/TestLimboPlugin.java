@@ -42,6 +42,11 @@ import java.util.StringJoiner;
  *
  * <p>Interaction and item drops are cancelled at {@code LOWEST} in every mode, which all
  * three do.
+ *
+ * <p>Each mode reproduces its plugin's <em>default</em> configuration only. AuthMe's
+ * {@code allowMovement} branches are deliberately omitted: with them enabled an
+ * unauthenticated player really can walk, so movement stops being evidence of anything and
+ * no gate could read that limbo. That is the documented limitation, not a case to cover.
  */
 public class TestLimboPlugin extends JavaPlugin implements Listener, CommandExecutor {
 

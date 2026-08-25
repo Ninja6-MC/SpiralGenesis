@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `LoginEvent` without dropping the player from the action gate, so their next step released
   them again. Allocation now drops the player from the gate on every path, and holds the
   guard until the assignment has been written.
+- Players who already own a plot are no longer held by the allocation gate on join. They
+  had nothing to allocate, but were still tracked and given a timeout, so anyone who joined
+  and stood still triggered a warning about a limbo that was not holding them.
 - A teleport that did not complete is no longer silent. The plot is recorded and the respawn
   point set before the teleport is attempted, so a cancelled teleport left storage claiming a
   location the player had never been moved to, with nothing logged and nothing retrying. A

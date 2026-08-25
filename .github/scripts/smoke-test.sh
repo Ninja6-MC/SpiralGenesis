@@ -208,7 +208,8 @@ if [[ "$booted" -eq 1 ]]; then
     if [[ -n "$LIMBO_JAR" ]]; then
         echo "testlimbo handlers" >&3 || true
         for ((i = 0; i < 30; i++)); do
-            grep -q 'TESTLIMBO handlers PlayerInteractEvent' server.log 2>/dev/null && break
+            # The last event reportHandlers emits, so this waits for the whole sweep.
+            grep -q 'TESTLIMBO handlers PlayerDropItemEvent' server.log 2>/dev/null && break
             sleep 1
         done
     fi

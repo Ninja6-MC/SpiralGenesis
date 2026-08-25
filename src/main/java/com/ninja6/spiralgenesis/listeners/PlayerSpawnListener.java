@@ -24,6 +24,14 @@ public class PlayerSpawnListener implements Listener {
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
 
+        // Returning players are the common case and have nothing to allocate. Gating them
+        // would arm a timeout per join and, for anyone who joins and then stands still,
+        // fire the backstop warning about a limbo that is not holding them and a login
+        // plugin that may not exist.
+        if (plugin.getDataStorage().hasSpawn(player.getUniqueId())) {
+            return;
+        }
+
         // Bedrock players are never gated: Floodgate authenticates them against Xbox Live
         // during the connection itself, so there is no limbo to wait out.
         if (plugin.getFloodgateHook().isBedrockPlayer(player.getUniqueId())) {

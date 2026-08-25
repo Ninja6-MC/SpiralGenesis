@@ -181,16 +181,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     public void handlePlayerFirstJoin(Player player, String clientType) {
         UUID uuid = player.getUniqueId();
 
-        // Every path into allocation passes through here, so this is the one place that can
-        // guarantee the gate stops watching a player somebody else is already allocating.
-        // Doing it in the callers instead is what let the AuthMe fast path leave a player
-        // pending: allocated on LoginEvent, then released again by their first step, with
-        // the in-flight guard below too narrow to catch the second call.
-        if (actionGate != null) {
-            actionGate.forget(uuid);
-        }
-
         if (dataStorage.hasSpawn(uuid)) {
+            // Nothing to allocate, so nothing left to wait for either.
+            forgetFromGate(uuid);
             return;
         }
 
@@ -199,6 +192,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
 
         if (spawnManager == null) {
+            // Deliberately still gated. This is usually transient - a world manager that
+            // has not created the target world yet - and initSpawnManager retries above, so
+            // leaving the player pending means their next action, or the backstop, tries
+            // again. Dropping them here would strand them for the rest of the session with
+            // nothing able to retry.
             getLogger().severe("Cannot allocate spawn: SpawnManager world is unavailable!");
             return;
         }
@@ -206,6 +204,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (!allocating.add(uuid)) {
             return; // An allocation for this player is already in flight.
         }
+
+        // Ownership is now taken, and only now. Every path into allocation passes through
+        // here, so this is the one place that can guarantee the gate stops watching a
+        // player somebody else is allocating - which is what the AuthMe fast path failed to
+        // do, leaving a player who had been allocated on LoginEvent to be released again by
+        // their first step. It must not run before the bail-outs above: surrendering the
+        // gate without taking ownership loses the player entirely.
+        forgetFromGate(uuid);
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
 
@@ -219,54 +225,80 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         // The index is claimed atomically inside the scan, so concurrent joins never
         // resolve to the same grid cell.
-        spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
-            // Player state must be touched on the thread owning that player. The entity
-            // scheduler is that thread on Folia and the main thread on Paper; it also drops
-            // the task automatically if the player disconnects before it runs.
-            ScheduledTask scheduled = player.getScheduler().run(this, task -> {
-                try {
-                    if (!player.isOnline()) return;
+        //
+        // Wrapped because allocateNextSafeSpawn does real work on this thread before it
+        // returns a future - it claims an index and requests the first chunk - so a throw
+        // there escapes before exceptionally() below is ever attached. That would leave the
+        // guard held for the lifetime of the process, and a player permanently unallocatable.
+        try {
+            spawnManager.allocateNextSafeSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
+                // Player state must be touched on the thread owning that player. The entity
+                // scheduler is that thread on Folia and the main thread on Paper; it also drops
+                // the task automatically if the player disconnects before it runs.
+                ScheduledTask scheduled = player.getScheduler().run(this, task -> {
+                    try {
+                        if (!player.isOnline()) return;
 
-                    dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
+                        dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
-                    player.setRespawnLocation(res.location(), true);
-                    player.teleportAsync(res.location()).thenAccept(success -> {
-                        if (Boolean.TRUE.equals(success)) {
-                            getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
-                                    " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
-                            return;
-                        }
-                        // Recoverable rather than fatal: the plot is recorded and their
-                        // respawn point already points at it. But storage now claims a
-                        // location the player is not standing at and nothing retries, so it
-                        // must not pass silently. A login plugin cancelling teleports for
-                        // unauthenticated players is the likeliest cause.
-                        getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
-                                + " but the teleport did not complete; they are recorded at ("
-                                + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
-                                + res.location().getBlockZ() + ") without having been moved there.");
-                    });
-                } finally {
-                    // Inside the task, so the guard outlives the write that makes
-                    // hasSpawn() true rather than being released before it.
+                        player.setRespawnLocation(res.location(), true);
+                        player.teleportAsync(res.location()).thenAccept(success -> {
+                            if (Boolean.TRUE.equals(success)) {
+                                getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
+                                        " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                                return;
+                            }
+                            // Recoverable rather than fatal: the plot is recorded and their
+                            // respawn point already points at it. But storage now claims a
+                            // location the player is not standing at and nothing retries, so it
+                            // must not pass silently. A login plugin cancelling teleports for
+                            // unauthenticated players is the likeliest cause.
+                            getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
+                                    + " but the teleport did not complete; they are recorded at ("
+                                    + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
+                                    + res.location().getBlockZ() + ") without having been moved there.");
+                        }).exceptionally(ex -> {
+                            // thenAccept above runs only on normal completion, so without this
+                            // a teleport that fails outright is exactly as silent as the case
+                            // the warning was added for.
+                            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
+                                    + res.index() + " but the teleport failed; they are recorded there "
+                                    + "without having been moved.", ex);
+                            return null;
+                        });
+                    } finally {
+                        // Inside the task, so the guard outlives the write that makes
+                        // hasSpawn() true rather than being released before it.
+                        applied.complete(null);
+                    }
+                }, () -> {
+                    getLogger().fine("Player " + player.getName()
+                            + " disconnected before their plot could be applied; index already reserved.");
+                    applied.complete(null);
+                });
+
+                // A null task means the scheduler refused the work outright, in which case
+                // neither callback above ever runs and the guard would leak.
+                if (scheduled == null) {
                     applied.complete(null);
                 }
-            }, () -> {
-                getLogger().fine("Player " + player.getName()
-                        + " disconnected before their plot could be applied; index already reserved.");
+            }).exceptionally(ex -> {
+                getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
                 applied.complete(null);
+                return null;
             });
-
-            // A null task means the scheduler refused the work outright, in which case
-            // neither callback above ever runs and the guard would leak.
-            if (scheduled == null) {
-                applied.complete(null);
-            }
-        }).exceptionally(ex -> {
-            getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
+        } catch (Throwable t) {
+            getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
+                    + " failed before it could start.", t);
             applied.complete(null);
-            return null;
-        });
+        }
+    }
+
+    /** Drops a player from the action gate, if there is one. */
+    private void forgetFromGate(UUID uuid) {
+        if (actionGate != null) {
+            actionGate.forget(uuid);
+        }
     }
 
     /**
