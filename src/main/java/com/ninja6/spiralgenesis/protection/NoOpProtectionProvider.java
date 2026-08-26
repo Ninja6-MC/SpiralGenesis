@@ -40,4 +40,17 @@ public final class NoOpProtectionProvider implements ProtectionProvider {
     public ClaimResult reserve(Location centre, int size, UUID owner) {
         return ClaimResult.of(ClaimOutcome.PROVIDER_UNAVAILABLE);
     }
+
+    /**
+     * Releases nothing and says the provider is absent, rather than inheriting the
+     * interface's {@code UNSUPPORTED} default. The two answers read the same to a caller
+     * that only wants to know whether ground stopped being claimed, but they are different
+     * facts: this provider is not a provider that lacks a release, it is the absence of a
+     * provider, and an operator told "the protection plugin cannot release claims" when
+     * protection is simply switched off has been told something false.
+     */
+    @Override
+    public ReleaseResult release(Location centre, int size, UUID owner) {
+        return ReleaseResult.of(ReleaseOutcome.PROVIDER_UNAVAILABLE);
+    }
 }

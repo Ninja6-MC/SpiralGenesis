@@ -76,10 +76,12 @@ import java.util.logging.Logger;
  *
  * <h2>Threading contract</h2>
  *
- * <p><b>{@link #reserve} must be called on the thread that owns the region containing the
- * claim.</b> GriefPrevention does not run on Folia, so on every server where this provider
- * is available that thread is the server's main thread, and the check below is
- * {@link Bukkit#isPrimaryThread()}.
+ * <p><b>{@link #reserve} and {@link #release} must be called on the thread that owns the
+ * region containing the claim.</b> GriefPrevention does not run on Folia, so on every server
+ * where this provider is available that thread is the server's main thread, and the check
+ * below is {@link Bukkit#isPrimaryThread()}. {@code release} carries the contract for the
+ * stronger reason: {@code deleteClaim} dispatches {@code ClaimDeletedEvent} and drops the
+ * claim out of the live claim list other plugins are reading.
  *
  * <p>The reason is not GriefPrevention's own data structures - {@code createClaim},
  * {@code getPlayerData} and {@code saveClaim} are all {@code synchronized} on the one data
@@ -261,6 +263,141 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
     }
 
     /**
+     * Deletes the spawn claim at {@code centre}, and only if it is recognisably the one this
+     * class would have created there.
+     *
+     * <p>Every guard in {@link #matches} has to pass. That is not defensiveness for its own
+     * sake: this is the only method in the plugin that can destroy a player's work, it is
+     * reachable from an operator command, and the cost of getting it wrong is not symmetric
+     * with the cost of declining. Declining leaves one stale square on a server; deleting the
+     * wrong claim opens whatever a player built inside it to anyone who walks past. So the
+     * answer is {@link ReleaseOutcome#NOT_OURS} at the first sign that what is there is not
+     * what was put there, and the operator is told what was found instead.
+     */
+    @Override
+    public ReleaseResult release(Location centre, int requestedSize, UUID owner) {
+        if (!available) {
+            return ReleaseResult.of(ReleaseOutcome.PROVIDER_UNAVAILABLE);
+        }
+        if (owner == null || centre == null || requestedSize < 3) {
+            return ReleaseResult.of(ReleaseOutcome.REFUSED, "the release request was incomplete.");
+        }
+        if (!Bukkit.isPrimaryThread()) {
+            reportWrongThread();
+            return ReleaseResult.of(ReleaseOutcome.REFUSED,
+                    "the release was requested off the server thread and was not attempted.");
+        }
+
+        try {
+            return deleteClaim(centre, requestedSize, owner);
+        } catch (Throwable t) {
+            // Throwable for the same reasons reserve catches it, plus one of its own: a
+            // release runs against a location read back out of data.yml, whose world may
+            // have been unloaded since it was written.
+            logger.log(Level.WARNING, "GriefPrevention threw while releasing the spawn claim for "
+                    + owner + ". The claim is still standing.", t);
+            return ReleaseResult.of(ReleaseOutcome.REFUSED, "GriefPrevention threw: " + describe(t));
+        }
+    }
+
+    /** The deletion itself, factored out so {@link #release} holds one catch block. */
+    private ReleaseResult deleteClaim(Location centre, int requestedSize, UUID owner) {
+        if (!Bukkit.getPluginManager().isPluginEnabled(PLUGIN_NAME)) {
+            return ReleaseResult.of(ReleaseOutcome.PROVIDER_UNAVAILABLE);
+        }
+        GriefPrevention gp = GriefPrevention.instance;
+        if (gp == null || gp.dataStore == null) {
+            return ReleaseResult.of(ReleaseOutcome.PROVIDER_UNAVAILABLE);
+        }
+        if (centre.getWorld() == null) {
+            return ReleaseResult.of(ReleaseOutcome.REFUSED, "the release request named no world.");
+        }
+
+        // ignoreHeight, because the vertical extent of a claim depends on
+        // ExtendIntoGroundDistance at the moment it was made and a server owner may have
+        // changed it since. The horizontal square is what identifies the claim, and it is
+        // checked exactly below rather than approximately here.
+        Claim claim = gp.dataStore.getClaimAt(centre, true, null);
+        if (claim == null) {
+            return ReleaseResult.of(ReleaseOutcome.NOT_FOUND);
+        }
+
+        String mismatch = matches(claim, centre, requestedSize, owner);
+        if (mismatch != null) {
+            return ReleaseResult.of(ReleaseOutcome.NOT_OURS, mismatch);
+        }
+
+        Long id = claim.getID();
+        gp.dataStore.deleteClaim(claim);
+        return ReleaseResult.of(ReleaseOutcome.RELEASED, "claim " + id + " at "
+                + centre.getBlockX() + "," + centre.getBlockZ() + " in "
+                + centre.getWorld().getName());
+    }
+
+    /**
+     * Whether {@code claim} is exactly the claim {@link #reserve} would have created for
+     * these arguments.
+     *
+     * @return {@code null} when it matches and may be deleted, otherwise the wording that
+     *         says what was found instead
+     */
+    private String matches(Claim claim, Location centre, int requestedSize, UUID owner) {
+        if (claim.parent != null) {
+            // A subdivision inside a larger claim. Never created here, and deleting it would
+            // change a claim this plugin has nothing to do with.
+            return "the claim at that point is a subdivision of a larger claim, which "
+                    + "SpiralGenesis did not create.";
+        }
+        if (claim.children != null && !claim.children.isEmpty()) {
+            // GriefPrevention deletes a parent's subdivisions along with it, so this would
+            // destroy more than the square even if the square itself matched.
+            return "the claim at that point has " + claim.children.size() + " subdivisions "
+                    + "inside it, which deleting it would take with it.";
+        }
+
+        if (ownership == ClaimOwnership.ADMIN_CLAIM) {
+            if (!claim.isAdminClaim()) {
+                return "the claim at that point belongs to a player, and protection.claim-as "
+                        + "is ADMIN_CLAIM, so SpiralGenesis did not create it.";
+            }
+            // An administrative claim has no owner to compare against - that is what makes it
+            // administrative - so without this the identity test under the default setting
+            // would be geometry alone, and a hand-made admin claim that happened to be
+            // exactly this square on exactly this block would be deleted. Every admin claim
+            // this class creates trusts its owner in the same breath (see trustOwner), so the
+            // explicit permission is a signature the class writes itself and a hand-made
+            // claim has no reason to carry.
+            if (!claim.hasExplicitPermission(owner, ClaimPermission.Build)) {
+                return "the administrative claim at that point does not trust its intended "
+                        + "owner on it, and every one SpiralGenesis creates does, so it was "
+                        + "made some other way.";
+            }
+        } else if (!owner.equals(claim.getOwnerID())) {
+            return "the claim at that point belongs to somebody else.";
+        }
+
+        int radius = (requestedSize - 1) / 2;
+        Location lesser = claim.getLesserBoundaryCorner();
+        Location greater = claim.getGreaterBoundaryCorner();
+        if (lesser == null || greater == null) {
+            return "the claim at that point has no readable boundary.";
+        }
+        boolean sameSquare = lesser.getBlockX() == Math.subtractExact(centre.getBlockX(), radius)
+                && greater.getBlockX() == Math.addExact(centre.getBlockX(), radius)
+                && lesser.getBlockZ() == Math.subtractExact(centre.getBlockZ(), radius)
+                && greater.getBlockZ() == Math.addExact(centre.getBlockZ(), radius);
+        if (!sameSquare) {
+            // The likeliest cause by far is the owner resizing their own spawn claim
+            // outwards to take in what they have built, which is precisely the case where
+            // deleting it would be worst.
+            return "the claim at that point is " + claim.getWidth() + "x" + claim.getHeight()
+                    + " and not the " + requestedSize + "x" + requestedSize + " square "
+                    + "SpiralGenesis creates, so it has been resized or was made by hand.";
+        }
+        return null;
+    }
+
+    /**
      * The GriefPrevention call itself, factored out so {@link #reserve} holds one
      * {@code catch (Throwable)} rather than one per branch. Everything that can throw is
      * inside it, including reading the world out of {@code centre}.
@@ -292,6 +429,24 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
         }
         if (!gp.claimsEnabledForWorld(world)) {
             return ClaimResult.of(ClaimOutcome.REFUSED, disabledWorldDetail(world));
+        }
+
+        // Asked before anything is charged, and that ordering is the whole of the backfill's
+        // idempotency under PLAYER_CLAIM. createClaim detects an overlap perfectly well by
+        // itself, but only after this class has already run its claim-block pre-flight - so a
+        // second backfill pass over a player whose balance the first pass spent would be
+        // refused for insufficient claim blocks and counted as a failure, reporting work that
+        // had in fact been done correctly as an alarming problem. Asking here answers
+        // ALREADY_CLAIMED instead, for both ownership modes, and skips the balance read
+        // entirely - which under PLAYER_CLAIM is a synchronous load of an offline player's
+        // data, so this is also the cheaper order on the path that does thousands of them.
+        //
+        // Not a replacement for createClaim's own check: this only sees a claim covering the
+        // centre block, and a claim clipping a corner of the square still has to be caught
+        // where it always was.
+        Claim covering = gp.dataStore.getClaimAt(centre, true, null);
+        if (covering != null) {
+            return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering));
         }
 
         int radius = (requestedSize - 1) / 2;
@@ -359,12 +514,15 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
      * <p>Returns the refusal, or {@code null} when the player may have the claim - the one
      * place in this class where {@code null} means anything, and it never leaves it.
      *
-     * <p>Note for whoever wires the backfill command: reading a balance for an offline
-     * player makes GriefPrevention load that player's data from its storage, synchronously,
-     * on the calling thread, and it stays in GriefPrevention's cache until they next log
-     * out. Backfilling several hundred stored spawns in one tick under
-     * {@code PLAYER_CLAIM} is therefore several hundred file or database reads on the main
-     * thread. {@code ADMIN_CLAIM}, the default, never reaches this method at all.
+     * <p>Note for the backfill: reading a balance for an offline player makes
+     * GriefPrevention load that player's data from its storage, synchronously, on the
+     * calling thread, and it stays in GriefPrevention's cache until they next log out.
+     * Backfilling several hundred stored spawns in one tick under {@code PLAYER_CLAIM} is
+     * therefore several hundred file or database reads on the main thread, which is why that
+     * command spreads its work over ticks against a clock rather than a count alone.
+     * {@code ADMIN_CLAIM}, the default, never reaches this method at all - and neither does
+     * a spawn that is already claimed, since the overlap check in {@link #createClaim} now
+     * runs before this one.
      */
     private ClaimResult checkPlayerClaimAllowed(GriefPrevention gp, UUID owner, int requestedSize) {
         PlayerData data = gp.dataStore.getPlayerData(owner);

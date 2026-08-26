@@ -12,6 +12,8 @@ import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProviders;
+import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
+import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.DataStorage;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
@@ -28,6 +30,8 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
@@ -48,11 +52,29 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * null: a server with the feature off, or with the configured plugin missing, holds the
      * no-op rather than a null to be checked at every call site.
      *
-     * <p>Nothing calls it yet. Wiring it into allocation, reassign, setspawn and the backfill
-     * command is deliberately separate work, so this class only has to answer for choosing
-     * the provider and not for when it fires.
+     * <p>Reached through {@link #getSpawnProtector()} rather than directly at every call
+     * site: the protector is what holds the size, the logging decisions and the rule that a
+     * failed claim never costs a player their plot.
      */
     private ProtectionProvider protectionProvider = NoOpProtectionProvider.INSTANCE;
+
+    /**
+     * The one object every protection call in the plugin goes through.
+     *
+     * <p>Built once and never rebuilt, because it reads the provider and the configured size
+     * through suppliers rather than holding them - so {@code /sgen reload} swapping either
+     * one is picked up without this reference having to be replaced.
+     */
+    private volatile SpawnProtector spawnProtector;
+
+    /**
+     * The {@code /sgen protect} backfill currently running, or {@code null}.
+     *
+     * <p>One at a time. Two concurrent passes over the same stored spawns would double the
+     * per-tick cost the batching exists to bound, and every claim the second one attempted
+     * would already have been made by the first.
+     */
+    private final AtomicReference<SpawnProtectionBackfill> backfill = new AtomicReference<>();
 
     /** Login plugins found at startup. Reported, and used to word the gate's timeout warning. */
     private List<String> detectedLoginPlugins = List.of();
@@ -91,6 +113,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         this.floodgateHook = new FloodgateHook();
         this.authMeHook = new AuthMeHook();
         this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
+        // getProtectionProvider() rather than the field, so a test that overrides the getter
+        // to inject a provider is reaching every call site rather than none of them.
+        this.spawnProtector = new SpawnProtector(getLogger(), this::getProtectionProvider,
+                () -> pluginConfig.getProtectionSize());
 
         initSpawnManager();
 
@@ -126,6 +152,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        // Released before anything else, because the server cancels the repeating task that
+        // would otherwise have cleared it. A reload that left this set would come back up
+        // refusing /sgen protect with "already running" and no job anywhere to finish.
+        backfill.set(null);
         if (dataStorage != null) {
             dataStorage.shutdown();
         }
@@ -309,6 +339,22 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                                     + "uncancelled action.", ex);
                             return null;
                         });
+
+                        // Last, and deliberately so. It is after the write, because a claim
+                        // around a point that is not yet the player's recorded spawn is a
+                        // claim around ground they may never be sent to - and under
+                        // PLAYER_CLAIM they would have paid for it. It is also after the
+                        // respawn point and the teleport request, so everything the player is
+                        // owed has already been asked for by the time a claim is attempted:
+                        // the claim is an enhancement to allocation, and nothing about it may
+                        // sit in front of the placement.
+                        //
+                        // Still inside this task rather than in the teleport callback above,
+                        // which resolves on whichever thread finished the teleport. This task
+                        // runs on the thread that owns the player - the main thread on every
+                        // server where a real provider exists - which is what the provider's
+                        // threading contract requires.
+                        getSpawnProtector().protect(uuid, res.location(), "first allocation");
                     } finally {
                         // Inside the task, so the guard outlives the write that makes
                         // hasSpawn() true rather than being released before it.
@@ -456,8 +502,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 + stored.getBlockY() + ", " + stored.getBlockZ()
                 + "); searching that cell for a replacement point.");
         try {
-            spawnManager.findSafeSpawnInCell(record.index())
-                    .whenComplete((res, ex) -> applyRepair(player, record, res, ex));
+            searchInCell(record.index())
+                    .whenComplete((res, ex) -> applyRepair(player, record, stored, res, ex));
         } catch (Throwable t) {
             // The search does real work before it returns a future - it requests the first
             // chunk - so a throw there escapes before whenComplete is attached, and would
@@ -469,6 +515,19 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
+     * Runs the in-cell replacement search.
+     *
+     * <p>Package-private as a test seam, for the same reason {@link #allocateSpawn} is:
+     * MockBukkit implements neither async chunk loading nor the region schedulers the real
+     * search hops through, so the repair path is otherwise unreachable from a test - which
+     * would leave the claim that follows a revalidation move with no coverage at the level
+     * it was specified.
+     */
+    CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
+        return spawnManager.findSafeSpawnInCell(index);
+    }
+
+    /**
      * Applies the outcome of an in-cell repair search on the player's own thread.
      *
      * <p>Storage is rewritten only when a replacement was found. A cell where every sampled
@@ -476,7 +535,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * a dozen points out of the hundreds a cell holds, so "no candidate passed" is not
      * evidence the plot is unusable, and overwriting it would lose the assignment for good.
      */
-    private void applyRepair(Player player, StoredSpawn record,
+    private void applyRepair(Player player, StoredSpawn record, Location stored,
                              SpawnManager.LocationResult res, Throwable error) {
         UUID uuid = player.getUniqueId();
         if (error != null) {
@@ -516,6 +575,21 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 getLogger().info("Repaired plot #" + record.index() + " for " + player.getName()
                         + "; moved within the same cell to (" + res.location().getBlockX() + ", "
                         + res.location().getBlockY() + ", " + res.location().getBlockZ() + ").");
+
+                // Revalidation moved the spawn, so the claim has to move with it or the
+                // player ends up protected at a point they no longer spawn at - which is the
+                // failure this whole path exists to prevent, one level down. Last, like the
+                // allocation path and for the same reason: the player is placed before
+                // anything is claimed. The old square is left standing, as on every path that
+                // moves a spawn, and unlike the commands this one has no output to say so in,
+                // so the log carries it.
+                getSpawnProtector().protect(uuid, res.location(), "revalidation repair");
+                String stale = getSpawnProtector().handOffStaleClaim(uuid, player.getName(),
+                        stored, res.location(), false, null);
+                if (stale != null) {
+                    getLogger().info(stale + " It was the spawn point that failed its"
+                            + " re-check, so it is worth a look before it is removed.");
+                }
             } finally {
                 repairing.remove(uuid);
             }
@@ -542,6 +616,21 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * path is not reachable by a login plugin cancelling teleports - it remains reachable
      * through the other ways a teleport can fail, which is why the mark is set on the
      * future's failure rather than on any particular cause.
+     *
+     * <p><b>Nothing about spawn protection happens here, and that was checked rather than
+     * assumed.</b> The question is whether this path can reach a spawn that has no claim
+     * yet. It cannot, for two reasons that hold together.
+     *
+     * <p>A player is only ever marked for a retry from inside the teleport callbacks in
+     * {@link #handlePlayerFirstJoin}, and the claim is requested at the end of the same task
+     * those callbacks were armed from. That task runs on the thread owning the player, and
+     * this method needs a subsequent uncancelled action from that player to fire at all - a
+     * later tick, at the earliest - so the claim has certainly been attempted by then, even
+     * though a completed teleport future could run its callback first. And this path never
+     * moves a spawn: it re-sends the player to the location already in storage, so there is
+     * no new ground for a claim to be needed around. Retrying the claim here would only ask
+     * for a square that was either created a moment ago or refused for a reason that has not
+     * changed since. The correct behaviour is to do nothing, which is what this does.
      *
      * <p>Session-scoped, and deliberately left that way. Two things make it defensible.
      * Nothing on disk distinguishes a player who was never moved to their plot from one who
@@ -643,5 +732,99 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public ProtectionProvider getProtectionProvider() {
         return protectionProvider;
+    }
+
+    /**
+     * The shared protector every protection call in this plugin goes through. Never
+     * {@code null}.
+     *
+     * <p>Built lazily on first use as well as in {@link #onEnable()}, because
+     * {@link #reload()} is reachable in a test before enable has finished and a null here
+     * would turn a configuration reload into a failed allocation.
+     */
+    public SpawnProtector getSpawnProtector() {
+        SpawnProtector protector = spawnProtector;
+        if (protector == null) {
+            protector = new SpawnProtector(getLogger(), this::getProtectionProvider,
+                    () -> pluginConfig.getProtectionSize());
+            spawnProtector = protector;
+        }
+        return protector;
+    }
+
+    /**
+     * Starts the {@code /sgen protect} backfill, if one is not already running.
+     *
+     * <p>The job itself is bounded per tick; this only owns the "one at a time" guard and
+     * the driving. The report is delivered on whichever thread the last batch ran on, so a
+     * caller that has to answer a player is responsible for hopping back to them.
+     *
+     * @param report invoked once with the summary line when the run finishes
+     * @return the job that was started, or {@code null} if one was already running
+     */
+    public SpawnProtectionBackfill startProtectionBackfill(Consumer<String> report) {
+        // Read before the snapshot rather than after: copying every stored assignment is the
+        // expensive half of starting, and a caller who is only going to be turned away
+        // should not pay for it.
+        if (backfill.get() != null) {
+            return null;
+        }
+        SpawnProtectionBackfill job = new SpawnProtectionBackfill(getSpawnProtector(),
+                dataStorage.getAllRecords());
+        if (!backfill.compareAndSet(null, job)) {
+            return null;
+        }
+        if (job.isFinished()) {
+            // Nothing stored at all. Finishing here rather than scheduling a task that would
+            // cancel itself on its first run.
+            backfill.set(null);
+            report.accept(job.summary());
+            return job;
+        }
+        try {
+            driveBackfill(job, () -> {
+                backfill.set(null);
+                getLogger().info(job.summary());
+                report.accept(job.summary());
+            });
+        } catch (Throwable t) {
+            // Scheduling can be refused outright - runAtFixedRate throws once the plugin is
+            // disabling - and a throw here would otherwise leave the guard holding a job that
+            // will never run, so every later /sgen protect answers "already running" for the
+            // life of the process. Clearing it is what keeps the command usable.
+            backfill.set(null);
+            getLogger().log(Level.WARNING, "The spawn protection backfill could not be "
+                    + "scheduled, so nothing was claimed.", t);
+            report.accept("The spawn protection backfill could not be scheduled; see the console.");
+            return null;
+        }
+        return job;
+    }
+
+    /** Whether a backfill is running right now. */
+    public boolean isProtectionBackfillRunning() {
+        return backfill.get() != null;
+    }
+
+    /**
+     * Runs a backfill job one batch per tick until it says it is finished.
+     *
+     * <p>Package-private as a test seam, for the same reason {@link #runForPlayer} is: the
+     * global region scheduler is Paper's, MockBukkit does not implement it, and the batching
+     * that is actually worth testing lives in the job rather than in the scheduling.
+     *
+     * <p>The global region scheduler and not the async one, and not a player's: the claim
+     * calls have to be on the main thread, and the owners being backfilled are mostly
+     * offline and have no thread of their own. On Folia this scheduler is not the thread
+     * owning any particular region - which is exactly why nothing is claimed there anyway,
+     * since no supported claim plugin runs on Folia and the provider resolves to the no-op.
+     */
+    void driveBackfill(SpawnProtectionBackfill job, Runnable onFinish) {
+        getServer().getGlobalRegionScheduler().runAtFixedRate(this, task -> {
+            if (job.runBatch()) {
+                task.cancel();
+                onFinish.run();
+            }
+        }, 1L, 1L);
     }
 }
