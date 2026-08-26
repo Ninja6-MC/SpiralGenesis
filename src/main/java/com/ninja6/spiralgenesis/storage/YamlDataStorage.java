@@ -192,6 +192,13 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
+    public Map<UUID, StoredSpawn> getAllRecords() {
+        // Map.copyOf rejects null keys and values; the cache can hold neither, because
+        // setSpawn builds the record itself and ConcurrentHashMap refuses a null either way.
+        return Map.copyOf(spawnCache);
+    }
+
+    @Override
     public void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
                          String playerName, String clientType) {
         StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType);

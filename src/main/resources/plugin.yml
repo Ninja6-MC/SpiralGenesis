@@ -23,7 +23,7 @@ commands:
     description: SpiralGenesis administrative commands
     aliases: [spiralgenesis]
     permission: spiralgenesis.admin
-    usage: /sgen <setcenter|setspawn|allocate|reassign|tp|info|simulate|reload>
+    usage: /sgen <setcenter|setspawn|allocate|reassign|protect|tp|info|simulate|reload>
 
 permissions:
   spiralgenesis.admin:

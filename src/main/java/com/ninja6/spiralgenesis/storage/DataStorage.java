@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.storage;
 
 import org.bukkit.Location;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -45,6 +46,17 @@ public interface DataStorage {
      * @return the record, or {@code null} if unassigned
      */
     StoredSpawn getRecord(UUID uuid);
+
+    /**
+     * An immutable snapshot of every recorded assignment, keyed by player.
+     *
+     * <p>A copy rather than a view, and that is the point of it. Its only caller is the
+     * {@code /sgen protect} backfill, which spreads its work across many ticks while
+     * players are joining and being allocated; iterating the live store would mean
+     * iterating something being written to, and would sweep in the very players whose
+     * claims the allocation path is creating at that moment.
+     */
+    Map<UUID, StoredSpawn> getAllRecords();
 
     /**
      * Records a new spawn assignment for a player.

@@ -10,9 +10,19 @@ import java.util.UUID;
  * <p>One call that matters, and it is deliberately the narrowest thing every claim plugin
  * can be asked to do: take this square, register it to this player, say what happened.
  * Nothing common to GriefPrevention, WorldGuard, Towny, Lands and BentoBox survives past
- * that, so nothing else is promised here. Unclaiming, resizing, trust management, claim
- * block accounting and anything asynchronous are all out: if an implementation needs one
- * of them internally that is its own business, not part of this contract.
+ * that, so nothing else is promised here. Resizing, trust management, claim block
+ * accounting and anything asynchronous are all out: if an implementation needs one of them
+ * internally that is its own business, not part of this contract.
+ *
+ * <p><b>Amended when the callers were wired up.</b> Unclaiming was on that list too, and it
+ * came off for one reason: a player's spawn moves. {@code /sgen reassign} sends them to a
+ * different plot, and the claim around the plot they left is then protecting ground they do
+ * not live on. Leaving it is the default and always will be - see {@link #release} for why
+ * - but an operator who has decided the old square should go had no way to say so, and
+ * "delete it yourself in the other plugin's own commands" is a poor answer for the one
+ * situation this plugin created. So the seam gained a second call, with a default
+ * implementation that refuses, so that an implementation which never thinks about releasing
+ * cannot accidentally look like one that does.
  *
  * <h2>Rules an implementation has to follow</h2>
  *
@@ -77,4 +87,33 @@ public interface ProtectionProvider {
      * @return what happened; never {@code null}
      */
     ClaimResult reserve(Location centre, int size, UUID owner);
+
+    /**
+     * Gives back a square this provider previously reserved, and nothing else.
+     *
+     * <p>The arguments are the same three that made the claim, and that is not a
+     * convenience: they are how an implementation recognises its own work. The contract is
+     * that a square is released <b>only</b> when what is actually there matches what
+     * {@link #reserve} would have created for exactly these arguments - same ground, same
+     * owner, same shape. Anything else answers {@link ReleaseOutcome#NOT_OURS} and deletes
+     * nothing, including a claim the owner has since resized, and including a claim
+     * belonging to somebody else that happens to sit over the point.
+     *
+     * <p>That asymmetry is deliberate and is the whole reason this method has a default
+     * implementation that refuses. A missed claim costs a player some protection they never
+     * had; a wrong deletion costs a player a house. An implementation that cannot make the
+     * recognition test above with certainty must not implement this method at all.
+     *
+     * <p>Synchronous, called on the thread that owns the region containing {@code centre},
+     * and never {@code null} - every rule {@link #reserve} follows applies here unchanged,
+     * including swallowing {@link Throwable}.
+     *
+     * @param centre the block at the middle of the square that was reserved
+     * @param size   the length of one side in blocks, as it was passed to {@link #reserve}
+     * @param owner  the player the ground was reserved for
+     * @return what happened; never {@code null}
+     */
+    default ReleaseResult release(Location centre, int size, UUID owner) {
+        return ReleaseResult.of(ReleaseOutcome.UNSUPPORTED);
+    }
 }

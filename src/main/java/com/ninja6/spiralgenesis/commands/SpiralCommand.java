@@ -3,6 +3,8 @@ package com.ninja6.spiralgenesis.commands;
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
+import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
+import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
@@ -40,6 +42,21 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
     private static final String UNCHECKED =
             "That plot could not be re-checked; you are arriving without knowing.";
 
+    /**
+     * The one argument on {@code reassign} that lets it delete anything.
+     *
+     * <p>A trailing literal token, because that is how this command already reads arguments -
+     * a lowercase word compared case-insensitively, the same shape as every subcommand name.
+     * No dashes and no {@code --} prefix: nothing in {@code /sgen} parses one today, and
+     * introducing a second argument grammar for a single flag would mean every later
+     * argument has to pick a side.
+     *
+     * <p>It is spelled out rather than defaulted the other way round because of what it
+     * does. Every other path in this plugin leaves an old spawn claim standing; this is the
+     * only one that removes one, and an operator has to have typed the word.
+     */
+    private static final String RELEASE_FLAG = "release";
+
     private final SpiralGenesisPlugin plugin;
 
     public SpiralCommand(SpiralGenesisPlugin plugin) {
@@ -64,6 +81,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             case "setspawn" -> handleSetSpawn(sender, args);
             case "allocate" -> handleAllocate(sender, args);
             case "reassign" -> handleReassign(sender, args);
+            case "protect" -> handleProtect(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
             case "simulate" -> handleSimulate(sender, args);
@@ -147,6 +165,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        // Read before the write, because the write replaces it and the old point is what
+        // says where the claim that is about to go stale is standing.
+        StoredSpawn previous = plugin.getDataStorage().getRecord(target.getUniqueId());
+        Location oldSpawn = previous == null ? null : previous.toLocation();
+
         plugin.getDataStorage().setSpawn(target.getUniqueId(), loc, -1, 0, 0, target.getName(), "MANUAL");
         target.setRespawnLocation(loc, true);
         sender.sendMessage(ChatColor.GREEN + "Set spawn for " + target.getName() + " to: " +
@@ -154,6 +177,24 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         plugin.getLogger().info(sender.getName() + " manually set spawn for " + target.getName()
                 + " to (" + loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ()
                 + ") in world '" + loc.getWorld().getName() + "'. The spiral index is unchanged.");
+
+        // A command handler runs on the server thread, which is the thread the provider
+        // requires and the thread the spawn was just written from, so the claim goes in
+        // directly rather than through a scheduler hop that would only separate the two.
+        plugin.getSpawnProtector().protect(target.getUniqueId(), loc, "sgen setspawn");
+        // No release flag here, unlike reassign, and it is the argument grammar that decides
+        // that rather than a different answer to the same question. `setspawn` already ends
+        // in an optional `[x y z]`, so a trailing literal token after it could not be told
+        // apart from a coordinate without inventing the prefixed-flag grammar this command
+        // does not have. Leaving the old claim is the default on every path in any case; an
+        // operator who wants it gone has their protection plugin's own commands, and the
+        // line below tells them exactly where to stand.
+        String stale = plugin.getSpawnProtector().handOffStaleClaim(target.getUniqueId(),
+                target.getName(), oldSpawn, loc, false, "Remove it with your protection "
+                        + "plugin's own commands if it is no longer wanted.");
+        if (stale != null) {
+            sender.sendMessage(ChatColor.YELLOW + stale);
+        }
     }
 
     /**
@@ -199,10 +240,34 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         plugin.allocateNow(target, clientType);
     }
 
+    /**
+     * Moves a player to a fresh spiral plot.
+     *
+     * <p>The old spawn claim is left standing by default and named in the output, and the
+     * trailing {@link #RELEASE_FLAG} token is the only thing that removes it. That split is
+     * the whole design of this command's protection behaviour: a spawn claim is a few blocks
+     * of ground on the day it is made and somebody's chest, bed and first night's work by
+     * the time anyone reassigns them, so deleting it as an unannounced side effect of a
+     * command about somewhere else is not a mistake anybody can undo.
+     */
     private void handleReassign(CommandSender sender, String[] args) {
-        if (args.length < 2) {
-            sender.sendMessage(ChatColor.RED + "Usage: /sgen reassign <player>");
+        if (args.length < 2 || args.length > 3) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen reassign <player> [" + RELEASE_FLAG + "]");
             return;
+        }
+
+        boolean releaseOld = false;
+        if (args.length == 3) {
+            if (!args[2].equalsIgnoreCase(RELEASE_FLAG)) {
+                // Refused rather than ignored. A typo in the one word whose job is to
+                // authorise a deletion must not be read as that word, and silently dropping
+                // an argument an operator typed is how they come away believing the old
+                // claim was removed when it was not.
+                sender.sendMessage(ChatColor.RED + "Unknown argument '" + args[2]
+                        + "'. Usage: /sgen reassign <player> [" + RELEASE_FLAG + "]");
+                return;
+            }
+            releaseOld = true;
         }
 
         Player target = Bukkit.getPlayer(args[1]);
@@ -217,6 +282,13 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        // Captured here rather than inside the callback: by the time that runs the store
+        // has been rewritten, and this is the only record of where the claim about to go
+        // stale actually stands.
+        StoredSpawn previous = plugin.getDataStorage().getRecord(target.getUniqueId());
+        Location oldSpawn = previous == null ? null : previous.toLocation();
+        boolean release = releaseOld;
+
         sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
 
         spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(res -> {
@@ -228,6 +300,29 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     return;
                 }
                 plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN");
+
+                // Both protection calls happen here, inside the task that owns the player -
+                // the main thread wherever a real provider exists - and not in the teleport
+                // callback below, which resolves on whichever thread finished the teleport
+                // and would breach the provider's threading contract.
+                plugin.getSpawnProtector().protect(target.getUniqueId(), res.location(),
+                        "sgen reassign");
+                String staleNotice = plugin.getSpawnProtector().handOffStaleClaim(
+                        target.getUniqueId(), target.getName(), oldSpawn, res.location(), release,
+                        "Re-run with '/sgen reassign " + target.getName() + " " + RELEASE_FLAG
+                                + "' to remove it.");
+                // Sent from here rather than from the teleport callback below. That callback
+                // has no failure branch, so a teleport that fails outright would swallow this
+                // line - and when the flag was given, this line is the only report that a
+                // claim was deleted. An operator never being told about a deletion because an
+                // unrelated teleport failed is not a trade worth making for message ordering.
+                // reply() rather than a bare sendMessage for the usual reason: a Player
+                // sender has to be written to on their own region thread, and this task is
+                // the target's thread, not theirs.
+                if (staleNotice != null) {
+                    reply(sender, () -> sender.sendMessage(ChatColor.YELLOW + staleNotice));
+                }
+
                 target.setRespawnLocation(res.location(), true);
                 target.teleportAsync(res.location()).thenAccept(success -> {
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to index #" +
@@ -247,6 +342,66 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");
             return null;
         });
+    }
+
+    /**
+     * Claims the spawn square for everyone who was allocated before protection existed.
+     *
+     * <p>Allocation fires once per player, for a player who has no plot yet, so switching
+     * the feature on protects the next person to join and nobody who was already there.
+     * Nothing in the ordinary run of the plugin ever revisits them, which leaves this as
+     * either a startup pass or a command. It is a command: a startup pass would run on every
+     * boot of every server whether it was wanted or not, and it would run at the moment a
+     * server can least afford several thousand main-thread claims.
+     *
+     * <p>Safe to run twice, and safe to run on a live server. The provider answers
+     * "already claimed" for a square this has already done, which is counted as skipped, so
+     * a second pass is a no-op without any record of the first having happened. The work is
+     * spread a few entries per tick by the job itself; see {@code SpawnProtectionBackfill}
+     * for why the bound is a clock and not only a count.
+     *
+     * <p>Named {@code protect} and gated on the existing {@code spiralgenesis.admin}, with
+     * no new root command and no new permission node.
+     */
+    private void handleProtect(CommandSender sender, String[] args) {
+        if (args.length > 1) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen protect");
+            return;
+        }
+
+        SpawnProtector protector = plugin.getSpawnProtector();
+        if (!protector.isActive()) {
+            // The likeliest reason by far is that this server simply does not have spawn
+            // protection on, so the message names the two settings and the log rather than
+            // reporting a failure.
+            sender.sendMessage(ChatColor.RED + "Spawn protection is not active, so there is "
+                    + "nothing to backfill. Check protection.enabled and protection.provider "
+                    + "in config.yml, and the startup log for which provider was chosen.");
+            return;
+        }
+
+        if (plugin.isProtectionBackfillRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn protection backfill is already "
+                    + "running; wait for it to report before starting another.");
+            return;
+        }
+
+        SpawnProtectionBackfill job = plugin.startProtectionBackfill(summary ->
+                reply(sender, () -> sender.sendMessage(ChatColor.GREEN + summary)));
+        if (job == null) {
+            // Either another operator won the race between the check above and the start, or
+            // the repeating task could not be scheduled at all. Both are "it did not start",
+            // and the console carries the detail for the second.
+            sender.sendMessage(ChatColor.YELLOW + "The spawn protection backfill did not "
+                    + "start; another may already be running, or scheduling was refused. "
+                    + "Check the console.");
+            return;
+        }
+        if (job.total() > 0) {
+            sender.sendMessage(ChatColor.YELLOW + "Claiming spawn squares for " + job.total()
+                    + " stored spawns, a few per tick. Spawns that are already claimed are "
+                    + "skipped, so running this again is safe.");
+        }
     }
 
     /**
@@ -474,7 +629,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.YELLOW + "/sgen setcenter [x z]" + ChatColor.WHITE + " - Sets the global origin.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen setspawn <player> [x y z]" + ChatColor.WHITE + " - Sets a player's spawn.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen allocate <player>" + ChatColor.WHITE + " - Places a player held by the allocation gate.");
-        sender.sendMessage(ChatColor.YELLOW + "/sgen reassign <player>" + ChatColor.WHITE + " - Allocates fresh spiral plot.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen reassign <player> [" + RELEASE_FLAG + "]"
+                + ChatColor.WHITE + " - Allocates fresh spiral plot. '" + RELEASE_FLAG
+                + "' also removes the claim around their old spawn; without it the old claim is kept.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen protect" + ChatColor.WHITE
+                + " - Claims the spawn square for players allocated before protection was enabled.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen simulate <count>" + ChatColor.WHITE + " - Measures allocation against live terrain.");
@@ -488,7 +647,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "tp", "info", "simulate", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "tp", "info", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {
@@ -506,6 +665,14 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 }
             }
             return playerNames;
+        }
+
+        // Completed, but never the only thing offered without being typed towards: the
+        // operator still has to produce the word themselves, which is the point of it being
+        // a word rather than a default.
+        if (args.length == 3 && "reassign".equals(args[0].toLowerCase())
+                && RELEASE_FLAG.startsWith(args[2].toLowerCase())) {
+            return List.of(RELEASE_FLAG);
         }
 
         return Collections.emptyList();

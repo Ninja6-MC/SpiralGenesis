@@ -10,10 +10,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Spawn protection is now wired into every path that creates or moves a spawn point, and a
+  `/sgen protect` subcommand backfills players who were allocated before the feature existed.
+  A claim is created after the spawn location is final and written to storage and never
+  before, because a claim around a point the player is then not placed at protects ground
+  nobody lives on and, under `claim-as: PLAYER_CLAIM`, charges them for the privilege. Where
+  a spawn moves - `/sgen reassign`, `/sgen setspawn`, and a respawn revalidation that finds
+  the stored point unsafe - the new square is claimed and the old claim is left standing and
+  named, in the command output where there is one and in the server log where there is not.
+  Leaving it is the default everywhere and is not configurable into being the other way
+  round: a spawn claim is a few blocks of ground on the day it is made and somebody's bed,
+  chest and first night's work by the time anyone reassigns them, and deleting that as an
+  unannounced side effect of a command about somewhere else is not a mistake anyone can undo.
+  `/sgen reassign <player> release` is the one path that removes an old claim, and even then
+  only a claim that still matches what SpiralGenesis would have created there - same ground,
+  same owner, same shape - so a claim the player has since resized outwards over their house,
+  or one belonging to somebody else, is reported and left completely alone. `setspawn` takes
+  no such argument, because it already ends in an optional `[x y z]` and a trailing token
+  after that could not be told apart from a coordinate. The backfill is idempotent with
+  nothing recorded on disk to make it so: a second pass asks for squares that are already
+  claimed, which the provider answers as already claimed and the report counts as skipped. It
+  is bounded by a wall clock as well as a count, a few entries per tick, because under
+  `PLAYER_CLAIM` reading an offline owner's claim-block balance makes GriefPrevention load
+  that player's data synchronously - so the same loop is nearly free on one server and a
+  stall on the next, and only the clock notices which one it is on. None of this can cost a
+  player their plot: a provider that refuses, or throws, still leaves them allocated,
+  teleported and with their respawn point set, and that is what the tests pin.
 - A GriefPrevention implementation of the protection provider, and the selection that picks
-  it. Still nothing calls it: allocation, reassign, setspawn and the backfill command are
-  wired up separately. What it does is answer the situations GriefPrevention's API leaves to
-  its caller, each read off that API rather than inferred from it. `createClaim` states in
+  it. What it does is answer the situations GriefPrevention's API leaves to its caller, each
+  read off that API rather than inferred from it. `createClaim` states in
   its own comment that it checks neither the minimum claim size, nor whether the owner can
   afford the claim, nor any permission, so the checks its two command entry points make are
   ported here. The default `ADMIN_CLAIM` creates an administrative claim, charged to nobody,
@@ -37,9 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first time and a one-liner after that.
 - A protection provider seam, a `protection:` configuration block and a no-op default, so a
   later release can claim a small square around each player's spawn point through whatever
-  land protection plugin a server runs. Nothing claims anything yet: the block is disabled
-  by default, the only provider shipped is the one that reserves nothing, and no caller is
-  wired up. The seam is one call - reserve a square of side N centred here for this player -
+  land protection plugin a server runs. The block is disabled by default and the provider
+  shipped alongside it reserves nothing, so a default install still claims nothing. The seam
+  is one call - reserve a square of side N centred here for this player -
   answering with an outcome rather than a boolean, because "already claimed", "the provider
   refused" and "the size is below the provider's minimum" are three different situations and
   only some of them are a server owner's problem. Even sizes are rounded up to the next odd
