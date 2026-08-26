@@ -78,3 +78,50 @@ allocation:
   # the limbo cannot be read. Generous by default: a first-time player reading the rules
   # while choosing a password should never trip it. Clamped to 15-3600.
   action-timeout-seconds: 300
+
+# Claim a small square around each player's spawn point through a land protection plugin,
+# so their bed and first chest are covered the moment they arrive. The rest of the plot is
+# left unclaimed and is theirs to claim normally.
+protection:
+  # Off by default, and off is genuinely off: nothing is claimed, nothing is looked up, and
+  # a server with no protection plugin behaves exactly as it did before this block existed.
+  # Turning it on with the provider below missing is also harmless: nothing is claimed and
+  # the plugin carries on as if this were false.
+  enabled: false
+  # Which protection plugin creates the claim.
+  # GRIEF_PREVENTION - the only implementation shipped today. (Default)
+  # NONE             - claim nothing, the same as enabled: false.
+  # An unrecognised name falls back to NONE rather than to the default, because a typo is
+  # not a reason to start creating claims through some other plugin. It is logged at warning
+  # when that happens, since a silently misspelled provider looks exactly like a server that
+  # simply never claims anything. GriefPrevention does not run on Folia at all, so a Folia
+  # server claims nothing whatever is written here.
+  provider: GRIEF_PREVENTION
+  # The side of the claimed square in blocks, centred on the spawn point. 9 means four
+  # blocks out in every direction from the block the player lands on. Clamped to 3-255, and
+  # a value outside that range is logged at warning naming what was used instead.
+  #
+  # Even sizes are rounded UP to the next odd number, and a warning naming both the
+  # configured value and the value actually used is logged every time the config loads. An
+  # 8x8 square has no centre block, so "the player stands in the middle of their claim"
+  # cannot be honoured at that size without biasing the square a block to one side; 9 is
+  # the nearest size that keeps the promise, and rounding up never shrinks anyone's claim.
+  #
+  # The number is not purely ours to choose. Protection plugins enforce a minimum claim
+  # size of their own - GriefPrevention's is a server setting - and if this size is below
+  # it, every claim this plugin ever asks for is refused, for every player, until one of
+  # the two numbers changes. Check the protection plugin's own minimum first if no claims
+  # appear.
+  size: 9
+  # Who owns the claim that gets created.
+  # ADMIN_CLAIM  - create it as an administrative claim and trust the player on it. Costs
+  #                the player no claim blocks, so it still works on a server whose starting
+  #                balance is zero. They cannot resize, delete or manage trust on it, and it
+  #                is not listed as theirs by the protection plugin. (Default)
+  # PLAYER_CLAIM - create it as an ordinary claim the player owns outright, which they can
+  #                resize, delete and share. It is paid for out of their claim block
+  #                balance, so on a server that starts players at zero the provider refuses
+  #                every claim and nobody gets protected. Only use it where new players are
+  #                given enough blocks to cover the size above.
+  # An unrecognised name falls back to ADMIN_CLAIM, logged at warning.
+  claim-as: ADMIN_CLAIM
