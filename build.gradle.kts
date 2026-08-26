@@ -31,6 +31,10 @@ repositories {
     maven("https://repo.opencollab.dev/main/")
     // AuthMe-Reloaded repository
     maven("https://repo.codemc.io/repository/maven-public/")
+    // GriefPrevention repository. JitPack is where GriefPrevention's own documentation
+    // points and the only public repository that carries it - it is on neither Maven
+    // Central nor CodeMC, checked rather than assumed.
+    maven("https://jitpack.io")
     // Sonatype snapshots fallback
     maven("https://oss.sonatype.org/content/repositories/snapshots/")
 }
@@ -53,6 +57,18 @@ dependencies {
     // AuthMe-Reloaded API for Java authentication gating (Soft-dependency)
     compileOnly("fr.xephi:authme:5.6.0-SNAPSHOT")
 
+    // GriefPrevention API for spawn protection claims (Soft-dependency).
+    //
+    // Pinned to the oldest release whose API this plugin uses, not the newest, because a
+    // compileOnly dependency decides the minimum version a server can run rather than the
+    // maximum. Every signature and field referenced - DataStore.createClaim, PlayerData,
+    // Claim.setPermission, config_claims_minWidth, config_claims_minArea,
+    // config_claims_claimsExtendIntoGroundDistance - was checked with javap to be
+    // unchanged through 18.0.0, the current release, so the range this compiles against is
+    // 16.18.2 upward. The provider still catches Throwable at every call site: that check
+    // covers the versions that exist today, not the ones that do not.
+    compileOnly("com.github.TechFortress:GriefPrevention:16.18.2")
+
     // Unit Testing
     testImplementation(platform("org.junit:junit-bom:5.10.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -62,6 +78,12 @@ dependencies {
     // YamlConfiguration runs standalone (no server instance), so this is enough to
     // cover configuration parsing and validation.
     testImplementation("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+
+    // Same reason for GriefPrevention: the provider's decision helpers - minimum claim
+    // size, claim block affordability - are what is worth testing, and loading the class
+    // that holds them needs its imports resolvable. Nothing in the suite starts
+    // GriefPrevention; there is no server for it to attach to.
+    testImplementation("com.github.TechFortress:GriefPrevention:16.18.2")
 
     // In-process Bukkit server mock, for exercising allocation against a real World.
     testImplementation("com.github.seeseemelk:MockBukkit-v1.20:3.93.2")

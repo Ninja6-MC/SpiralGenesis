@@ -9,6 +9,9 @@ import com.ninja6.spiralgenesis.listeners.AuthMeHookListener;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
+import com.ninja6.spiralgenesis.protection.ProtectionProvider;
+import com.ninja6.spiralgenesis.protection.ProtectionProviders;
 import com.ninja6.spiralgenesis.storage.DataStorage;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
@@ -39,6 +42,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
+
+    /**
+     * The protection provider in force. Selected at startup and again on reload, and never
+     * null: a server with the feature off, or with the configured plugin missing, holds the
+     * no-op rather than a null to be checked at every call site.
+     *
+     * <p>Nothing calls it yet. Wiring it into allocation, reassign, setspawn and the backfill
+     * command is deliberately separate work, so this class only has to answer for choosing
+     * the provider and not for when it fires.
+     */
+    private ProtectionProvider protectionProvider = NoOpProtectionProvider.INSTANCE;
 
     /** Login plugins found at startup. Reported, and used to word the gate's timeout warning. */
     private List<String> detectedLoginPlugins = List.of();
@@ -76,6 +90,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         this.floodgateHook = new FloodgateHook();
         this.authMeHook = new AuthMeHook();
+        this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
 
         initSpawnManager();
 
@@ -164,6 +179,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             dataStorage.save();
             dataStorage.load();
         }
+        // Re-selected rather than kept: protection.enabled, the provider and the claim size
+        // are all reloadable, and the minimum-size check the provider makes at construction
+        // is only correct for the size it was constructed with.
+        this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
         initSpawnManager();
     }
 
@@ -612,5 +631,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     public AuthMeHook getAuthMeHook() {
         return authMeHook;
+    }
+
+    /**
+     * The protection provider selected for this server. Never {@code null}.
+     *
+     * <p>Callers must invoke {@link ProtectionProvider#reserve} on the thread that owns the
+     * region containing the claim - the main thread on every server where a real provider is
+     * available, since none of them run on Folia. The GriefPrevention implementation logs a
+     * stack trace at SEVERE and refuses the claim when it is called from anywhere else.
+     */
+    public ProtectionProvider getProtectionProvider() {
+        return protectionProvider;
     }
 }
