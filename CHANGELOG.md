@@ -10,6 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A protection provider seam, a `protection:` configuration block and a no-op default, so a
+  later release can claim a small square around each player's spawn point through whatever
+  land protection plugin a server runs. Nothing claims anything yet: the block is disabled
+  by default, the only provider shipped is the one that reserves nothing, and no caller is
+  wired up. The seam is one call - reserve a square of side N centred here for this player -
+  answering with an outcome rather than a boolean, because "already claimed", "the provider
+  refused" and "the size is below the provider's minimum" are three different situations and
+  only some of them are a server owner's problem. Even sizes are rounded up to the next odd
+  number, since an even square has no centre block for the player to stand on, and the round
+  up is logged at warning naming both the configured value and the value used.
 - CI now refuses the allocation teleport and asserts the retry lands. The limbo fixture can
   cancel every `PlayerTeleportEvent` while it holds a player, which is what LibreLogin does,
   so the action-timeout backstop allocates a plot the player cannot be moved onto - storage

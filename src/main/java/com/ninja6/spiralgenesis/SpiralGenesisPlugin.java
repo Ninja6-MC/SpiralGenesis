@@ -169,6 +169,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     private void loadConfiguration() {
         this.pluginConfig = new PluginConfig(getConfig());
+        // Every load, including a reload: a value the plugin quietly corrected is one the
+        // owner reads back out of the file and believes, so it has to be said each time.
+        for (String warning : pluginConfig.getWarnings()) {
+            getLogger().warning(warning);
+        }
     }
 
     /**
