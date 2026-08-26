@@ -10,9 +10,13 @@ author: Ninja6-MC
 folia-supported: true
 # Names must match the dependency's own plugin.yml `name:` exactly, or the
 # load-order guarantee silently does not apply. Floodgate registers lowercase.
+# GriefPrevention registers exactly `GriefPrevention` - checked against the jar,
+# not assumed from the project name. It declares no folia-supported flag, so it
+# is simply absent on Folia and the provider resolves to the no-op there.
 softdepend:
   - floodgate
   - AuthMe
+  - GriefPrevention
 
 commands:
   sgen:

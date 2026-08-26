@@ -10,6 +10,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A GriefPrevention implementation of the protection provider, and the selection that picks
+  it. Still nothing calls it: allocation, reassign, setspawn and the backfill command are
+  wired up separately. What it does is answer the situations GriefPrevention's API leaves to
+  its caller, each read off that API rather than inferred from it. `createClaim` states in
+  its own comment that it checks neither the minimum claim size, nor whether the owner can
+  afford the claim, nor any permission, so the checks its two command entry points make are
+  ported here. The default `ADMIN_CLAIM` creates an administrative claim, charged to nobody,
+  with the player trusted onto it, which keeps working on a server whose starting claim-block
+  balance is zero. `PLAYER_CLAIM` creates a claim the player owns and pays for: a player who
+  cannot afford it is refused with both balances named, rather than pushed into the
+  claim-block debt the raw API would have given them, and GriefPrevention's per-player claim
+  limit is honoured so a server that capped players at a number does not find every one of
+  them quietly handed an extra claim. GriefPrevention's minimum claim size is read once at
+  startup and compared once against the configured size, so a size below it is reported one
+  time naming both numbers instead of once per joining player, and only under `PLAYER_CLAIM`,
+  because GriefPrevention exempts administrative claims from its own minimum. An existing
+  claim over the spawn is an ordinary outcome: the player keeps the spawn, loses the
+  protection, and one line names the claim that was in the way. A world where GriefPrevention
+  has claiming switched off is reported once per world for the same reason. On Folia the
+  provider resolves as absent and stays quiet, because GriefPrevention does not run there at
+  all and `folia-supported: true` has to stay honest. `reserve` must be called from the thread
+  that owns the region containing the claim, which is the main thread wherever a real provider
+  exists, since none of them run on Folia; a call from anywhere else is refused without
+  GriefPrevention being touched and logged at SEVERE, with a stack trace naming the call site
+  the first time and a one-liner after that.
 - A protection provider seam, a `protection:` configuration block and a no-op default, so a
   later release can claim a small square around each player's spawn point through whatever
   land protection plugin a server runs. Nothing claims anything yet: the block is disabled

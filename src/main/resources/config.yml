@@ -110,18 +110,29 @@ protection:
   # The number is not purely ours to choose. Protection plugins enforce a minimum claim
   # size of their own - GriefPrevention's is a server setting - and if this size is below
   # it, every claim this plugin ever asks for is refused, for every player, until one of
-  # the two numbers changes. Check the protection plugin's own minimum first if no claims
-  # appear.
+  # the two numbers changes. It is checked once at startup and reported there naming both
+  # numbers, so the server log says which one to change; nothing is logged per player.
+  #
+  # GriefPrevention applies its minimum only to claims a player owns, so this affects
+  # claim-as: PLAYER_CLAIM and not the ADMIN_CLAIM default. Worth knowing before switching:
+  # GriefPrevention ships MinimumArea 100 and a 9x9 square is 81 blocks, so the default
+  # size below is under the default minimum and PLAYER_CLAIM on an untouched GriefPrevention
+  # install claims nothing until size is raised to 11 or its MinimumArea is lowered.
   size: 9
   # Who owns the claim that gets created.
   # ADMIN_CLAIM  - create it as an administrative claim and trust the player on it. Costs
   #                the player no claim blocks, so it still works on a server whose starting
   #                balance is zero. They cannot resize, delete or manage trust on it, and it
-  #                is not listed as theirs by the protection plugin. (Default)
+  #                is not listed as theirs by the protection plugin. It also sits in the way:
+  #                a protection plugin refuses any new claim overlapping an existing one, so
+  #                a player later claiming the ground around their spawn has to claim around
+  #                this square rather than through it. (Default)
   # PLAYER_CLAIM - create it as an ordinary claim the player owns outright, which they can
   #                resize, delete and share. It is paid for out of their claim block
   #                balance, so on a server that starts players at zero the provider refuses
-  #                every claim and nobody gets protected. Only use it where new players are
-  #                given enough blocks to cover the size above.
+  #                every claim and nobody gets protected. It also counts against
+  #                GriefPrevention's MaxClaimsPerPlayer, and is subject to its minimum claim
+  #                size. Only use it where new players are given enough blocks to cover the
+  #                size above.
   # An unrecognised name falls back to ADMIN_CLAIM, logged at warning.
   claim-as: ADMIN_CLAIM
