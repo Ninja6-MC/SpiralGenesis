@@ -30,6 +30,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -44,6 +45,15 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * of the two paths runs completely untested, which is exactly where a default could flip.
  */
 class SpiralCommandProtectionTest {
+
+    /**
+     * The literal that authorises a deletion. A copy of {@code SpiralCommand.RELEASE_FLAG},
+     * which is private, so a rename there would leave the "the output does not advise this"
+     * assertion below looking for a string nothing prints any more. The test underneath it
+     * runs the token for real and would fail on such a rename, which is what actually keeps
+     * the pair honest.
+     */
+    private static final String RELEASE_TOKEN = "release";
 
     private ServerMock server;
     private WorldMock world;
@@ -202,8 +212,56 @@ class SpiralCommandProtectionTest {
         assertTrue(provider.releases.isEmpty(),
                 "the default reassign must be incapable of deleting anything");
         assertTrue(saidSomethingContaining(said, "still standing"), said.toString());
-        assertTrue(saidSomethingContaining(said, "release"),
-                "the way to remove it belongs in the output: " + said);
+        assertTrue(saidSomethingContaining(said, "10, 64, 10"),
+                "the operator has to be told where the stale claim is: " + said);
+        assertTrue(saidSomethingContaining(said, "your protection plugin's own commands"),
+                "the only thing that can remove the named square belongs in the output: " + said);
+        // The regression this pins. The line used to end "Re-run with '/sgen reassign Bob
+        // release' to remove it.", which reads as an undo and is not one: see
+        // rerunningWithTheTokenReleasesTheSecondSquareNotTheFirst below for what following
+        // that advice actually does. No output from this command may spell a runnable
+        // reassign command an operator could copy out of it.
+        assertFalse(saidSomethingContaining(said, "/sgen reassign Bob " + RELEASE_TOKEN),
+                "the output must not advise re-running the command it is reporting on: " + said);
+    }
+
+    /**
+     * Why the hint in {@link #reassignWithoutTheTokenDeletesNothing} cannot say what it
+     * used to say, demonstrated rather than asserted about.
+     *
+     * <p>An operator who followed the old advice ran the command a second time. This is
+     * that second run: the player is moved on to a third plot, and the square released is
+     * the one they were sitting on at the moment the command was typed - the plot the
+     * <em>first</em> reassignment had just given them - not the original square the message
+     * was about, which is left exactly where it was. So the advice cost a second
+     * reassignment and released the one square nobody had raised. The behaviour is correct
+     * and stays exactly as it is; it is the wording that had to stop pointing at it.
+     */
+    @Test
+    @DisplayName("re-running reassign with the token releases the square just left, not the one reported")
+    void rerunningWithTheTokenReleasesTheSecondSquareNotTheFirst() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        InlinePlayerMock player = join("Bob");
+        plugin.getDataStorage().setSpawn(player.getUniqueId(), new Location(world, 10, 64, 10),
+                1, 0, 0, "Bob", "JAVA");
+        plugin.getSpawnManager();
+
+        plugin.stub.next = new Location(world, 900, 64, 900);
+        server.executeConsole("sgen", "reassign", "Bob").assertSucceeded();
+        drain();
+
+        plugin.stub.next = new Location(world, 1500, 64, 1500);
+        server.executeConsole("sgen", "reassign", "Bob", RELEASE_TOKEN).assertSucceeded();
+
+        assertEquals(1, provider.releases.size(), "the token releases exactly one square");
+        assertEquals(900, provider.releases.get(0).centre().getBlockX(),
+                "the square released is the one the player is leaving on this run");
+        assertTrue(provider.releases.stream().noneMatch(r -> r.centre().getBlockX() == 10),
+                "the square the first run reported on is never the one that goes");
+        assertEquals(1500, (int) plugin.getDataStorage().getRecord(player.getUniqueId()).x(),
+                "and the player has been moved a second time, to a third plot");
     }
 
     @Test

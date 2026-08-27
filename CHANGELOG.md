@@ -104,6 +104,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proof of authentication.
 
 ### Fixed
+- The line `/sgen reassign` prints about the claim it leaves behind told an admin to
+  re-run the command with `release` "to remove it", and that would not have removed it.
+  `release` acts on the spawn the player is leaving at the moment it runs, and `reassign`
+  always allocates a fresh plot, so following the advice moved the player on to a third
+  plot and released the claim around the second - never the square the message had just
+  named, which was left exactly where it was. It cost a second reassignment and deleted
+  the one claim nobody had raised. The line now points at the protection plugin's own
+  commands, which are what actually reach that square, and explains what `release` does so
+  it is decided before a reassignment rather than reached for after one. `setspawn`
+  already said the right thing and is unchanged. The behaviour of `release` itself is
+  correct and is not touched; nothing outside it can still delete a claim.
+- An overlapping claim was logged at `FINE`, below the default level, so a server owner
+  had no way at all to learn that a player had silently ended up with no spawn protection:
+  not the console, not the command output, not the player. It is now at `INFO`, and names
+  the claim in the way and its owner. `FINE` had been chosen on the grounds that the line
+  would otherwise be one per joining player, and that is not what the call sites are: a
+  claim is asked for when a spawn is created or moved and nowhere else, so the ceiling is
+  the ceiling the successful-claim line already sits at. A square refused for being below
+  GriefPrevention's minimum stays at `FINE`, because that one is a permanent server-wide
+  condition that the startup report already names both numbers for, and repeating it per
+  player would only teach an owner to skim the log.
 - `/sgen tp` sent an admin to a stored plot after checking only that the record existed and
   its world was loaded, while the respawn path re-checked the same point against live
   blocks. Both `docs/ADMIN_GUIDE.md` and the warning logged when a plot teleport is refused

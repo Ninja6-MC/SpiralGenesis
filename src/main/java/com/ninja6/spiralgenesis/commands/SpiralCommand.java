@@ -309,8 +309,23 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                         "sgen reassign");
                 String staleNotice = plugin.getSpawnProtector().handOffStaleClaim(
                         target.getUniqueId(), target.getName(), oldSpawn, res.location(), release,
-                        "Re-run with '/sgen reassign " + target.getName() + " " + RELEASE_FLAG
-                                + "' to remove it.");
+                        // Deliberately not "re-run with release to remove it", which is what
+                        // this said and was not true of anything. `release` acts on the spawn
+                        // the player is leaving at the moment it runs, and `reassign` always
+                        // moves them, so re-running it would send them on to a third plot and
+                        // release the claim around the second - never the square named in the
+                        // line this hint is attached to, which is left exactly where it is.
+                        // Nothing on this command can reach that square; the protection
+                        // plugin's own commands can, which is what `setspawn` already says in
+                        // exactly this situation. The second sentence then puts `release`
+                        // where it belongs, as something to decide before a reassignment
+                        // rather than reached for after one.
+                        "Remove it with your protection plugin's own commands if it is no "
+                                + "longer wanted. The '" + RELEASE_FLAG + "' argument releases "
+                                + "the claim a player is leaving at the moment it runs, so "
+                                + "re-running this command with it would move " + target.getName()
+                                + " on again and release the claim around the plot they are on "
+                                + "now, leaving this one exactly where it is.");
                 // Sent from here rather than from the teleport callback below. That callback
                 // has no failure branch, so a teleport that fails outright would swallow this
                 // line - and when the flag was given, this line is the only report that a

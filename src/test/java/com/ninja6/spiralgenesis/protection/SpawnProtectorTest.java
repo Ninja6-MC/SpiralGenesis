@@ -9,7 +9,12 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -185,5 +190,95 @@ class SpawnProtectorTest {
         assertNull(protectorFor(provider).handOffStaleClaim(owner, "Bob", at(10, 10), at(10, 10),
                 false, "hint"));
         assertTrue(provider.releases.isEmpty());
+    }
+
+    /**
+     * Everything a protector was asked to log, with the level it asked for.
+     *
+     * <p>Attached to a logger of its own per test rather than to a shared one, because the
+     * level a record was published at is the whole assertion and a handler left behind on a
+     * shared logger would collect another test's lines as well.
+     */
+    private static final class CapturingHandler extends Handler {
+
+        private final List<LogRecord> records = new ArrayList<>();
+
+        @Override
+        public void publish(LogRecord record) {
+            records.add(record);
+        }
+
+        @Override
+        public void flush() { }
+
+        @Override
+        public void close() { }
+
+        private LogRecord only() {
+            assertEquals(1, records.size(), records.toString());
+            return records.get(0);
+        }
+    }
+
+    /** A protector whose log lines are collected instead of printed. */
+    private SpawnProtector protectorLogging(ProtectionProvider provider, CapturingHandler handler) {
+        Logger logger = Logger.getLogger("SpawnProtectorTest." + UUID.randomUUID());
+        logger.setUseParentHandlers(false);
+        // ALL, so the assertion is about the level the protector chose rather than about
+        // what this logger happens to be configured to pass through. A FINE line that the
+        // logger swallowed and a FINE line the protector never wrote look identical
+        // otherwise, which is exactly the confusion being tested against.
+        logger.setLevel(Level.ALL);
+        logger.addHandler(handler);
+        return new SpawnProtector(logger, () -> provider, () -> 9);
+    }
+
+    @Test
+    @DisplayName("an overlapping claim is reported at a level a server owner actually sees")
+    void anOverlapIsLoggedAtInfo() {
+        RecordingProvider provider = new RecordingProvider()
+                .answering(r -> ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED,
+                        "the square overlaps claim 42 (Steve)."));
+        CapturingHandler handler = new CapturingHandler();
+
+        protectorLogging(provider, handler).protect(owner, at(10, 10), "first allocation");
+
+        LogRecord line = handler.only();
+        // FINE is below the default JUL level, so this outcome used to reach no console at
+        // all. It is per-player, transient, and the only thing anywhere that could tell an
+        // owner a player silently has no protection.
+        assertEquals(Level.INFO, line.getLevel(), line.getMessage());
+        assertTrue(line.getMessage().contains("claim 42"),
+                "the claim in the way has to be named: " + line.getMessage());
+        assertTrue(line.getMessage().contains("their cover there is whatever that claim"),
+                "and that this plugin protected nobody: " + line.getMessage());
+    }
+
+    @Test
+    @DisplayName("a square below the provider's minimum stays quiet, since startup already said so")
+    void belowMinimumSizeStaysQuiet() {
+        RecordingProvider provider = new RecordingProvider()
+                .answering(ClaimOutcome.BELOW_MINIMUM_SIZE);
+        CapturingHandler handler = new CapturingHandler();
+
+        protectorLogging(provider, handler).protect(owner, at(10, 10), "first allocation");
+
+        // Permanent and server-wide rather than per-player: the provider reports it once at
+        // startup naming both numbers, so a line here would be that same fact repeated for
+        // every player who ever joins, for as long as nobody edits the file.
+        assertEquals(Level.FINE, handler.only().getLevel());
+    }
+
+    @Test
+    @DisplayName("a default install still says nothing at all")
+    void anAbsentProviderLogsNothing() {
+        RecordingProvider provider = new RecordingProvider().available(false);
+        CapturingHandler handler = new CapturingHandler();
+
+        protectorLogging(provider, handler).protect(owner, at(10, 10), "first allocation");
+
+        assertTrue(handler.records.isEmpty(),
+                "a server that never heard of a claim plugin must read as it always did: "
+                        + handler.records);
     }
 }
