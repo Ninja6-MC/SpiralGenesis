@@ -33,8 +33,8 @@ there is no separate release branch.
    ┌─────────────────────────┐                 ┌─────────────────────────┐
    │   ALPHA (vX.Y.Z-alpha)  │                 │    BETA (vX.Y.Z-beta)   │
    │ • Experimental          │                 │ • Feature-Complete      │
-   │ • Internal / Staging    │                 │ • Public Testing        │
-   │ • GitHub Pre-release    │                 │ • Modrinth/Hangar Beta  │
+   │ • GitHub Pre-release    │                 │ • Public Testing        │
+   │ • Modrinth/Hangar Alpha │                 │ • Modrinth/Hangar Beta  │
    └────────────┬────────────┘                 └────────────┬────────────┘
                 │                                           │
                 └─────────────────────┬─────────────────────┘
@@ -51,7 +51,7 @@ there is no separate release branch.
 
 | Tier | Git Tag Pattern | Source Branch | Stability Level | Published Channels |
 | :--- | :--- | :--- | :--- | :--- |
-| **Alpha** | `vX.Y.Z-alpha.N` | `main` | Experimental | GitHub Releases (*Pre-release*), CI Artifacts, Modrinth (*alpha*) |
+| **Alpha** | `vX.Y.Z-alpha.N` | `main` | Experimental | GitHub Releases (*Pre-release*), CI Artifacts, Modrinth (*alpha*), Paper Hangar (*Alpha*) |
 | **Beta / RC** | `vX.Y.Z-beta.N` | `main` | Feature-Complete | GitHub Releases (*Pre-release*), Modrinth (*beta*), Paper Hangar (*Beta*) |
 | **Market (GA)** | `vX.Y.Z` | `main` | Production Stable | GitHub Releases (*Latest*), Modrinth (*Featured*), Paper Hangar (*Release*), SpigotMC |
 

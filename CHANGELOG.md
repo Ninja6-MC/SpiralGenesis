@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [1.0.0-alpha.1] - 2026-08-27
 
 ### Added
 - **Spawn protection**, off by default and needing GriefPrevention. Switched on, a
