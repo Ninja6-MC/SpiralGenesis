@@ -10,66 +10,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Spawn protection is now wired into every path that creates or moves a spawn point, and a
-  `/sgen protect` subcommand backfills players who were allocated before the feature existed.
-  A claim is created after the spawn location is final and written to storage and never
-  before, because a claim around a point the player is then not placed at protects ground
-  nobody lives on and, under `claim-as: PLAYER_CLAIM`, charges them for the privilege. Where
-  a spawn moves - `/sgen reassign`, `/sgen setspawn`, and a respawn revalidation that finds
-  the stored point unsafe - the new square is claimed and the old claim is left standing and
-  named, in the command output where there is one and in the server log where there is not.
-  Leaving it is the default everywhere and is not configurable into being the other way
-  round: a spawn claim is a few blocks of ground on the day it is made and somebody's bed,
-  chest and first night's work by the time anyone reassigns them, and deleting that as an
-  unannounced side effect of a command about somewhere else is not a mistake anyone can undo.
-  `/sgen reassign <player> release` is the one path that removes an old claim, and even then
-  only a claim that still matches what SpiralGenesis would have created there - same ground,
-  same owner, same shape - so a claim the player has since resized outwards over their house,
-  or one belonging to somebody else, is reported and left completely alone. `setspawn` takes
-  no such argument, because it already ends in an optional `[x y z]` and a trailing token
-  after that could not be told apart from a coordinate. The backfill is idempotent with
-  nothing recorded on disk to make it so: a second pass asks for squares that are already
-  claimed, which the provider answers as already claimed and the report counts as skipped. It
-  is bounded by a wall clock as well as a count, a few entries per tick, because under
-  `PLAYER_CLAIM` reading an offline owner's claim-block balance makes GriefPrevention load
-  that player's data synchronously - so the same loop is nearly free on one server and a
-  stall on the next, and only the clock notices which one it is on. None of this can cost a
-  player their plot: a provider that refuses, or throws, still leaves them allocated,
-  teleported and with their respawn point set, and that is what the tests pin.
-- A GriefPrevention implementation of the protection provider, and the selection that picks
-  it. What it does is answer the situations GriefPrevention's API leaves to its caller, each
-  read off that API rather than inferred from it. `createClaim` states in
-  its own comment that it checks neither the minimum claim size, nor whether the owner can
-  afford the claim, nor any permission, so the checks its two command entry points make are
-  ported here. The default `ADMIN_CLAIM` creates an administrative claim, charged to nobody,
-  with the player trusted onto it, which keeps working on a server whose starting claim-block
-  balance is zero. `PLAYER_CLAIM` creates a claim the player owns and pays for: a player who
-  cannot afford it is refused with both balances named, rather than pushed into the
-  claim-block debt the raw API would have given them, and GriefPrevention's per-player claim
-  limit is honoured so a server that capped players at a number does not find every one of
-  them quietly handed an extra claim. GriefPrevention's minimum claim size is read once at
-  startup and compared once against the configured size, so a size below it is reported one
-  time naming both numbers instead of once per joining player, and only under `PLAYER_CLAIM`,
-  because GriefPrevention exempts administrative claims from its own minimum. An existing
-  claim over the spawn is an ordinary outcome: the player keeps the spawn, loses the
-  protection, and one line names the claim that was in the way. A world where GriefPrevention
-  has claiming switched off is reported once per world for the same reason. On Folia the
-  provider resolves as absent and stays quiet, because GriefPrevention does not run there at
-  all and `folia-supported: true` has to stay honest. `reserve` must be called from the thread
-  that owns the region containing the claim, which is the main thread wherever a real provider
-  exists, since none of them run on Folia; a call from anywhere else is refused without
-  GriefPrevention being touched and logged at SEVERE, with a stack trace naming the call site
-  the first time and a one-liner after that.
-- A protection provider seam, a `protection:` configuration block and a no-op default, so a
-  later release can claim a small square around each player's spawn point through whatever
-  land protection plugin a server runs. The block is disabled by default and the provider
-  shipped alongside it reserves nothing, so a default install still claims nothing. The seam
-  is one call - reserve a square of side N centred here for this player -
-  answering with an outcome rather than a boolean, because "already claimed", "the provider
-  refused" and "the size is below the provider's minimum" are three different situations and
-  only some of them are a server owner's problem. Even sizes are rounded up to the next odd
-  number, since an even square has no centre block for the player to stand on, and the round
-  up is logged at warning naming both the configured value and the value used.
+- **Spawn protection**, off by default and needing GriefPrevention. Switched on, a
+  player's spawn point becomes the centre of a small claim only they can build in - 9x9 by
+  default, four blocks out in each direction - so their bed, their first chest and the
+  ground under their feet are covered the moment they arrive, with no command to run and
+  nothing to learn. The rest of the 500x500 plot stays unclaimed and is theirs to claim in
+  the normal way. A server that has never heard of GriefPrevention is unchanged in
+  behaviour, including on Folia, where GriefPrevention cannot run at all: the provider
+  resolves as absent, says so in one line, and `folia-supported: true` stays honest. The
+  new `protection:` block is four keys - `enabled`, `provider`, `size` and `claim-as` -
+  and every one of them is reloadable. `docs/ADMIN_GUIDE.md` section 6 is the reference;
+  the notes below are what a server owner has to decide.
+  - **`claim-as: ADMIN_CLAIM`, the default,** creates an administrative claim with the
+    player trusted onto it. It consumes no claim blocks, so it works on a server whose
+    starting balance is zero, and it is exempt from GriefPrevention's minimum claim size
+    and per-player claim limit. What it costs is ownership: the player cannot resize,
+    abandon or share the claim, and because GriefPrevention refuses overlapping claims,
+    they cannot later claim the ground around their own spawn either. `PLAYER_CLAIM`
+    creates a claim they own outright and pay for out of their claim-block balance.
+  - **The number to check before choosing `PLAYER_CLAIM`:** GriefPrevention ships
+    `MinimumArea: 100` and a 9x9 square is 81 blocks, so on an untouched GriefPrevention
+    install `PLAYER_CLAIM` claims nothing, for every player, until `protection.size` is
+    raised or that minimum is lowered. It is checked once at startup and reported once,
+    naming both numbers, rather than failing per player. Under `PLAYER_CLAIM` the player's
+    balance and GriefPrevention's per-player claim limit are checked here as well, because
+    its API checks neither and would take a player into claim-block debt rather than
+    refuse.
+  - **Even `size` values are rounded up** to the next odd number, since an even square has
+    no centre block for the player to stand on, and the correction is logged at warning on
+    every load naming both the configured value and the value used. The range is 3-255.
+  - **Every path that moves a spawn claims the new one and leaves the old claim
+    standing**, naming it in the command output where there is one and in the server log
+    where there is not - `/sgen reassign`, `/sgen setspawn` and a respawn revalidation
+    that finds the stored point unsafe. `/sgen reassign <player> release` is the only
+    thing in the plugin that deletes a claim, and even then only one that still matches
+    what SpiralGenesis would have created there, so a claim the player has since resized
+    over their house, or one belonging to somebody else, is reported and left alone. A
+    spawn claim is a few blocks of ground on the day it is made and somebody's bed, chest
+    and first night's work by the time anyone reassigns them.
+  - **`/sgen protect` backfills players who predate the feature**, gated on the existing
+    `spiralgenesis.admin` and adding no new permission node. It is idempotent with nothing
+    recorded on disk to make it so - a second pass asks for squares that are already
+    claimed and counts them as skipped - and it is bounded by a wall clock as well as a
+    count, a few entries per tick, because under `PLAYER_CLAIM` reading an offline owner's
+    balance makes GriefPrevention load that player's data synchronously. It reports
+    created, skipped and failed out of a total, plus the first failure's reason.
+  - **None of it can cost a player their plot.** The claim is asked for only after the
+    spawn is final and written to storage, and a provider that refuses, returns nothing or
+    throws still leaves the player allocated, teleported and with their respawn point set.
+    That is what the tests pin. Claims are created on the thread that owns the region
+    containing them; a call from anywhere else is refused without GriefPrevention being
+    touched and logged at SEVERE, with a stack trace naming the call site the first time.
 - CI now refuses the allocation teleport and asserts the retry lands. The limbo fixture can
   cancel every `PlayerTeleportEvent` while it holds a player, which is what LibreLogin does,
   so the action-timeout backstop allocates a plot the player cannot be moved onto - storage
@@ -126,10 +117,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no longer reports success for a teleport that was refused, which matters because it is
   what the admin guide names when a plot teleport is refused in the first place.
 - A stored spawn was validated once, when it was allocated, and never again. Cells are 500
-  blocks wide and the plugin has no claim or protection system, so anyone could flood a
-  plot, pour lava on it or dig out the ground, and its owner would then respawn into it,
-  die, and respawn into it again. The stored point is now re-checked against live blocks on
-  death, which uses the time the player spends on the death screen and is also the only
+  blocks wide and everything outside the optional spawn square is unclaimed, so anyone
+  could flood a plot, pour lava on it or dig out the ground, and its owner would then
+  respawn into it, die, and respawn into it again. The stored point is now re-checked
+  against live blocks on death, which uses the time the player spends on the death screen
+  and is also the only
   moment Folia offers - Folia's respawn computes its own position and never fires
   `PlayerRespawnEvent`, whose usual source throws `UnsupportedOperationException` there.
   `PlayerRespawnEvent` remains as a backstop on Paper for a repair that has not finished
