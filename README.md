@@ -46,7 +46,7 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 
 > **Pregenerate your world first.** Allocation generates chunks as it searches. On a fresh
 > world that is fine, but a pregenerated area makes first joins near-instant. See
-> [sizing guidance](docs/ADMIN_GUIDE.md#8-sizing-and-world-generation) for how big
+> [sizing guidance](docs/ADMIN_GUIDE.md#9-sizing-and-world-generation) for how big
 > to make it.
 
 ---
@@ -67,13 +67,23 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 * **Doesn't stall the server.** Chunks load through Paper's async API and each candidate
   spot is checked on its own tick. Saves are batched off the main thread.
 * **Runs on Folia.** The same jar uses region, entity and async schedulers throughout.
+* **Can protect the spawn point.** Optional, off by default, and needs GriefPrevention:
+  switch it on and every player gets a small claim around their spawn that only they can
+  build in, so their bed and first chest are covered the moment they arrive. It never costs
+  anyone their plot when it cannot be created. See the
+  [admin guide](docs/ADMIN_GUIDE.md#6-spawn-protection) for the settings and the two
+  GriefPrevention numbers worth checking first.
 
 ### What it does *not* do
 
-SpiralGenesis gives each player **space**, not **ownership**. It does not protect blocks,
-create claims, or stop another player from walking over and breaking things. If you want
-land protection, pair it with a claim plugin such as GriefPrevention or Lands — the spiral
-layout gives those plugins clean, non-overlapping regions to work with.
+SpiralGenesis gives each player **space**, and at most a few blocks of **ownership**.
+With `protection:` switched on it claims a small square around each player's spawn point
+through GriefPrevention, and that is the whole of it - the rest of the 500x500 plot is
+unclaimed, and players are expected to claim it themselves in the normal way. Left off,
+which is the default, it protects nothing at all and nothing stops another player walking
+over and breaking things. Either way, pair it with a claim plugin such as GriefPrevention
+or Lands for anything beyond the spawn square - the spiral layout gives those plugins
+clean, non-overlapping regions to work with.
 
 ---
 
@@ -128,6 +138,8 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
+| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. The only command in the plugin that deletes a claim. |
+| `/sgen protect` | Claim the spawn square for players allocated before spawn protection was switched on. Safe to run twice. |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
 | `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
