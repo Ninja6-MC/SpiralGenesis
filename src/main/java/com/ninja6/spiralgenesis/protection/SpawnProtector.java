@@ -115,11 +115,40 @@ public final class SpawnProtector {
             case REFUSED -> logger.warning("Could not claim the spawn square for " + owner
                     + " (" + context + "): " + (result.hasDetail() ? result.detail() : "no reason given.")
                     + " They keep the spawn and lose the protection.");
-            // Ordinary, and both already explained once at startup or once per world by the
-            // provider itself. Repeating either per player would train a server owner to
-            // ignore the log.
-            case ALREADY_CLAIMED, BELOW_MINIMUM_SIZE -> logger.fine("No spawn claim for " + owner
-                    + " (" + context + "): " + result.detail());
+            // Not a fault - a claim is legitimately in the way - but this plugin protected
+            // nobody, and usually that means a player has silently ended up with none. This
+            // line is the only thing anywhere that could say so: not the command output on
+            // the paths that have one, not the player, not the provider. It sat at FINE on
+            // the grounds that it would otherwise be "one line per joining player", and
+            // that is not what this method's call sites are: first allocation fires once
+            // per player, the two commands fire when an operator types them, the
+            // revalidation repair fires when a stored point has gone bad, and the backfill
+            // does not come through here at all. So the ceiling is the same ceiling the
+            // CREATED line above already lives at, which makes de-duplication state that
+            // would have to be cleared on reload, and could not tell a genuinely new
+            // overlap at a new point from a repeat, a cost with nothing to buy. INFO rather
+            // than WARNING because nothing malfunctioned: WARNING is what this class says
+            // when the provider refuses or breaks, and spending it on an ordinary outcome
+            // is how a server owner learns to skim past the real ones.
+            case ALREADY_CLAIMED -> logger.info("No spawn claim for " + owner + " ("
+                    + context + "): " + (result.hasDetail() ? result.detail()
+                    : "the square is already claimed.")
+                    // Not "they lose the protection", which would be wrong in a case this
+                    // outcome reaches: a spawn moved a few blocks by setspawn or by a repair
+                    // overlaps the square the player is already trusted on, and they are
+                    // exactly as protected as they were a moment ago. What is always true is
+                    // that this plugin made nothing, and that whatever cover they have there
+                    // now is the existing claim's business rather than SpiralGenesis's.
+                    + " They keep the spawn, and their cover there is whatever that claim"
+                    + " already gives them.");
+            // Quiet on purpose, and the one place the two outcomes part company. This is
+            // neither per-player nor transient: the configured size is below the provider's
+            // minimum for everybody, for ever, until somebody edits a file. The provider
+            // reports it once at startup naming both numbers, so a line per player here
+            // would be that same permanent fact repeated for as long as the server runs.
+            case BELOW_MINIMUM_SIZE -> logger.fine("No spawn claim for " + owner + " ("
+                    + context + "): " + (result.hasDetail() ? result.detail()
+                    : "the square is below the provider's minimum size."));
             // The default install. Silence is the whole point of it.
             case PROVIDER_UNAVAILABLE -> { }
         }

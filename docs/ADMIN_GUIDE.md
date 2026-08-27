@@ -533,11 +533,33 @@ treats that as an ordinary outcome rather than an error. The player keeps their 
 loses the protection, nothing is retried, nothing is moved, and the existing claim is
 never touched.
 
-The overlap is recorded at `FINE`, naming the claim that got in the way and who owns it,
-which means it is **not in your console** unless you have raised the log level. That is
-deliberate: on an established server an overlap is an ordinary event, and one line per
-joining player would be noise rather than news. Raise the level when you are working out
-why a particular player has no claim.
+The overlap is logged at `INFO`, so it **is** in your console. The line names the path
+that asked, the claim that got in the way and who owns it:
+
+```
+No spawn claim for 06e7b6b2-9f1c (first allocation): the square overlaps
+claim 214 (Steve). They keep the spawn, and their cover there is whatever
+that claim already gives them.
+```
+
+That last clause is careful on purpose. Usually the claim in the way belongs to somebody
+else and the player has no protection at all, which is the case worth looking into. But
+`/sgen setspawn` moving a spawn a few blocks, or a revalidation repair, can land the new
+centre inside the player's *own* spawn square, and the overlap reported is then their
+existing claim - they are exactly as covered as they were a moment ago. Read the claim
+number and the owner before deciding which one you are looking at.
+
+It is not one line per joining player, whatever it might look like. A claim is only ever
+asked for when a spawn point is created or moved - first allocation, `/sgen reassign`,
+`/sgen setspawn`, and a revalidation repair - so the most this can produce is one line per
+player per spawn placement, which is the same ceiling as the line reporting a claim that
+succeeded. `/sgen protect` does not come through here at all; it reports counts.
+
+A square refused for being smaller than GriefPrevention's minimum is the exception and
+stays at `FINE`, where you will not see it. That one is not per-player: it is your
+`protection.size` against a number in GriefPrevention's config, it is true for everybody
+until one of the two is changed, and the startup report two sections above already names
+both numbers. Repeating it per player would say nothing the console had not already said.
 
 That matters most in one direction, and it is the reverse of what people expect.
 
@@ -597,14 +619,15 @@ rules hold across all of them:
 | Respawn revalidation repair | Claimed at the repaired point | Left standing and reported to the server log, since this path has no command output |
 | Teleport re-assert | Nothing at all. The stored spawn has not moved, so the claim already there is the right one | Unchanged |
 
-**Removing a claim a reassignment has already left behind.** The line `reassign` prints
-suggests re-running the command with `release`, and that is advice for next time rather
-than an undo for the reassignment you just did: re-running
-`/sgen reassign <player> release` moves the player on to a third plot and releases the
-claim around the second, not the one you were just told about. To clear a square a
-reassignment has already stranded, go to the coordinates in the message and use
-GriefPrevention's own commands - the same answer `setspawn` gives below. Decide before you
-run the command, not after, and the `release` argument does the whole job.
+**Removing a claim a reassignment has already left behind.** Use GriefPrevention's own
+commands at the coordinates in the message, which is what the message tells you to do and
+the same answer `setspawn` gives below. Re-running `reassign` will not do it: `release`
+acts on the spawn the player is leaving *at the moment the command runs*, and `reassign`
+always moves them, so a second run would send them on to a third plot and release the
+claim around the second one - leaving the square you were told about exactly where it was.
+The advice would have cost you a second reassignment and deleted the one claim you had not
+asked about. The message says so. Decide before you run the command, not after, and the
+`release` argument does the whole job.
 
 `setspawn` has no `release` argument for a grammatical reason rather than a different
 answer to the same question: the command already ends in an optional `[x y z]`, so a
