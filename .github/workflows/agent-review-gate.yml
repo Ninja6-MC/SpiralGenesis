@@ -1,0 +1,35 @@
+name: agent-review-gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  statuses: write
+  pull-requests: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Register Review Status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AUTHOR: ${{ github.actor }}
+          SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$AUTHOR" = "dependabot[bot]" ] || [ "$AUTHOR" = "ninja6-asset-sync[bot]" ]; then
+            echo "Automated bot PR ($AUTHOR) exempted from agent review."
+            gh api -X POST "repos/$REPO/statuses/$SHA" \
+              -f state=success \
+              -f context="ninja6-agent/review" \
+              -f description="Automated bot PR exempted from agent review"
+          else
+            echo "PR by $AUTHOR registered in review queue."
+            gh api -X POST "repos/$REPO/statuses/$SHA" \
+              -f state=pending \
+              -f context="ninja6-agent/review" \
+              -f description="Waiting for ninja6-agent review"
+          fi
