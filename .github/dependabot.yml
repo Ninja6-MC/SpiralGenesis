@@ -2,9 +2,15 @@
 # is the trade the pinning makes: a tag cannot be repointed under us, but a pin goes
 # stale in silence. This is the other half of it.
 #
-# Actions only. Gradle dependencies are deliberately not covered here - a server plugin
-# is compiled against a specific API version and a bot bumping that is a compatibility
-# question, not a security one.
+# This file used to say "actions only", on the grounds that a server plugin is compiled
+# against a specific API version and a bot bumping that is a compatibility question rather
+# than a security one. That reasoning is right, and it is why paper-api, floodgate, authme
+# and GriefPrevention are ignored below by name. It was too broad as a reason to exclude
+# the whole ecosystem: JUnit, MockBukkit and the three Gradle plugins carry none of that
+# compatibility weight and were going unwatched with them.
+#
+# So the exclusion is narrowed rather than reversed - every coordinate that decides what
+# this plugin can run against is still a manual decision.
 version: 2
 
 updates:
@@ -50,4 +56,50 @@ updates:
       - dependencies
     # One pull request per group, so this is a backstop rather than a limit that
     # shapes anything. It is what split the first batch when updates were ungrouped.
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: gradle
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    # Majors split from minors and patches, and here that split is load-bearing rather
+    # than tidy: the wrapper is on Gradle 8.10.2, while com.gradleup.shadow 9.x and
+    # xyz.jpenilla.run-paper 3.x both require Gradle 9. Those majors will be proposed and
+    # cannot build until the wrapper moves. Keeping them out of the routine group means
+    # closing one pull request rather than having it block the patches riding with it.
+    groups:
+      gradle:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - minor
+          - patch
+      gradle-major:
+        applies-to: version-updates
+        patterns:
+          - '*'
+        update-types:
+          - major
+    ignore:
+      # Every coordinate below is compileOnly, and a compileOnly dependency decides the
+      # OLDEST server or plugin this can run against, not the newest. Raising one narrows
+      # the supported range silently -- it compiles, it enables, and the loss only shows
+      # on a server old enough to be excluded. These stay manual decisions.
+      #
+      # GriefPrevention in particular is pinned to 16.18.2 on purpose, with the signatures
+      # verified unchanged through 18.0.0; build.gradle.kts carries that reasoning in full.
+      - dependency-name: io.papermc.paper:paper-api
+      - dependency-name: org.geysermc.floodgate:api
+      - dependency-name: fr.xephi:authme
+      - dependency-name: com.github.TechFortress:GriefPrevention
+    commit-message:
+      # `build` rather than `ci`: ci is the Conventional Commits type for workflow
+      # actions, build is the one for build-system dependencies.
+      prefix: build
+    labels:
+      - dependencies
+    # The Gradle wrapper version is not covered by package-ecosystem: gradle. It stays a
+    # manual bump -- see the note on the major group above, which depends on it.
     open-pull-requests-limit: 5
