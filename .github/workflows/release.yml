@@ -17,6 +17,21 @@ jobs:
   publish:
     name: Build and Publish Release
     runs-on: ubuntu-latest
+
+    # Nothing used to stand between pushing a tag and three public artefacts - a GitHub
+    # release, a Modrinth version and a Hangar version - and publishing to a registry is
+    # not something you can take back. The environment adds the missing pause: it carries
+    # a required reviewer, so a tag starts the run and the run then waits for approval.
+    #
+    # It is also where MODRINTH_TOKEN and HANGAR_API_TOKEN belong. While they remain
+    # repository secrets this job still reads them and behaves exactly as before; moving
+    # them to environment secrets is what stops any OTHER workflow from reading them, and
+    # it is a manual step because a secret value cannot be copied through the API.
+    #
+    # The environment is scoped to 'v*' tags, which is the only ref this workflow
+    # triggers on anyway - so the policy restates the trigger rather than narrowing it.
+    environment: release
+
     permissions:
       contents: write
 
