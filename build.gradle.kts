@@ -1,11 +1,11 @@
 plugins {
     `java-library`
-    id("com.gradleup.shadow") version "8.3.6"
+    id("com.gradleup.shadow") version "9.6.1"
     // NOTE: `runServer` is currently unusable. 2.x resolves servers through PaperMC's v2
     // API, which now returns 403 ("Unknown Paper Version"), and every 3.x release that
     // speaks the v3 API requires Gradle 9. Use scripts/dev-server.sh until the wrapper is
     // upgraded; it resolves servers the same way .github/scripts/smoke-test.sh does.
-    id("xyz.jpenilla.run-paper") version "2.3.1"
+    id("xyz.jpenilla.run-paper") version "3.1.0"
     // Hangar has no publish API that a generic action can drive, so publication goes
     // through PaperMC's own Gradle plugin. Modrinth is published from the workflow.
     id("io.papermc.hangar-publish-plugin") version "0.1.4"
@@ -70,7 +70,7 @@ dependencies {
     compileOnly("com.github.TechFortress:GriefPrevention:16.18.2")
 
     // Unit Testing
-    testImplementation(platform("org.junit:junit-bom:5.10.2"))
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 
