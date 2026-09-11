@@ -1,30 +1,13 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/icon-transparent-dark.svg">
-    <img src="docs/assets/icon-transparent-light.svg" width="112" height="112" alt="">
-  </picture>
-</p>
-
-<h1 align="center">SpiralGenesis</h1>
-
-<p align="center">
-  <a href="https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml"><img src="https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
-  <a href="https://www.oracle.com/java/technologies/javase/jdk21-archive-downloads.html"><img src="https://img.shields.io/badge/Java-21-orange.svg" alt="Java 21"></a>
-  <a href="https://papermc.io"><img src="https://img.shields.io/badge/PaperMC-1.20%2B-green.svg" alt="PaperMC 1.20+"></a>
-</p>
+<!-- Generated from README.md by scripts/modrinth-description.py. Do not edit.
+     Paste everything below this comment into the Modrinth description editor. -->
 
 **Every player starts somewhere of their own.** Instead of dropping everyone at one crowded
-world spawn, SpiralGenesis gives each new player their own plot of land — 500×500 blocks by
-default — laid out in an expanding spiral around a centre point you choose.
+world spawn, SpiralGenesis gives each new player their own plot of land - 500x500 blocks by
+default - laid out in an expanding spiral around a centre point you choose.
 
 The plugin finds them somewhere sensible to stand: not in an ocean, not in a lava pool, not
 at the bottom of a ravine or on the edge of a cliff. It happens on first join, off the main
 thread, and the player keeps that spot as their respawn point for good.
-
-**[⬇ Download](https://github.com/Ninja6-MC/SpiralGenesis/releases)** ·
-[Modrinth](https://modrinth.com/plugin/spiralgenesis) ·
-[Hangar](https://hangar.papermc.io/Ninja6-MC/SpiralGenesis)
 
 ---
 
@@ -46,7 +29,7 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 
 > **Pregenerate your world first.** Allocation generates chunks as it searches. On a fresh
 > world that is fine, but a pregenerated area makes first joins near-instant. See
-> [sizing guidance](docs/ADMIN_GUIDE.md#9-sizing-and-world-generation) for how big
+> [sizing guidance](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#9-sizing-and-world-generation) for how big
 > to make it.
 
 ---
@@ -71,10 +54,10 @@ them. On an online-mode server, or a network authenticating at the proxy, set
   switch it on and every player gets a small claim around their spawn that only they can
   build in, so their bed and first chest are covered the moment they arrive. It never costs
   anyone their plot when it cannot be created. See the
-  [admin guide](docs/ADMIN_GUIDE.md#6-spawn-protection) for the settings and the two
+  [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#6-spawn-protection) for the settings and the two
   GriefPrevention numbers worth checking first.
 
-### What it does *not* do
+## What it does *not* do
 
 SpiralGenesis gives each player **space**, and at most a few blocks of **ownership**.
 With `protection:` switched on it claims a small square around each player's spawn point
@@ -122,9 +105,9 @@ safety:
 
 Every value is range-checked on load, so a typo degrades to a sane value instead of
 breaking joins. The full annotated file ships inside the jar; see the
-[admin guide](docs/ADMIN_GUIDE.md) for what each rule actually rejects and how to tune it.
+[admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md) for what each rule actually rejects and how to tune it.
 
-Player assignments and the current spiral position live in `data.yml` — leave that one
+Player assignments and the current spiral position live in `data.yml` - leave that one
 alone unless you are deliberately resetting the grid.
 
 ---
@@ -145,14 +128,14 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen protect` | Claim the spawn square for players allocated before spawn protection was switched on. Safe to run twice. |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
-| `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
+| `/sgen simulate <count>` | Dry-run 1-500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
 | `/sgen reload` | Reload `config.yml`. |
 
 `setspawn` and `reassign` act on the live player, so the target has to be online. `tp` and
 `info` read from storage and work for offline players too.
 
 `/sgen simulate 50` is the fastest way to check your settings against your world before
-players arrive — it reports how many plots were skipped, how often the search fell back,
+players arrive - it reports how many plots were skipped, how often the search fell back,
 and exactly which safety rule did the rejecting.
 
 ---
@@ -177,7 +160,7 @@ square spiral, so plot *n* is always `cell-size` blocks from its neighbours:
 
 A cell's world position is simply `x = origin.x + u * cell-size` and
 `z = origin.z + v * cell-size`. The full derivation, terrain rules and lifecycle hooks are
-in the [admin guide](docs/ADMIN_GUIDE.md).
+in the [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md).
 
 ---
 
@@ -185,11 +168,11 @@ in the [admin guide](docs/ADMIN_GUIDE.md).
 
 | | Supported |
 | :--- | :--- |
-| Paper, Purpur and other Paper forks | ✅ 1.20.x, 1.21.x, 26.x |
-| Folia | ✅ 1.20.x, 1.21.x, 26.x |
-| Spigot / CraftBukkit | ❌ — allocation needs Paper's async chunk and teleport APIs |
-| Fabric / NeoForge | ❌ — mod loaders, not plugin platforms |
-| Velocity / BungeeCord | ❌ — proxies have no world to allocate in; install on the backend servers |
+| Paper, Purpur and other Paper forks | Yes 1.20.x, 1.21.x, 26.x |
+| Folia | Yes 1.20.x, 1.21.x, 26.x |
+| Spigot / CraftBukkit | No - allocation needs Paper's async chunk and teleport APIs |
+| Fabric / NeoForge | No - mod loaders, not plugin platforms |
+| Velocity / BungeeCord | No - proxies have no world to allocate in; install on the backend servers |
 
 Built against the 1.20.4 API, which newer servers still accept. CI boots the plugin on
 Paper and Folia at both ends of the supported range - 1.20.4 and 26.2 - and runs allocation
@@ -210,7 +193,7 @@ recorded plot are allocated one; everyone else keeps the spawn they already have
 
 **Players land in the wrong world.** If `origin.world` doesn't match a loaded world, the
 plugin logs a warning and falls back to the server's first world rather than refusing to
-allocate — so allocation looks healthy while everyone is placed somewhere unintended. Check
+allocate - so allocation looks healthy while everyone is placed somewhere unintended. Check
 the startup log for `Could not find target world`.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
@@ -223,9 +206,9 @@ ground. Pregenerate the area (see the sizing table in the admin guide) and it di
 never opens. The console warns when the `action-timeout-seconds` backstop fires; if you see
 that repeatedly, an anti-cheat or region plugin is the usual cause. If it is your login
 plugin, point its on-login command hook at `sgen allocate %p` and the gate is bypassed
-entirely. See the [admin guide](docs/ADMIN_GUIDE.md#5-join-and-respawn-lifecycle).
+entirely. See the [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#5-join-and-respawn-lifecycle).
 
-**Someone landed somewhere terrible.** Run `/sgen simulate 50` — the per-rule rejection
+**Someone landed somewhere terrible.** Run `/sgen simulate 50` - the per-rule rejection
 breakdown usually shows the rule that needs loosening, most often `min-surface-y` or
 `max-roughness` on mountainous or ocean-heavy worlds.
 
@@ -233,12 +216,12 @@ breakdown usually shows the rule that needs loosening, most often `min-surface-y
 
 ## Docs, source and contributing
 
-* [Admin & architecture guide](docs/ADMIN_GUIDE.md) — terrain rules, lifecycle, storage
+* [Admin & architecture guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md) - terrain rules, lifecycle, storage
   format, sizing, testing matrix.
-* [Changelog](CHANGELOG.md) · [Security policy](https://github.com/Ninja6-MC/SpiralGenesis/security/policy)
+* [Changelog](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/CHANGELOG.md) - [Security policy](https://github.com/Ninja6-MC/SpiralGenesis/security/policy)
 * Bugs and feature requests: [GitHub Issues](https://github.com/Ninja6-MC/SpiralGenesis/issues)
-* Patches welcome — [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and PR rules, and
-  [RELEASE_PROCESS.md](RELEASE_PROCESS.md) covers how releases are cut.
+* Patches welcome - [CONTRIBUTING.md](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/CONTRIBUTING.md) covers setup and PR rules, and
+  [RELEASE_PROCESS.md](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/RELEASE_PROCESS.md) covers how releases are cut.
 
 Building it yourself:
 
@@ -252,18 +235,8 @@ The jar lands in `build/libs/`.
 
 ## License & credits
 
-[GNU General Public License v3.0](LICENSE).
+[GNU General Public License v3.0](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/LICENSE).
 
 Inspired by [Block4Block / DynamicSpawnPlugin](https://github.com/Block4Block/DynamicSpawnPlugin),
 which pioneered spiral-pattern spawn distribution for Paper servers. SpiralGenesis is an
 independent implementation.
-
----
-
-<p align="center">
-  <a href="https://github.com/Ninja6-MC"><img src="assets/ninja6-primary-256.png" width="48" height="48" alt=""></a>
-</p>
-
-<p align="center">
-  <sub>A <a href="https://github.com/Ninja6-MC">Ninja6</a> project.</sub>
-</p>
