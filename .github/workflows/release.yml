@@ -229,6 +229,19 @@ jobs:
           version: ${{ steps.vars.outputs.version }}
           version-type: ${{ steps.vars.outputs.channel }}
           changelog-file: build/release-notes.md
+          # Modrinth content rule 5 asks that every version declare its dependencies.
+          # mc-publish reads them from the plugin metadata by default, but `softdepend`
+          # in plugin.yml carries Bukkit plugin names rather than Modrinth project ids,
+          # and nothing maps one to the other - which is why both versions published
+          # before this was added carry an empty dependency list. The ids are pinned
+          # here explicitly so the mapping cannot be guessed wrong.
+          #
+          # All three are `optional`, matching `softdepend`: the plugin loads and works
+          # with none of them installed. Keep this list in step with plugin.yml.
+          dependencies: |
+            floodgate(optional){modrinth:bWrNNfkb}
+            griefprevention(optional){modrinth:O4o4mKaq}
+            authmereloaded(optional){modrinth:9js4IEHC}
           # The sources and javadoc jars are not built by `shadowJar`, but exclude them
           # explicitly so a future build change cannot quietly upload them as the plugin.
           files: |
