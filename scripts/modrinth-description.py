@@ -33,6 +33,29 @@ OUTPUT = os.path.join(ROOT, "docs", "modrinth-description.md")
 
 BLOB = "https://github.com/Ninja6-MC/SpiralGenesis/blob/main/"
 
+# An image has to resolve to the file itself. A blob URL serves GitHub's HTML viewer, so
+# routing image targets through BLOB would produce a broken image rather than a 404, which
+# is harder to notice.
+RAW = "https://raw.githubusercontent.com/Ninja6-MC/SpiralGenesis/main/"
+
+# Anything already addressable as-is from modrinth.com.
+ABSOLUTE = re.compile(r"^(https?:|mailto:|#|data:|//)")
+
+# src/href/srcset in raw HTML, in all three quoting styles. The leading boundary keeps
+# data-src and similar from being reported under the wrong attribute name.
+ATTRIBUTE = re.compile(
+    r"(?:^|[\s<])(src|href|srcset)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"
+)
+
+
+class ReadmeError(ValueError):
+    """The README cannot be transformed at all, as opposed to producing a bad result.
+
+    A distinct type so main() does not also swallow UnicodeDecodeError, which subclasses
+    ValueError and would otherwise be reported as a malformed-README error with nothing
+    but a codec message to go on.
+    """
+
 HEADER = (
     "<!-- Generated from README.md by scripts/modrinth-description.py. Do not edit.\n"
     "     Paste everything below this comment into the Modrinth description editor. -->\n"
@@ -79,7 +102,7 @@ def strip_html_blocks(lines):
     # writing a description containing nothing but the generated-by comment. The tool
     # exists to stop a bad page reaching the store, so it must not fail open.
     if closing is not None:
-        raise ValueError(
+        raise ReadmeError(
             "README.md has an HTML block that is never closed with %s. "
             "Stripping it would drop the rest of the file." % closing
         )
@@ -187,6 +210,10 @@ def check_no_relative_html_refs(text):
     src or href intact. A relative one 404s on modrinth.com exactly like a relative
     markdown link does, and the markdown link check cannot see it because it is not
     markdown. So assert on the output rather than trying to enumerate every tag.
+
+    All three quoting styles are matched. Checking only double quotes would close the
+    case that has actually appeared in this README and leave the general one open, which
+    is the kind of half-fix that reads as covered in review.
     """
     problems = []
     fenced = False
@@ -196,11 +223,17 @@ def check_no_relative_html_refs(text):
             continue
         if fenced:
             continue
-        for attribute, target in re.findall(r'(src|href|srcset)\s*=\s*"([^"]*)"', line):
-            if not re.match(r"^(https?:|mailto:|#|data:)", target):
-                problems.append(
-                    "%d: relative %s in raw HTML: %s" % (number, attribute, target)
-                )
+        for attribute, double, single, bare in ATTRIBUTE.findall(line):
+            value = double or single or bare
+            # srcset carries a comma-separated candidate list, each entry a URL
+            # followed by an optional descriptor. Every candidate has to resolve, so
+            # checking the whole value as one URL would pass on the first entry alone.
+            for candidate in value.split(",") if attribute == "srcset" else [value]:
+                target = candidate.strip().split(" ")[0]
+                if target and not ABSOLUTE.match(target):
+                    problems.append(
+                        "%d: relative %s in raw HTML: %s" % (number, attribute, target)
+                    )
     return problems
 
 
@@ -232,6 +265,23 @@ def check_ascii(text):
     return problems
 
 
+def absolutise_image_targets(text):
+    """Point relative markdown image targets at raw.githubusercontent.com.
+
+    Runs before absolutise_links, which would otherwise rewrite them through BLOB and
+    produce an image tag pointing at an HTML page. The README carries no markdown images
+    today; this exists so that adding one does not quietly break the store page.
+    """
+
+    def replace(match):
+        target = match.group(2)
+        if ABSOLUTE.match(target):
+            return match.group(0)
+        return "!" + match.group(1) + "(" + RAW + target + ")"
+
+    return re.sub(r"!(\[[^\]]*\])\(([^)]+)\)", replace, text)
+
+
 def absolutise_links(text):
     """Point relative markdown links at github.com.
 
@@ -257,7 +307,7 @@ def render():
     lines = fold_ascii(lines)
     lines = collapse_blanks(lines)
 
-    text = absolutise_links("\n".join(lines)) + "\n"
+    text = absolutise_links(absolutise_image_targets("\n".join(lines))) + "\n"
 
     problems = (
         check_no_stray_hashes(text.split("\n"))
@@ -290,8 +340,9 @@ def main():
     # rule violation is reported so CI logs read the same for both.
     try:
         generated = render()
-    except ValueError as error:
-        print(error, file=sys.stderr)
+    except ReadmeError as error:
+        sys.stderr.write("Cannot generate the description from README.md:" + chr(10))
+        sys.stderr.write("  " + str(error) + chr(10))
         sys.exit(1)
 
     if args.check:
