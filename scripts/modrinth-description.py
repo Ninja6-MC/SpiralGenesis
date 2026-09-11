@@ -38,7 +38,12 @@ BLOB = "https://github.com/Ninja6-MC/SpiralGenesis/blob/main/"
 # is harder to notice.
 RAW = "https://raw.githubusercontent.com/Ninja6-MC/SpiralGenesis/main/"
 
-# Anything already addressable as-is from modrinth.com.
+# Anything already addressable as-is from modrinth.com. The ONLY definition of
+# absolute in this file: the transforms decide what to rewrite by it and the checks
+# decide what to reject by it, so a target the transform leaves alone cannot then be
+# rejected, and one it rewrites cannot slip past. Three divergent copies of this test
+# previously meant a mailto link failed the build while a protocol-relative one was
+# rewritten to blob/main///host and passed. Add a scheme here, not at a call site.
 ABSOLUTE = re.compile(r"^(https?:|mailto:|#|data:|//)")
 
 # src/href/srcset in raw HTML, in all three quoting styles. The leading boundary keeps
@@ -197,7 +202,7 @@ def check_no_relative_links(text):
     for number, line in enumerate(text.split("\n"), 1):
         for match in re.finditer(r"\]\(([^)]+)\)", line):
             target = match.group(1)
-            if not re.match(r"^(https?:|#)", target):
+            if not ABSOLUTE.match(target):
                 problems.append("%d: relative link: %s" % (number, target))
     return problems
 
@@ -290,7 +295,7 @@ def absolutise_links(text):
 
     def replace(match):
         target = match.group(1)
-        if re.match(r"^(https?:|mailto:|#)", target):
+        if ABSOLUTE.match(target):
             return match.group(0)
         return "](" + BLOB + target + ")"
 
