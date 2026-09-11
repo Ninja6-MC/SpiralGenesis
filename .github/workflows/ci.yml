@@ -188,7 +188,9 @@ jobs:
   # README that nobody could diff; it went three weeks stale and was rejected on
   # 2026-09-05 over a markdown rule - a '#' beginning a line inside a YAML code fence -
   # that no reviewer could have caught, because the text under review existed only on
-  # modrinth.com. The generator enforces that rule and this job enforces the generator.
+  # modrinth.com. The generator enforces the shape that got the submission rejected -
+  # a line-initial '#', a relative link, a stray non-ASCII character - rather than rule
+  # 2.2 in general, which is not mechanically checkable. This job enforces the generator.
   #
   # No paths filter, unlike the icons job: this one is a few seconds of Python with no
   # network fetch, so gating it would cost more in workflow complexity than it saves.

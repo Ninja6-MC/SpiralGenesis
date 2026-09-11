@@ -74,6 +74,16 @@ def strip_html_blocks(lines):
         if stripped.startswith("<h1"):
             continue
         out.append(line)
+
+    # An unclosed block would otherwise consume every remaining line and still exit 0,
+    # writing a description containing nothing but the generated-by comment. The tool
+    # exists to stop a bad page reaching the store, so it must not fail open.
+    if closing is not None:
+        raise ValueError(
+            "README.md has an HTML block that is never closed with %s. "
+            "Stripping it would drop the rest of the file." % closing
+        )
+
     return out
 
 
@@ -169,6 +179,43 @@ def check_no_relative_links(text):
     return problems
 
 
+def check_no_relative_html_refs(text):
+    """Catch relative references the stripper does not know how to remove.
+
+    strip_html_blocks only recognises the chrome this README actually uses, so a tag it
+    has never seen - a <div> wrapper, a bare <img> - survives into the output with its
+    src or href intact. A relative one 404s on modrinth.com exactly like a relative
+    markdown link does, and the markdown link check cannot see it because it is not
+    markdown. So assert on the output rather than trying to enumerate every tag.
+    """
+    problems = []
+    fenced = False
+    for number, line in enumerate(text.split("\n"), 1):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            continue
+        if fenced:
+            continue
+        for attribute, target in re.findall(r'(src|href|srcset)\s*=\s*"([^"]*)"', line):
+            if not re.match(r"^(https?:|mailto:|#|data:)", target):
+                problems.append(
+                    "%d: relative %s in raw HTML: %s" % (number, attribute, target)
+                )
+    return problems
+
+
+def check_body_is_intact(text):
+    """A last sanity check that something actually survived the transforms.
+
+    Cheap insurance against a stripper bug quietly producing an empty page. The README
+    has eleven sections, so an output with none of them means a transform went wrong,
+    not that the README got shorter.
+    """
+    if not re.search(r"(?m)^## \S", text):
+        return ["generated description contains no section headings at all"]
+    return []
+
+
 def check_ascii(text):
     problems = []
     fenced = False
@@ -215,7 +262,9 @@ def render():
     problems = (
         check_no_stray_hashes(text.split("\n"))
         + check_no_relative_links(text)
+        + check_no_relative_html_refs(text)
         + check_ascii(text)
+        + check_body_is_intact(text)
     )
     if problems:
         sys.stderr.write("Generated description violates the Modrinth content rules:\n")
@@ -237,7 +286,13 @@ def main():
     )
     args = parser.parse_args()
 
-    generated = render()
+    # A malformed README is a content error, not a crash: report it the same way a
+    # rule violation is reported so CI logs read the same for both.
+    try:
+        generated = render()
+    except ValueError as error:
+        print(error, file=sys.stderr)
+        sys.exit(1)
 
     if args.check:
         if not os.path.exists(OUTPUT):
