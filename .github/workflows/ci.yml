@@ -180,6 +180,34 @@ jobs:
           git diff --stat -- docs/assets
           exit 1
 
+  # docs/modrinth-description.md is the text pasted into the Modrinth project page, and it
+  # is generated from README.md. It is committed rather than generated on demand so the
+  # wording that reaches the store is reviewable in the pull request that changes it.
+  #
+  # This job is why it stays true. The Modrinth body used to be a hand-made copy of the
+  # README that nobody could diff; it went three weeks stale and was rejected on
+  # 2026-09-05 over a markdown rule - a '#' beginning a line inside a YAML code fence -
+  # that no reviewer could have caught, because the text under review existed only on
+  # modrinth.com. The generator enforces that rule and this job enforces the generator.
+  #
+  # No paths filter, unlike the icons job: this one is a few seconds of Python with no
+  # network fetch, so gating it would cost more in workflow complexity than it saves.
+  description:
+    name: Modrinth Description
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # --check regenerates from README.md, re-runs the content-rule assertions, and
+      # fails if either the committed file or the README has drifted away from what the
+      # store page is allowed to contain.
+      - name: Fail If The Committed Description Drifted
+        run: python3 scripts/modrinth-description.py --check
+
   smoke:
     name: Smoke Test (${{ matrix.label }})
     needs: build
