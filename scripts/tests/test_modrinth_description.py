@@ -218,6 +218,33 @@ class EscapesAndWrapping(unittest.TestCase):
             ["README.md:3: link target not closed on the same line"],
         )
 
+    def test_image_alt_on_two_lines_is_refused(self):
+        self.assertEqual(
+            unsupported("![a", "b](docs/x.png)"),
+            ["README.md:3: [ not closed on the same line; keep link and image text on one line"],
+        )
+
+    def test_link_text_on_two_lines_is_refused(self):
+        self.assertEqual(len(unsupported("[a", "b](docs/A.md)")), 1)
+        self.assertEqual(len(unsupported("[a", "b](data:text/html,x)")), 1)
+
+    def test_nested_open_bracket_is_refused(self):
+        self.assertEqual(len(unsupported("[a [b] c", "d](docs/A.md)")), 1)
+
+    def test_link_title_is_refused(self):
+        self.assertEqual(
+            unsupported('[a](docs/A.md "t)', 'itle")'),
+            ["README.md:3: link title; write the target alone"],
+        )
+
+    def test_fence_in_blockquote_under_list_marker_is_unsupported(self):
+        for marker in ("- ", "1. "):
+            problems = unsupported(marker + "> ~~~", "  > # c", "  > ~~~")
+            self.assertIn("README.md:3: code fence inside a blockquote is not supported", problems)
+
+    def test_bracket_inside_code_span_is_not_an_opener(self):
+        self.assertEqual(unsupported("Run `a[0` now."), [])
+
     def test_parentheses_inside_target_are_not_wrapping(self):
         self.assertEqual(unsupported("[w](https://en.wikipedia.org/wiki/A_(b))"), [])
 
@@ -252,6 +279,14 @@ class FencedChrome(unittest.TestCase):
     def test_fenced_store_row_is_kept(self):
         lines = ["```", "**[Download](https://x)**", "[Modrinth](https://y)", "```"]
         self.assertEqual(md.strip_store_links(lines), lines)
+
+    def test_fence_directly_under_store_row_is_kept(self):
+        lines = ["**[Download](https://x)**", "[Modrinth](https://y)", "```", "# c", "```", "after"]
+        self.assertEqual(md.strip_store_links(lines), ["```", "# c", "```", "after"])
+
+    def test_store_row_still_ends_at_blank_line(self):
+        lines = ["**[Download](https://x)**", "[Hangar](https://y)", "", "after"]
+        self.assertEqual(md.strip_store_links(lines), ["after"])
 
     def test_fenced_html_survives_generation(self):
         text, problems = md.generate(readme("```html", '<p align="center">x</p>', "<h1>y</h1>", "```"))

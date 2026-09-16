@@ -81,8 +81,9 @@ CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 # angle bracket excludes it.
 TAG = re.compile(r"<(?![A-Za-z][A-Za-z0-9+.-]*:)(/?[A-Za-z][A-Za-z0-9-]*)([^<>]*)>")
 
-# A fence opened inside a blockquote. fence_roles does not track these.
-QUOTED_FENCE = re.compile(r"^\s*>(\s*>)*\s*(`{3,}|~{3,})")
+# A fence opened inside a blockquote, including one under a list marker. fence_roles
+# does not track these.
+QUOTED_FENCE = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?>(\s*>)*\s*(`{3,}|~{3,})")
 
 # One attribute inside a tag: a name, optionally followed by a value in any of the three
 # quoting styles.
@@ -260,6 +261,21 @@ def unsupported_constructs(lines):
         # every pattern here works one line at a time and would never see its target.
         if re.search(r"\]\([^)]*$", masked):
             report(number, "link target not closed on the same line")
+        # Likewise link or image text that wraps: "![a" then "b](docs/x.png)". The
+        # second line carries a target with no opener any pattern can pair it with.
+        # Refuse every [ left open at the end of a line, whatever follows it.
+        depth = 0
+        # Escaped brackets are already refused above; do not report them twice.
+        for character in re.sub(r"\\[\[\]]", "", masked):
+            if character == "[":
+                depth += 1
+            elif character == "]" and depth:
+                depth -= 1
+        if depth:
+            report(
+                number,
+                "[ not closed on the same line; keep link and image text on one line",
+            )
 
         if re.match(r"^ {0,3}\[[^\]]+\]:", masked):
             report(number, "reference definition; use an inline link instead")
@@ -270,6 +286,10 @@ def unsupported_constructs(lines):
             report(number, "image alt text containing brackets")
         if re.search(r"\]\(\s", masked):
             report(number, "link target starting with whitespace")
+        # A link title may contain ")" and may wrap, and neither shape is matched
+        # correctly one line at a time. The README uses none, so titles are refused.
+        elif re.search(r"\]\([^)\s]+\s", masked):
+            report(number, "link title; write the target alone")
         if re.search(r"\]\(<", masked):
             report(number, "angle-bracket link target; write the target bare")
 
@@ -342,9 +362,13 @@ def strip_store_links(lines):
             skipping = True
             continue
         if skipping:
-            if line.strip() == "":
-                skipping = False
-            continue
+            # The row ends at a blank line, or at a fence that interrupts it; the
+            # fence itself is content and is kept.
+            if role == PROSE:
+                if line.strip() == "":
+                    skipping = False
+                continue
+            skipping = False
         out.append(line)
     return out
 
