@@ -193,6 +193,81 @@ class Html(unittest.TestCase):
         self.assertIn("data: URI in href", problems[0])
 
 
+class EscapesAndWrapping(unittest.TestCase):
+    def test_escaped_bracket_in_image_alt_is_refused(self):
+        self.assertEqual(
+            unsupported(r"![a \] b](docs/x.png)"),
+            ["README.md:3: backslash-escaped bracket; rephrase without it"],
+        )
+
+    def test_escaped_bracket_in_link_text_is_refused(self):
+        self.assertEqual(len(unsupported(r"[a \[ b](docs/A.md)")), 1)
+
+    def test_escaped_bracket_inside_code_span_is_allowed(self):
+        self.assertEqual(unsupported(r"Write `\]` literally."), [])
+
+    def test_title_on_next_line_is_refused(self):
+        self.assertEqual(
+            unsupported("[a](docs/A.md", '"title")'),
+            ["README.md:3: link target not closed on the same line"],
+        )
+
+    def test_destination_on_next_line_is_refused(self):
+        self.assertEqual(
+            unsupported("[a](", "docs/A.md)"),
+            ["README.md:3: link target not closed on the same line"],
+        )
+
+    def test_parentheses_inside_target_are_not_wrapping(self):
+        self.assertEqual(unsupported("[w](https://en.wikipedia.org/wiki/A_(b))"), [])
+
+    def test_wrapped_code_span_message_says_how_to_fix(self):
+        problems = unsupported("run `./gradlew", "build` now")
+        self.assertEqual(len(problems), 2)
+        self.assertIn("rejoin the code span onto one line", problems[0])
+
+    def test_fence_in_blockquote_is_reported_as_unsupported(self):
+        problems = unsupported("> ```", "> [x](docs/A.md)", "> ```")
+        self.assertEqual(
+            problems,
+            [
+                "README.md:3: code fence inside a blockquote is not supported",
+                "README.md:5: code fence inside a blockquote is not supported",
+            ],
+        )
+
+
+class FencedChrome(unittest.TestCase):
+    def test_fenced_paragraph_html_is_kept(self):
+        lines = ["```html", '<p align="center">', "x", "</p>", "```"]
+        self.assertEqual(md.strip_html_blocks(lines), lines)
+
+    def test_fenced_h1_is_kept(self):
+        lines = ["~~~html", "<h1>x</h1>", "~~~"]
+        self.assertEqual(md.strip_html_blocks(lines), lines)
+
+    def test_prose_chrome_is_still_stripped(self):
+        self.assertEqual(md.strip_html_blocks(['<p align="center">', "x", "</p>", "<h1>y</h1>", "z"]), ["z"])
+
+    def test_fenced_store_row_is_kept(self):
+        lines = ["```", "**[Download](https://x)**", "[Modrinth](https://y)", "```"]
+        self.assertEqual(md.strip_store_links(lines), lines)
+
+    def test_fenced_html_survives_generation(self):
+        text, problems = md.generate(readme("```html", '<p align="center">x</p>', "<h1>y</h1>", "```"))
+        self.assertEqual(problems, [])
+        self.assertIn('```html\n<p align="center">x</p>\n<h1>y</h1>\n```', text)
+
+
+class Autolinks(unittest.TestCase):
+    def test_autolink_with_query_is_not_a_tag(self):
+        self.assertEqual(unsupported("See <https://example.com/p?x=1&y=2>."), [])
+        self.assertEqual(md.check_no_relative_html_refs("See <https://example.com/p?x=1&y=2>."), [])
+
+    def test_real_tag_is_still_read(self):
+        self.assertEqual(len(md.check_no_relative_html_refs("<a href=docs/A.md>x</a>")), 1)
+
+
 class BodyIntact(unittest.TestCase):
     def test_no_sections(self):
         self.assertEqual(len(md.check_body_is_intact("text\n", 0)), 1)

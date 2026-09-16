@@ -76,8 +76,13 @@ FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 # An inline code span: a backtick run, content, and a run of exactly the same length.
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 
-# A raw HTML tag that opens and closes on one line.
-TAG = re.compile(r"<(/?[A-Za-z][A-Za-z0-9-]*)([^<>]*)>")
+# A raw HTML tag that opens and closes on one line. An autolink such as
+# <https://example.com/p?x=1&y=2> is not a tag: a scheme and colon straight after the
+# angle bracket excludes it.
+TAG = re.compile(r"<(?![A-Za-z][A-Za-z0-9+.-]*:)(/?[A-Za-z][A-Za-z0-9-]*)([^<>]*)>")
+
+# A fence opened inside a blockquote. fence_roles does not track these.
+QUOTED_FENCE = re.compile(r"^\s*>(\s*>)*\s*(`{3,}|~{3,})")
 
 # One attribute inside a tag: a name, optionally followed by a value in any of the three
 # quoting styles.
@@ -237,8 +242,24 @@ def unsupported_constructs(lines):
             continue
         masked, _ = mask_code_spans(line)
 
-        if "`" in masked:
-            report(number, "unmatched backtick; a code span must open and close on one line")
+        if QUOTED_FENCE.match(line):
+            report(number, "code fence inside a blockquote is not supported")
+        elif "`" in masked:
+            report(
+                number,
+                "unmatched backtick; rejoin the code span onto one line "
+                "(a code span must open and close on the same line)",
+            )
+
+        # Escaped brackets break every bracket-matching pattern here, in the transforms
+        # and in the output check alike, so an escaped bracket in link or image text
+        # would pass through untransformed and unreported. Refused anywhere in prose.
+        if re.search(r"\\[\[\]]", masked):
+            report(number, "backslash-escaped bracket; rephrase without it")
+        # A destination or title that continues on the next line is a valid link, but
+        # every pattern here works one line at a time and would never see its target.
+        if re.search(r"\]\([^)]*$", masked):
+            report(number, "link target not closed on the same line")
 
         if re.match(r"^ {0,3}\[[^\]]+\]:", masked):
             report(number, "reference definition; use an inline link instead")
@@ -274,12 +295,17 @@ def strip_html_blocks(lines):
     sources resolve there. Anything at the top level that opens an HTML block goes, along
     with everything up to its closing tag.
     """
+    roles, _ = fence_roles(lines)
     out = []
     closing = None
-    for line in lines:
+    for line, role in zip(lines, roles):
         if closing is not None:
             if closing in line:
                 closing = None
+            continue
+        # HTML written inside a fence is an example, not chrome.
+        if role != PROSE:
+            out.append(line)
             continue
         stripped = line.strip()
         if stripped.startswith("<p ") or stripped.startswith("<p>"):
@@ -308,10 +334,11 @@ def strip_store_links(lines):
     A Modrinth page linking to itself is noise, and the download link duplicates the
     Versions tab sitting directly above the description.
     """
+    roles, _ = fence_roles(lines)
     out = []
     skipping = False
-    for line in lines:
-        if line.startswith("**[") and "Download]" in line:
+    for line, role in zip(lines, roles):
+        if role == PROSE and line.startswith("**[") and "Download]" in line:
             skipping = True
             continue
         if skipping:

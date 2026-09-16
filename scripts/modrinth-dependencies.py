@@ -65,7 +65,7 @@ def plugin_dependencies(text):
             for item in lines[index + 1:]:
                 if item.strip() == "" or item.lstrip().startswith("#"):
                     continue
-                entry = re.match(r"^\s+-\s+(\S+?)\s*(#.*)?$", item)
+                entry = re.match(r"^\s*-\s+(\S+?)\s*(#.*)?$", item)
                 if not entry:
                     if item[:1].isspace():
                         raise FormatError(
@@ -73,6 +73,12 @@ def plugin_dependencies(text):
                         )
                     break
                 names.append(entry.group(1).strip("'\""))
+            # A key with neither an inline list nor any entries is an unreadable shape,
+            # not a declaration of no dependencies. Write `softdepend: []` for that.
+            if not names:
+                raise FormatError(
+                    "plugin.yml:%d: %s has no entries this check can read" % (index + 1, key)
+                )
         for name in names:
             if name in found:
                 raise FormatError("plugin.yml: %s is declared more than once" % name)

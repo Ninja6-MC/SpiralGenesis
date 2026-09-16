@@ -106,6 +106,17 @@ class Format(unittest.TestCase):
         with self.assertRaises(deps.FormatError):
             deps.release_dependencies("with:\n  files: x\n")
 
+    def test_column_zero_block_sequence(self):
+        plugin = "softdepend:\n- floodgate\n- AuthMe\n- GriefPrevention\ncommands: {}\n"
+        self.assertEqual(compare(plugin=plugin), [])
+
+    def test_key_with_no_entries(self):
+        with self.assertRaises(deps.FormatError):
+            deps.plugin_dependencies("softdepend:\ncommands:\n  x: y\n")
+
+    def test_explicit_empty_list_is_allowed(self):
+        self.assertEqual(deps.plugin_dependencies("softdepend: []\n"), {})
+
     def test_unreadable_plugin_list(self):
         with self.assertRaises(deps.FormatError):
             deps.plugin_dependencies("softdepend: floodgate\n")
