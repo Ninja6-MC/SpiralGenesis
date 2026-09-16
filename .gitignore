@@ -28,3 +28,6 @@ Thumbs.db
 # Output JARs
 *.jar
 !gradle/wrapper/gradle-wrapper.jar
+
+# Python bytecode from running scripts/tests locally.
+__pycache__/

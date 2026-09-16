@@ -17,6 +17,13 @@
 # stays the single source of truth; this script removes the parts of it that only make
 # sense on github.com and enforces the rule that got the submission rejected.
 #
+# This is not a markdown parser. It matches constructs line by line, and it handles one
+# README that is edited deliberately. The contract is therefore narrow on purpose: a
+# construct it does not know how to transform is refused with the README line that uses
+# it (see unsupported_constructs), rather than passed through to a store page that is
+# silently wrong. Widen the contract by teaching a transform the construct and removing
+# the refusal, never by removing the refusal alone.
+#
 # What it does NOT do: upload anything. Publishing the result is a manual paste into the
 # Modrinth editor (or a PATCH /v2/project/spiralgenesis), followed by "Resubmit for
 # review" - an edit alone does not re-enter the moderation queue.
@@ -44,13 +51,53 @@ RAW = "https://raw.githubusercontent.com/Ninja6-MC/SpiralGenesis/main/"
 # rejected, and one it rewrites cannot slip past. Three divergent copies of this test
 # previously meant a mailto link failed the build while a protocol-relative one was
 # rewritten to blob/main///host and passed. Add a scheme here, not at a call site.
-ABSOLUTE = re.compile(r"^(https?:|mailto:|#|data:|//)")
+ABSOLUTE = re.compile(r"^(https?:|mailto:|#|//)", re.IGNORECASE)
 
-# src/href/srcset in raw HTML, in all three quoting styles. The leading boundary keeps
-# data-src and similar from being reported under the wrong attribute name.
+# data: URIs are self-contained, so they resolve anywhere - but they are only acceptable
+# where the content is embedded (an image source), not where it is navigated to (a link).
+# Kept apart from ABSOLUTE so the one predicate below can say which is which.
+DATA = re.compile(r"^data:", re.IGNORECASE)
+
+
+def resolves(target, embedded):
+    """Whether a target is usable as-is on modrinth.com.
+
+    embedded is True for image sources (markdown images, src and srcset), where a data:
+    URI is fine, and False for links (markdown links, href), where it is not.
+    """
+    return bool(ABSOLUTE.match(target)) or (embedded and bool(DATA.match(target)))
+
+
+# A fence opens on three or more backticks or tildes, and closes only on a run of the
+# same character at least as long, with nothing after it. Indentation is accepted on
+# both, as it always has been here.
+FENCE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
+
+# An inline code span: a backtick run, content, and a run of exactly the same length.
+CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
+
+# A raw HTML tag that opens and closes on one line. An autolink such as
+# <https://example.com/p?x=1&y=2> is not a tag: a scheme and colon straight after the
+# angle bracket excludes it.
+TAG = re.compile(r"<(?![A-Za-z][A-Za-z0-9+.-]*:)(/?[A-Za-z][A-Za-z0-9-]*)([^<>]*)>")
+
+# A fence opened inside a blockquote, including one under a list marker. fence_roles
+# does not track these.
+QUOTED_FENCE = re.compile(r"^\s*(?:(?:[-*+]|\d+[.)])\s+)?>(\s*>)*\s*(`{3,}|~{3,})")
+
+# One attribute inside a tag: a name, optionally followed by a value in any of the three
+# quoting styles.
 ATTRIBUTE = re.compile(
-    r"(?:^|[\s<])(src|href|srcset)\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))"
+    r"([^\s\"'>/=]+)(?:\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'=<>`]+)))?"
 )
+ATTRIBUTE_GAP = re.compile(r"[\s/]*")
+
+# A markdown link or image, allowing one level of brackets in the text. Deliberately
+# broader than the transforms' own patterns, so the post-condition check sees shapes the
+# transforms do not.
+ANY_LINK = re.compile(r"(!?)\[(?:[^\[\]]|\[[^\[\]]*\])*\]\(([^)]*)\)")
+
+PROSE, DELIMITER, CODE = "prose", "delimiter", "code"
 
 
 class ReadmeError(ValueError):
@@ -81,6 +128,186 @@ ASCII_FOLD = [
 ]
 
 
+def fence_roles(lines):
+    """Classify every line as PROSE, a fence DELIMITER, or CODE inside a fence.
+
+    The single fence tracker for every transform and check, so that none of them can
+    disagree about where a block starts. Both backtick and tilde fences are recognised,
+    and a ``` line inside a ~~~ block is content rather than a closer.
+
+    Returns (roles, unclosed), where unclosed is the index of the delimiter that opened
+    a block the file never closes, or None.
+    """
+    roles = []
+    opener = None
+    opened_at = None
+    for index, line in enumerate(lines):
+        match = FENCE.match(line)
+        if opener is None:
+            # A backtick fence's info string cannot contain a backtick; such a line is
+            # an inline code span, not a fence.
+            if match and not (match.group(1)[0] == "`" and "`" in match.group(2)):
+                opener = match.group(1)
+                opened_at = index
+                roles.append(DELIMITER)
+            else:
+                roles.append(PROSE)
+        elif (
+            match
+            and match.group(1)[0] == opener[0]
+            and len(match.group(1)) >= len(opener)
+            and not match.group(2).strip()
+        ):
+            opener = None
+            roles.append(DELIMITER)
+        else:
+            roles.append(CODE)
+    return roles, (opened_at if opener is not None else None)
+
+
+def mask_code_spans(line):
+    """Replace inline code spans with placeholders, so nothing inside one is matched.
+
+    Returns (masked, spans); unmask_code_spans puts them back. A code span renders
+    literally on Modrinth, so a link or tag written inside one is an example, not a
+    reference, and must be neither rewritten nor reported.
+    """
+    spans = []
+
+    def stash(match):
+        spans.append(match.group(0))
+        return "\x00%d\x00" % (len(spans) - 1)
+
+    return CODE_SPAN.sub(stash, line), spans
+
+
+def unmask_code_spans(line, spans):
+    return re.sub("\x00(\\d+)\x00", lambda match: spans[int(match.group(1))], line)
+
+
+def map_prose(text, function):
+    """Apply function to every prose line of text, with code spans masked."""
+    lines = text.split("\n")
+    roles, _ = fence_roles(lines)
+    out = []
+    for line, role in zip(lines, roles):
+        if role == PROSE:
+            masked, spans = mask_code_spans(line)
+            line = unmask_code_spans(function(masked), spans)
+        out.append(line)
+    return "\n".join(out)
+
+
+def tag_attributes(body):
+    """Split the attribute part of a TAG match into (name, value) pairs.
+
+    Returns (attributes, well_formed). Attributes are only ever read from inside a tag,
+    never from a whole line, so prose such as "Pass href=docs/x to the helper." is not
+    mistaken for one. Names are matched whole, so data-src is never reported as src.
+    well_formed is False when two attributes run together with no whitespace between
+    them, or when the body does not tokenise at all: a browser still reads such an
+    attribute, so a check that skipped it would let a relative src through.
+    """
+    attributes = []
+    position = 0
+    while True:
+        gap = ATTRIBUTE_GAP.match(body, position).end()
+        if gap == len(body):
+            return attributes, True
+        if gap == position and position > 0:
+            return attributes, False
+        match = ATTRIBUTE.match(body, gap)
+        if not match:
+            return attributes, False
+        value = match.group(2) or match.group(3) or match.group(4) or ""
+        attributes.append((match.group(1).lower(), value))
+        position = match.end()
+
+
+def unsupported_constructs(lines):
+    """Refuse markdown the transforms do not handle, naming the README line.
+
+    Every entry here was a path to a wrong store page with no error: the transforms key
+    on shapes they recognise and pass anything else through untouched. Refusing is the
+    contract this generator can actually keep. Runs over README.md as read, so the line
+    numbers point at the file a person edits.
+    """
+    problems = []
+    roles, unclosed = fence_roles(lines)
+
+    def report(number, message):
+        problems.append("README.md:%d: %s" % (number, message))
+
+    for number, (line, role) in enumerate(zip(lines, roles), 1):
+        if role != PROSE:
+            continue
+        masked, _ = mask_code_spans(line)
+
+        if QUOTED_FENCE.match(line):
+            report(number, "code fence inside a blockquote is not supported")
+        elif "`" in masked:
+            report(
+                number,
+                "unmatched backtick; rejoin the code span onto one line "
+                "(a code span must open and close on the same line)",
+            )
+
+        # Escaped brackets break every bracket-matching pattern here, in the transforms
+        # and in the output check alike, so an escaped bracket in link or image text
+        # would pass through untransformed and unreported. Refused anywhere in prose.
+        if re.search(r"\\[\[\]]", masked):
+            report(number, "backslash-escaped bracket; rephrase without it")
+        # A destination or title that continues on the next line is a valid link, but
+        # every pattern here works one line at a time and would never see its target.
+        if re.search(r"\]\([^)]*$", masked):
+            report(number, "link target not closed on the same line")
+        # Likewise link or image text that wraps: "![a" then "b](docs/x.png)". The
+        # second line carries a target with no opener any pattern can pair it with.
+        # Refuse every [ left open at the end of a line, whatever follows it.
+        depth = 0
+        # Escaped brackets are already refused above; do not report them twice.
+        for character in re.sub(r"\\[\[\]]", "", masked):
+            if character == "[":
+                depth += 1
+            elif character == "]" and depth:
+                depth -= 1
+        if depth:
+            report(
+                number,
+                "[ not closed on the same line; keep link and image text on one line",
+            )
+
+        if re.match(r"^ {0,3}\[[^\]]+\]:", masked):
+            report(number, "reference definition; use an inline link instead")
+        if re.search(r"\]\[[^\]]*\]", masked):
+            report(number, "reference-style link or image; use an inline link instead")
+
+        if re.search(r"!\[[^\]]*\[", masked):
+            report(number, "image alt text containing brackets")
+        if re.search(r"\]\(\s", masked):
+            report(number, "link target starting with whitespace")
+        # A link title may contain ")" and may wrap, and neither shape is matched
+        # correctly one line at a time. The README uses none, so titles are refused.
+        elif re.search(r"\]\([^)\s]+\s", masked):
+            report(number, "link title; write the target alone")
+        if re.search(r"\]\(<", masked):
+            report(number, "angle-bracket link target; write the target bare")
+
+        if re.search(r"<[A-Za-z][A-Za-z0-9-]*(\s[^<>]*)?$", masked):
+            report(number, "HTML tag not closed on the same line")
+        for tag in TAG.finditer(masked):
+            if not tag_attributes(tag.group(2))[1]:
+                report(
+                    number,
+                    "HTML attributes not separated by whitespace: %s" % tag.group(0),
+                )
+
+    if unclosed is not None:
+        report(unclosed + 1, "code fence opened here is never closed")
+
+    return problems
+
+
 def strip_html_blocks(lines):
     """Drop the GitHub-only chrome: centred logo, H1, badge row, footer org mark.
 
@@ -88,12 +315,17 @@ def strip_html_blocks(lines):
     sources resolve there. Anything at the top level that opens an HTML block goes, along
     with everything up to its closing tag.
     """
+    roles, _ = fence_roles(lines)
     out = []
     closing = None
-    for line in lines:
+    for line, role in zip(lines, roles):
         if closing is not None:
             if closing in line:
                 closing = None
+            continue
+        # HTML written inside a fence is an example, not chrome.
+        if role != PROSE:
+            out.append(line)
             continue
         stripped = line.strip()
         if stripped.startswith("<p ") or stripped.startswith("<p>"):
@@ -122,16 +354,21 @@ def strip_store_links(lines):
     A Modrinth page linking to itself is noise, and the download link duplicates the
     Versions tab sitting directly above the description.
     """
+    roles, _ = fence_roles(lines)
     out = []
     skipping = False
-    for line in lines:
-        if line.startswith("**[") and "Download]" in line:
+    for line, role in zip(lines, roles):
+        if role == PROSE and line.startswith("**[") and "Download]" in line:
             skipping = True
             continue
         if skipping:
-            if line.strip() == "":
-                skipping = False
-            continue
+            # The row ends at a blank line, or at a fence that interrupts it; the
+            # fence itself is content and is kept.
+            if role == PROSE:
+                if line.strip() == "":
+                    skipping = False
+                continue
+            skipping = False
         out.append(line)
     return out
 
@@ -143,19 +380,19 @@ def promote_headings(lines):
     gone, H2 is the top level of the description, and the nesting reads as a skipped
     level to a screen reader.
     """
-    return ["#" + line[2:] if line.startswith("### ") else line for line in lines]
+    roles, _ = fence_roles(lines)
+    return [
+        "#" + line[2:] if role == PROSE and line.startswith("### ") else line
+        for line, role in zip(lines, roles)
+    ]
 
 
 def fold_ascii(lines):
     """Fold typographic characters to ASCII, outside fenced blocks."""
+    roles, _ = fence_roles(lines)
     out = []
-    fenced = False
-    for line in lines:
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            out.append(line)
-            continue
-        if not fenced:
+    for line, role in zip(lines, roles):
+        if role == PROSE:
             for bad, good in ASCII_FOLD:
                 line = line.replace(bad, good)
         out.append(line)
@@ -175,6 +412,16 @@ def collapse_blanks(lines):
     return out
 
 
+def count_sections(lines):
+    """Headings the description keeps as sections: H2, and H3 once promoted."""
+    roles, _ = fence_roles(lines)
+    return sum(
+        1
+        for line, role in zip(lines, roles)
+        if role == PROSE and re.match(r"^#{2,3} \S", line)
+    )
+
+
 def check_no_stray_hashes(lines):
     """The rule the submission was rejected over.
 
@@ -184,14 +431,11 @@ def check_no_stray_hashes(lines):
     config block in this README got the project rejected on 2026-09-05.
     """
     problems = []
-    fenced = False
-    for number, line in enumerate(lines, 1):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
+    roles, _ = fence_roles(lines)
+    for number, (line, role) in enumerate(zip(lines, roles), 1):
+        if role == DELIMITER or not line.lstrip().startswith("#"):
             continue
-        if not line.lstrip().startswith("#"):
-            continue
-        if fenced:
+        if role == CODE:
             problems.append("%d: '#' begins a line inside a code fence: %s" % (number, line.strip()))
         elif not re.match(r"^#{2,6} \S", line):
             problems.append("%d: not a well-formed heading: %s" % (number, line.strip()))
@@ -199,12 +443,33 @@ def check_no_stray_hashes(lines):
 
 
 def check_no_relative_links(text):
+    """Assert on the output that every markdown link and image target resolves.
+
+    Not a re-run of the transforms: it matches with ANY_LINK, which accepts nested
+    brackets and empty targets that the transform patterns do not, and it holds images
+    and links to different standards. An image must not land on a blob URL (that serves
+    an HTML page, not the image), and a link must not be a data: URI.
+    """
     problems = []
-    for number, line in enumerate(text.split("\n"), 1):
-        for match in re.finditer(r"\]\(([^)]+)\)", line):
-            target = match.group(1)
-            if not ABSOLUTE.match(target):
-                problems.append("%d: relative link: %s" % (number, target))
+    lines = text.split("\n")
+    roles, _ = fence_roles(lines)
+    for number, (line, role) in enumerate(zip(lines, roles), 1):
+        if role != PROSE:
+            continue
+        masked, _ = mask_code_spans(line)
+        for match in ANY_LINK.finditer(masked):
+            image = match.group(1) == "!"
+            target = match.group(2).strip()
+            kind = "image" if image else "link"
+            if not target:
+                problems.append("%d: empty %s target" % (number, kind))
+            elif not resolves(target, embedded=image):
+                if DATA.match(target):
+                    problems.append("%d: data: URI as a link target: %s" % (number, target[:40]))
+                else:
+                    problems.append("%d: relative %s: %s" % (number, kind, target))
+            elif image and target.startswith(BLOB):
+                problems.append("%d: image points at a GitHub page, not the file: %s" % (number, target))
     return problems
 
 
@@ -222,47 +487,63 @@ def check_no_relative_html_refs(text):
     is the kind of half-fix that reads as covered in review.
     """
     problems = []
-    fenced = False
-    for number, line in enumerate(text.split("\n"), 1):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
+    lines = text.split("\n")
+    roles, _ = fence_roles(lines)
+    for number, (line, role) in enumerate(zip(lines, roles), 1):
+        if role != PROSE:
             continue
-        if fenced:
-            continue
-        for attribute, double, single, bare in ATTRIBUTE.findall(line):
-            value = double or single or bare
-            # srcset carries a comma-separated candidate list, each entry a URL
-            # followed by an optional descriptor. Every candidate has to resolve, so
-            # checking the whole value as one URL would pass on the first entry alone.
-            for candidate in value.split(",") if attribute == "srcset" else [value]:
-                target = candidate.strip().split(" ")[0]
-                if target and not ABSOLUTE.match(target):
-                    problems.append(
-                        "%d: relative %s in raw HTML: %s" % (number, attribute, target)
-                    )
+        masked, _ = mask_code_spans(line)
+        for tag in TAG.finditer(masked):
+            attributes, well_formed = tag_attributes(tag.group(2))
+            if not well_formed:
+                problems.append(
+                    "%d: HTML attributes not separated by whitespace: %s" % (number, tag.group(0))
+                )
+            for attribute, value in attributes:
+                if attribute not in ("src", "href", "srcset"):
+                    continue
+                embedded = attribute != "href"
+                # srcset carries a comma-separated candidate list, each entry a URL
+                # followed by an optional descriptor. Every candidate has to resolve, so
+                # checking the whole value as one URL would pass on the first entry alone.
+                for candidate in value.split(",") if attribute == "srcset" else [value]:
+                    target = candidate.strip().split(" ")[0]
+                    if target and not resolves(target, embedded):
+                        if DATA.match(target):
+                            problems.append(
+                                "%d: data: URI in %s: %s" % (number, attribute, target[:40])
+                            )
+                        else:
+                            problems.append(
+                                "%d: relative %s in raw HTML: %s" % (number, attribute, target)
+                            )
     return problems
 
 
-def check_body_is_intact(text):
-    """A last sanity check that something actually survived the transforms.
+def check_body_is_intact(text, expected):
+    """A last sanity check that the sections actually survived the transforms.
 
-    Cheap insurance against a stripper bug quietly producing an empty page. The README
-    has eleven sections, so an output with none of them means a transform went wrong,
-    not that the README got shorter.
+    Cheap insurance against a stripper bug quietly dropping content. Stripping only ever
+    removes chrome, never a section, so the description must carry at least as many
+    sections as the README has: one survivor out of eleven is as wrong as none.
     """
-    if not re.search(r"(?m)^## \S", text):
+    found = len(re.findall(r"(?m)^## \S", text))
+    if found == 0:
         return ["generated description contains no section headings at all"]
+    if found < expected:
+        return [
+            "generated description has %d section headings; README.md has %d"
+            % (found, expected)
+        ]
     return []
 
 
 def check_ascii(text):
     problems = []
-    fenced = False
-    for number, line in enumerate(text.split("\n"), 1):
-        if line.lstrip().startswith("```"):
-            fenced = not fenced
-            continue
-        if fenced:
+    lines = text.split("\n")
+    roles, _ = fence_roles(lines)
+    for number, (line, role) in enumerate(zip(lines, roles), 1):
+        if role != PROSE:
             continue
         for character in line:
             if ord(character) > 127:
@@ -276,36 +557,52 @@ def absolutise_image_targets(text):
 
     Runs before absolutise_links, which would otherwise rewrite them through BLOB and
     produce an image tag pointing at an HTML page. The README carries no markdown images
-    today; this exists so that adding one does not quietly break the store page.
+    today; this exists so that adding one does not quietly break the store page. Fenced
+    blocks and code spans are left alone: a link there is an example, not a reference.
     """
 
     def replace(match):
         target = match.group(2)
-        if ABSOLUTE.match(target):
+        if resolves(target, embedded=True):
             return match.group(0)
         return "!" + match.group(1) + "(" + RAW + target + ")"
 
-    return re.sub(r"!(\[[^\]]*\])\(([^)]+)\)", replace, text)
+    return map_prose(text, lambda line: re.sub(r"!(\[[^\]]*\])\(([^)]+)\)", replace, line))
 
 
 def absolutise_links(text):
     """Point relative markdown links at github.com.
 
-    On modrinth.com a relative target resolves against the project URL and 404s.
+    On modrinth.com a relative target resolves against the project URL and 404s. A data:
+    target is left for check_no_relative_links to reject rather than rewritten into a
+    URL that would hide it.
     """
 
     def replace(match):
         target = match.group(1)
-        if ABSOLUTE.match(target):
+        if ABSOLUTE.match(target) or DATA.match(target):
             return match.group(0)
         return "](" + BLOB + target + ")"
 
-    return re.sub(r"\]\(([^)]+)\)", replace, text)
+    return map_prose(text, lambda line: re.sub(r"\]\(([^)]+)\)", replace, line))
 
 
-def render():
-    with io.open(README, encoding="utf-8") as handle:
-        lines = handle.read().replace("\r\n", "\n").split("\n")
+def generate(source):
+    """Transform README text into the description body, or raise / report why not.
+
+    Returns (text, problems). Raises ReadmeError when the README uses something the
+    generator refuses to transform.
+    """
+    lines = source.replace("\r\n", "\n").split("\n")
+
+    unsupported = unsupported_constructs(lines)
+    if unsupported:
+        raise ReadmeError(
+            "README.md uses markdown this generator does not handle:\n  "
+            + "\n  ".join(unsupported)
+        )
+
+    sections = count_sections(lines)
 
     lines = strip_html_blocks(lines)
     lines = strip_store_links(lines)
@@ -320,8 +617,16 @@ def render():
         + check_no_relative_links(text)
         + check_no_relative_html_refs(text)
         + check_ascii(text)
-        + check_body_is_intact(text)
+        + check_body_is_intact(text, sections)
     )
+    return text, problems
+
+
+def render():
+    with io.open(README, encoding="utf-8") as handle:
+        source = handle.read()
+
+    text, problems = generate(source)
     if problems:
         sys.stderr.write("Generated description violates the Modrinth content rules:\n")
         for problem in problems:
