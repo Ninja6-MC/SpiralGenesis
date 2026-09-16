@@ -63,7 +63,8 @@ class ReadmeError(ValueError):
 
 HEADER = (
     "<!-- Generated from README.md by scripts/modrinth-description.py. Do not edit.\n"
-    "     Paste everything below this comment into the Modrinth description editor. -->\n"
+    "     The release workflow syncs everything below this comment to the Hangar resource page.\n"
+    "     Paste the same text into the Modrinth description editor. -->\n"
 )
 
 # Prose characters the README uses that have no business in a store description we want to
