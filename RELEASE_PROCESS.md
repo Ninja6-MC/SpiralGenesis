@@ -167,11 +167,24 @@ before the sync says so.
 
 **Recovering from a sync-only failure.** Do not re-run the job: its upload is rejected as a
 duplicate version and the sync is never reached. Fix the cause, then run the sync alone
-from the tagged commit with a Hangar key that has `edit_page`:
+from the tagged commit with a Hangar key that has `edit_page`. Read the key without echo,
+so it never appears on a command line or in shell history, then run the task:
 
 ```bash
 git checkout v1.2.3
-HANGAR_API_TOKEN=<key> ./gradlew syncPluginPublicationMainResourcePagePageToHangar
+read -rs HANGAR_API_TOKEN; export HANGAR_API_TOKEN
+./gradlew syncPluginPublicationMainResourcePagePageToHangar
+unset HANGAR_API_TOKEN
+```
+
+On Windows, in PowerShell:
+
+```powershell
+git checkout v1.2.3
+$key = Read-Host -AsSecureString "Hangar API key"
+$env:HANGAR_API_TOKEN = [System.Net.NetworkCredential]::new("", $key).Password
+.\gradlew.bat syncPluginPublicationMainResourcePagePageToHangar
+Remove-Item Env:HANGAR_API_TOKEN
 ```
 
 The same command publishes a README change to the page between releases. It reads no
