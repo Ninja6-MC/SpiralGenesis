@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+- **The Hangar resource page is synced on release.** After the version upload succeeds,
+  the release workflow writes `docs/modrinth-description.md`, without its generated
+  comment, to the Hangar resource page, then reads the page back and fails the job unless
+  Hangar holds exactly that text. The version stays published when only the sync fails;
+  `RELEASE_PROCESS.md` has the command to run the sync on its own. The Hangar API key now
+  needs `edit_page` in addition to `create_version`.
+- **Hangar versions declare their optional dependencies.** Floodgate, GriefPrevention and
+  AuthMeReloaded are listed as optional Paper dependencies, matching `softdepend` and the
+  Modrinth upload. AuthMeReloaded is not on Hangar and is declared as an external link.
+- **Registry tokens are scoped to the steps that use them.** `MODRINTH_TOKEN` and
+  `HANGAR_API_TOKEN` are no longer in the release job's environment, so the build and the
+  tests run without either.
+
 ## [1.0.0-alpha.1] - 2026-08-27
 
 ### Added

@@ -1,3 +1,9 @@
+import io.papermc.hangarpublishplugin.PageSyncTask
+import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
+
 plugins {
     `java-library`
     id("com.gradleup.shadow") version "9.6.1"
@@ -124,8 +130,69 @@ hangarPublish {
                         .orElse("1.20.x,1.21.x,26.1,26.1.1,26.1.2,26.2")
                         .map { versions -> versions.split(",").map(String::trim).filter(String::isNotEmpty) }
                 )
+                // The softdepend list in plugin.yml, all optional, matching the Modrinth
+                // dependencies in release.yml. Keep the three in step.
+                //
+                // hangar(...) takes the project slug, not owner/slug: Hangar resolves it
+                // with `lower(slug) = lower(:slug)` and rejects the whole upload
+                // (invalidPluginDependencyNamespace) when nothing matches. Floodgate is
+                // GeyserMC/Floodgate and GriefPrevention is GriefPrevention/GriefPrevention.
+                // AuthMeReloaded has no Hangar project, so it is an external link.
+                dependencies {
+                    hangar("Floodgate") {
+                        required.set(false)
+                    }
+                    hangar("GriefPrevention") {
+                        required.set(false)
+                    }
+                    url("AuthMeReloaded", "https://modrinth.com/plugin/authmereloaded") {
+                        required.set(false)
+                    }
+                }
             }
         }
+
+        // The Hangar resource page, synced by syncPluginPublicationMainResourcePagePageToHangar
+        // (PATCH pages/edit/<id>, which needs the edit_page permission on the API key). The
+        // text is docs/modrinth-description.md without its generated comment and the blank
+        // lines around it. Read through a provider, so only the sync task reads the file;
+        // a build or test reads neither it nor the token.
+        pages {
+            resourcePage(
+                providers.fileContents(layout.projectDirectory.file("docs/modrinth-description.md")).asText
+                    .map { text ->
+                        check(text.startsWith("<!--") && "-->" in text) {
+                            "docs/modrinth-description.md must start with its generated comment; " +
+                                "run python scripts/modrinth-description.py"
+                        }
+                        text.substringAfter("-->").trim()
+                    }
+            )
+        }
+    }
+}
+
+// The page sync cannot fail on its own: hangar-publish-plugin 0.1.4 logs a rejected edit
+// (a 403 for a key without edit_page, a 404 for a wrong slug) and lets the task succeed.
+// So the task reads the page back from the public endpoint and fails unless Hangar now
+// holds exactly the content it sent. A rejected edit of an already identical page still
+// passes here; its "Error using endpoint" line in the log is the only sign of it.
+tasks.withType<PageSyncTask>().configureEach {
+    doLast {
+        val expected = page.get().content.get()
+        val url = apiEndpoint.get() + "pages/main/" + id.get()
+        val response = HttpClient.newHttpClient().send(
+            HttpRequest.newBuilder(URI.create(url)).GET().build(),
+            HttpResponse.BodyHandlers.ofString(Charsets.UTF_8)
+        )
+        if (response.statusCode() != 200 || response.body() != expected) {
+            throw GradleException(
+                "Hangar resource page for '${id.get()}' does not match docs/modrinth-description.md " +
+                    "after the sync (GET $url returned ${response.statusCode()}). Check the log " +
+                    "above for the rejected edit; the API key needs the edit_page permission."
+            )
+        }
+        logger.lifecycle("Hangar resource page for '${id.get()}' matches docs/modrinth-description.md.")
     }
 }
 

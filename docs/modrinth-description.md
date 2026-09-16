@@ -1,5 +1,6 @@
 <!-- Generated from README.md by scripts/modrinth-description.py. Do not edit.
-     Paste everything below this comment into the Modrinth description editor. -->
+     The release workflow syncs everything below this comment to the Hangar resource page.
+     Paste the same text into the Modrinth description editor. -->
 
 **Every player starts somewhere of their own.** Instead of dropping everyone at one crowded
 world spawn, SpiralGenesis gives each new player their own plot of land - 500x500 blocks by

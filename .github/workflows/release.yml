@@ -26,7 +26,9 @@ jobs:
     # It is also where MODRINTH_TOKEN and HANGAR_API_TOKEN belong. While they remain
     # repository secrets this job still reads them and behaves exactly as before; moving
     # them to environment secrets is what stops any OTHER workflow from reading them, and
-    # it is a manual step because a secret value cannot be copied through the API.
+    # it is a manual step because a secret value cannot be copied through the API. Within
+    # this job, each token is mapped into the env of only the steps that need it, never the
+    # job's env, so the build and the tests never see either.
     #
     # The environment is scoped to 'v*' tags, which is the only ref this workflow
     # triggers on anyway - so the policy restates the trigger rather than narrowing it.
@@ -34,13 +36,6 @@ jobs:
 
     permissions:
       contents: write
-
-    # Declared at job level, not on the individual steps: only job-level and workflow-level
-    # env is reliably visible to a step's own `if`, and these gate whether each registry is
-    # published to. HANGAR_API_TOKEN doubles as the credential the Gradle plugin reads.
-    env:
-      MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-      HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
 
     steps:
       # First, so a malformed tag fails in seconds rather than after a toolchain setup.
@@ -63,6 +58,24 @@ jobs:
             exit 1
           fi
           echo "Tag '$TAG_NAME' is valid."
+
+      # Which registries this run can publish to. Secrets cannot be read in an `if`, so this
+      # step maps them into its OWN env - visible to this script only - and writes back a
+      # plain true/false per registry. The values are tested for emptiness and never printed.
+      # Runs before the checkout, so no repository code executes with either token in reach.
+      - name: Detect Registry Tokens
+        id: tokens
+        env:
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+        run: |
+          if [ -n "$MODRINTH_TOKEN" ]; then MODRINTH=true; else MODRINTH=false; fi
+          if [ -n "$HANGAR_API_TOKEN" ]; then HANGAR=true; else HANGAR=false; fi
+          {
+            echo "modrinth=$MODRINTH"
+            echo "hangar=$HANGAR"
+          } >> "$GITHUB_OUTPUT"
+          echo "Modrinth token configured: $MODRINTH; Hangar token configured: $HANGAR"
 
       - name: Checkout Code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -218,9 +231,10 @@ jobs:
 
       # Both publish steps are skipped when their token is not configured, so a release
       # still reaches GitHub while the registry projects are being set up. Secrets cannot
-      # be read directly in an `if`, hence the job-level env above.
+      # be read directly in an `if`, hence the Detect Registry Tokens step above. The
+      # Modrinth token reaches mc-publish as an input only.
       - name: Publish to Modrinth
-        if: env.MODRINTH_TOKEN != ''
+        if: steps.tokens.outputs.modrinth == 'true'
         uses: Kira-NT/mc-publish@52307b03863581dec6b652b83e597aec02ebb075 # v3.3.1
         with:
           modrinth-id: spiralgenesis
@@ -263,10 +277,28 @@ jobs:
             26.1.2
             26.2
 
+      # HANGAR_API_TOKEN is in this step's env only; the Gradle plugin reads it from there.
+      #
+      # The resource page is synced from docs/modrinth-description.md in this same step, so
+      # the token reaches no other step, and only after the version upload succeeded: a
+      # failed upload exits before the sync. A failed sync fails the step and the job,
+      # because a stale store page is a release defect, but the version stays published and
+      # the notice written before the sync says so. After a failed sync, run the sync task by
+      # hand (RELEASE_PROCESS.md) rather than re-running the job, whose upload would be
+      # rejected as a duplicate before the sync is reached.
       - name: Publish to Hangar
-        if: env.HANGAR_API_TOKEN != ''
-        run: >
-          ./gradlew publishPluginPublicationToHangar
-          -PpluginVersion=${{ steps.vars.outputs.version }}
-          -PhangarChannel=${{ steps.vars.outputs.hangarChannel }}
-          --no-daemon
+        if: steps.tokens.outputs.hangar == 'true'
+        env:
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          VERSION: ${{ steps.vars.outputs.version }}
+          HANGAR_CHANNEL: ${{ steps.vars.outputs.hangarChannel }}
+        run: |
+          ./gradlew publishPluginPublicationToHangar \
+            -PpluginVersion="$VERSION" \
+            -PhangarChannel="$HANGAR_CHANNEL" \
+            --no-daemon
+          echo "::notice title=Hangar::$VERSION is published to the Hangar $HANGAR_CHANNEL channel."
+          if ! ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon; then
+            echo "::error title=Hangar page sync::$VERSION is published, but the resource page was not synced. Run the sync by hand as described in RELEASE_PROCESS.md; do not re-run this job."
+            exit 1
+          fi
