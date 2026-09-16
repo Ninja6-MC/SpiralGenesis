@@ -210,6 +210,14 @@ jobs:
       - name: Fail If The Committed Description Drifted
         run: python3 scripts/modrinth-description.py --check
 
+      # The Modrinth project ids pinned in release.yml have to name the same plugins as
+      # plugin.yml; nothing else ties the two together.
+      - name: Fail If Modrinth Dependencies Drifted From plugin.yml
+        run: python3 scripts/modrinth-dependencies.py
+
+      - name: Test The Description And Dependency Scripts
+        run: python3 -m unittest discover -s scripts/tests -v
+
   smoke:
     name: Smoke Test (${{ matrix.label }})
     needs: build

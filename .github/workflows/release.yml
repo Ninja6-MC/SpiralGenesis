@@ -251,7 +251,8 @@ jobs:
           # here explicitly so the mapping cannot be guessed wrong.
           #
           # All three are `optional`, matching `softdepend`: the plugin loads and works
-          # with none of them installed. Keep this list in step with plugin.yml.
+          # with none of them installed. scripts/modrinth-dependencies.py holds the
+          # name-to-id mapping and fails CI when this list and plugin.yml disagree.
           dependencies: |
             floodgate(optional){modrinth:bWrNNfkb}
             griefprevention(optional){modrinth:O4o4mKaq}
