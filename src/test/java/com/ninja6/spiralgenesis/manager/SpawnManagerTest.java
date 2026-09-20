@@ -27,8 +27,10 @@ import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -674,6 +676,78 @@ class SpawnManagerTest {
 
         assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
+    }
+
+    // --- World border ------------------------------------------------------------------
+
+    /**
+     * Confines the world border to a box around the given centre.
+     *
+     * <p>MockBukkit's border spans {@code centre +/- size} rather than the half-size vanilla
+     * uses, so these fixtures state the reach they want and do not convert. What is under
+     * test is which side of the border a candidate falls on, not how the size is measured.
+     */
+    private void borderAround(double centreX, double centreZ, double reach) {
+        world.getWorldBorder().setCenter(centreX, centreZ);
+        world.getWorldBorder().setSize(reach);
+    }
+
+    @Test
+    @DisplayName("A cell outside the world border is skipped even though its terrain is safe")
+    void candidatesOutsideTheBorderAreRejected() throws Exception {
+        // The border reaches x in (44, 84): the whole of cell 0 is outside it, and cell 1's
+        // centre is inside. Terrain everywhere is the mock's default flat, safe surface, so
+        // the border is the only thing that can reject anything here.
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(1, res.index(), "cell 0 lies outside the border, so it must be skipped");
+        assertEquals(CELL + 0.5, res.location().getX(), 1e-9);
+        assertFalse(res.fallback(), "a real point was found; this is not a fallback");
+        assertEquals(12, res.rejections().get(RejectionReason.OUTSIDE_BORDER),
+                "every candidate of the skipped cell should be attributed to the border");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A scan that never reaches inside the border fails instead of stranding the player")
+    void scanEntirelyOutsideTheBorderFails() {
+        // The border is nowhere near the spiral, so no cell the scan can reach is inside it.
+        // Advancing cannot help: the spiral only grows, so each later cell is further out.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        CompletableFuture<SpawnManager.LocationResult> pending =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+
+        ExecutionException thrown = assertThrows(ExecutionException.class,
+                () -> pending.get(10, TimeUnit.SECONDS));
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class, thrown.getCause(),
+                "the failure must name the border, not surface as a generic error");
+        assertEquals(budget, indices.get(),
+                "the scan must stop at max-scan-attempts rather than walking outward forever");
+    }
+
+    @Test
+    @DisplayName("An in-cell repair of a cell outside the border finds nothing rather than failing")
+    void inCellRepairOutsideTheBorderResolvesToNothing() throws Exception {
+        // Cell 1 sits outside a border drawn around the origin. A repair owns its cell and
+        // cannot leave it, so the honest answer is the same one an unusable cell already
+        // gives: nothing found, assignment untouched, caller sends them to world spawn.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+                "a cell outside the border holds no usable point");
     }
 
     /**

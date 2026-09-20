@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Allocation no longer places a player outside the world border.** Candidate scoring
+  checked terrain only, so once the spiral grew past the border a player was teleported
+  outside it and had their respawn point forced onto the same spot, leaving them taking
+  border damage with every respawn returning them to it. Candidates outside the border are
+  now rejected outright and can never win the least-bad fallback, so a cell that lies
+  wholly outside is skipped and the spiral advances. A scan that spends `max-scan-attempts`
+  without reaching inside the border fails with a console message naming the border instead
+  of placing the player: they stay where they are, and the operator is told to widen the
+  border or move `origin.x`/`origin.z`. The border is read per candidate, so moving or
+  resizing it at runtime takes effect immediately.
+
 ### Changed
 - **The Hangar resource page is synced on release.** After the version upload succeeds,
   the release workflow writes `docs/modrinth-description.md`, without its generated

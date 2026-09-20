@@ -103,6 +103,9 @@ public class SpawnManager {
      * allocations can never converge on the same cell. Probes are spread one-per-tick: this
      * keeps chunk generation off any single tick's budget and bounds the callback stack.
      *
+     * <p>Fails with {@link BorderExhaustedException} when the whole scan stayed outside the
+     * world border, which is the one case where there is no point to fall back to.
+     *
      * @param indexSupplier atomic source of candidate spiral indices
      * @return CompletableFuture resolving to safe LocationResult
      */
@@ -166,6 +169,22 @@ public class SpawnManager {
         // Flooding shows up at the feet and head; lava poured on the plot shows up
         // underfoot once it settles into the surface block allocation approved.
         return !isHazard(x, y, z) && !isHazard(x, y + 1, z) && !isHazard(x, y - 1, z);
+    }
+
+    /**
+     * Raised when a scan spent its whole budget without finding one point inside the border.
+     *
+     * <p>Distinct from an ordinary allocation failure because it is neither transient nor a
+     * defect: the spiral has grown past the border, and no retry helps until an operator
+     * widens the border or moves the origin.
+     */
+    public static final class BorderExhaustedException extends IllegalStateException {
+
+        private static final long serialVersionUID = 1L;
+
+        BorderExhaustedException(String message) {
+            super(message);
+        }
     }
 
     /**
@@ -315,6 +334,22 @@ public class SpawnManager {
             return;
         }
 
+        // Exhausted the budget without seeing one point inside the world border. The spiral
+        // only grows, so advancing walks further out and every later cell is further
+        // outside than this one; there is nothing left to settle on and nowhere useful to
+        // advance to. Failing is the only outcome that neither strands the player outside
+        // the border nor spins: the caller logs it and leaves them standing where they are,
+        // which is inside the border by definition.
+        if (scan.bestOverall == null) {
+            String message = "Spawn allocation failed: every candidate across " + scan.attempt
+                    + " cells fell outside the world border of world '" + world.getName()
+                    + "'. The spiral has outgrown the border; widen it, or move origin.x and "
+                    + "origin.z so the spiral keeps growing inside it.";
+            plugin.getLogger().severe(message);
+            scan.result.completeExceptionally(new BorderExhaustedException(message));
+            return;
+        }
+
         // Exhausted the budget. Settle on the best point seen anywhere in the scan rather
         // than a hardcoded altitude, which could bury the player or drop them into the void.
         Candidate fallback = scan.bestOverall;
@@ -346,6 +381,20 @@ public class SpawnManager {
      */
     private Candidate score(Scan scan, int x, int z) {
         int surfaceY = surfaceAt(x, z);
+        Location location = new Location(world, x + 0.5, surfaceY + 1.0, z + 0.5);
+
+        // Read per candidate rather than once per scan: the border can be moved or resized
+        // at any time, including while an allocation is in flight.
+        //
+        // Returns here rather than scoring on, because outside the border the terrain is
+        // beside the point: however good the ground is, a player standing on it takes
+        // border damage until they die, and the respawn point forced onto that same spot
+        // puts them straight back.
+        if (!world.getWorldBorder().isInside(location)) {
+            return new Candidate(location, scan.index, scan.gridU, scan.gridV, surfaceY,
+                    0, PENALTY_UNSAFE, EnumSet.of(RejectionReason.OUTSIDE_BORDER), false);
+        }
+
         EnumSet<RejectionReason> reasons = EnumSet.noneOf(RejectionReason.class);
         int badness = 0;
 
@@ -401,9 +450,8 @@ public class SpawnManager {
             }
         }
 
-        Location location = new Location(world, x + 0.5, surfaceY + 1.0, z + 0.5);
         return new Candidate(location, scan.index, scan.gridU, scan.gridV,
-                surfaceY, roughness, badness, reasons);
+                surfaceY, roughness, badness, reasons, true);
     }
 
     /**
@@ -486,6 +534,12 @@ public class SpawnManager {
      * an earlier cell — the one nearest the spiral origin.
      */
     private Candidate leastBad(Candidate current, Candidate challenger) {
+        // A point outside the border is not a worse spawn than a ravine floor; it is not a
+        // spawn at all. Excluded outright rather than penalised, so no arrangement of
+        // scores can ever promote one into the fallback.
+        if (!challenger.insideBorder()) {
+            return current;
+        }
         if (current == null) {
             return challenger;
         }
@@ -604,7 +658,7 @@ public class SpawnManager {
     /** One scored candidate point. */
     private record Candidate(Location location, int index, int gridU, int gridV,
                              int surfaceY, int roughness, int badness,
-                             Set<RejectionReason> reasons) {
+                             Set<RejectionReason> reasons, boolean insideBorder) {
 
         private boolean acceptable() {
             return badness == 0;
