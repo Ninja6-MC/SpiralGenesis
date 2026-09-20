@@ -130,18 +130,48 @@ public class SpawnManager {
         //
         // Held against the border's geometry rather than as a flag, so widening or moving
         // the border makes the next join scan again with nothing for an operator to reset.
-        // A reload rebuilds this manager, which covers a change to origin or cell-size.
+        //
+        // Read-then-act, and deliberately not made atomic: allocations already in flight when
+        // the first exhaustion is recorded each finish their own scan, so a join surge costs
+        // one scan per joiner in flight and one only. Serialising them would buy nothing but
+        // a lock on the join path.
         BorderGeometry gaveUpAgainst = exhaustedAgainst;
         if (gaveUpAgainst != null && gaveUpAgainst.equals(BorderGeometry.of(world))) {
             result.completeExceptionally(new BorderExhaustedException(
                     "Spawn allocation refused: an earlier scan found nothing inside the world "
                             + "border of world '" + world.getName() + "' and the border has not "
-                            + "changed since. Widen it, or move origin.x and origin.z so the "
-                            + "spiral keeps growing inside it, then run /sgen reload."));
+                            + "changed since. Widen the border or move its centre and the next "
+                            + "join scans again on its own; if you change origin.x, origin.z or "
+                            + "cell-size instead, run /sgen reload."));
             return result;
         }
 
-        nextCell(new Scan(indexSupplier, false, result));
+        nextCell(new Scan(indexSupplier, false, true, result));
+        return result;
+    }
+
+    /**
+     * Allocates a spawn for a diagnostic run rather than for a player.
+     *
+     * <p>Identical to {@link #allocateNextSafeSpawn} except that it neither consults nor
+     * records the border exhaustion above, because a simulation scans an index range of its
+     * own: {@code SpawnSimulator} counts from zero so that a run cannot advance the live
+     * spiral, which means its cells are near the origin no matter how far the live spiral
+     * has grown, and a conclusion drawn about one range says nothing about the other.
+     *
+     * <p>Both directions of that would be wrong. A real exhaustion far out must not refuse
+     * the one diagnostic an operator has for it, which would answer with a failure claiming
+     * nothing is inside the border while the origin plainly is. And a simulation that
+     * exhausts near an off-centre origin must not be able to refuse joining players at
+     * indices that are inside the border: a read-only diagnostic cannot be allowed to lock
+     * allocation out.
+     *
+     * @param indexSupplier throwaway source of indices, never the live reservation
+     * @return CompletableFuture resolving to safe LocationResult
+     */
+    public CompletableFuture<LocationResult> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<LocationResult> result = new CompletableFuture<>();
+        nextCell(new Scan(indexSupplier, false, false, result));
         return result;
     }
 
@@ -163,7 +193,10 @@ public class SpawnManager {
      */
     public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
         CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        nextCell(new Scan(() -> index, true, result));
+        // Live, not diagnostic: it repairs a real player's plot. The distinction never comes
+        // up in practice, because a cell-only scan resolves to null before the exhaustion
+        // branch is reached.
+        nextCell(new Scan(() -> index, true, true, result));
         return result;
     }
 
@@ -207,6 +240,10 @@ public class SpawnManager {
      * <p>Distinct from an ordinary allocation failure because it is neither transient nor a
      * defect: the spiral has grown past the border, and no retry helps until an operator
      * widens the border or moves the origin.
+     *
+     * <p>Carries no stack trace. It is raised from exactly one place, its message says
+     * everything an operator can act on, and the caller logs it per join: frames of
+     * scheduler internals under a line about a misconfigured border are noise, not evidence.
      */
     public static final class BorderExhaustedException extends IllegalStateException {
 
@@ -214,6 +251,11 @@ public class SpawnManager {
 
         BorderExhaustedException(String message) {
             super(message);
+        }
+
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
         }
     }
 
@@ -417,17 +459,21 @@ public class SpawnManager {
         // the border nor spins: the caller logs it and leaves them standing where they are,
         // which is inside the border by definition.
         if (scan.bestOverall == null) {
-            // Recorded before the failure is published, so the next join is refused without
-            // claiming an index rather than repeating this scan and burning another
-            // max-scan-attempts of them.
-            exhaustedAgainst = BorderGeometry.of(world);
             String message = "Spawn allocation failed: every candidate across " + scan.attempt
                     + " cells fell outside the world border of world '" + world.getName()
                     + "'. The spiral has outgrown the border; widen it, or move origin.x and "
                     + "origin.z so the spiral keeps growing inside it. This scan claimed "
                     + scan.attempt + " spiral indices, the last of them " + scan.index
-                    + ", and none of them holds a plot. Further allocations are refused "
-                    + "without claiming an index until the border changes.";
+                    + ", and none of them holds a plot.";
+            if (scan.liveSpiral) {
+                // Recorded before the failure is published, so the next join is refused
+                // without claiming an index rather than repeating this scan and burning
+                // another max-scan-attempts of them. Never recorded for a diagnostic run,
+                // whose cells say nothing about where the live spiral has reached.
+                exhaustedAgainst = BorderGeometry.of(world);
+                message += " Further allocations are refused without claiming an index until "
+                        + "the border changes.";
+            }
             plugin.getLogger().severe(message);
             scan.result.completeExceptionally(new BorderExhaustedException(message));
             return;
@@ -691,6 +737,8 @@ public class SpawnManager {
         private final IntSupplier indexSupplier;
         /** Pins the scan to the single cell it starts in; see {@link #findSafeSpawnInCell}. */
         private final boolean cellOnly;
+        /** False for a diagnostic run, whose index range is not the live spiral's. */
+        private final boolean liveSpiral;
         private final CompletableFuture<LocationResult> result;
 
         private int attempt;
@@ -705,10 +753,11 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(IntSupplier indexSupplier, boolean cellOnly,
+        private Scan(IntSupplier indexSupplier, boolean cellOnly, boolean liveSpiral,
                      CompletableFuture<LocationResult> result) {
             this.indexSupplier = indexSupplier;
             this.cellOnly = cellOnly;
+            this.liveSpiral = liveSpiral;
             this.result = result;
         }
 

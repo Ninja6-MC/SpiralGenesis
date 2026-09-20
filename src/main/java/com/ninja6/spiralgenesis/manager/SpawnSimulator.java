@@ -29,7 +29,10 @@ public final class SpawnSimulator {
      *
      * <p>Indices come from a throwaway counter, never {@code DataStorage.reserveNextIndex}:
      * a simulation must not advance the live spiral progression, or running it would
-     * permanently push real players outward.
+     * permanently push real players outward. That counter starts at zero, so a run scans the
+     * origin however far the live spiral has grown, which is why it goes through
+     * {@link SpawnManager#simulateNextSafeSpawn}: what a run concludes about its own index
+     * range must not be applied to the live one, in either direction.
      */
     public static CompletableFuture<Report> run(SpawnManager manager, int samples) {
         Report report = new Report(samples);
@@ -38,7 +41,7 @@ public final class SpawnSimulator {
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (int i = 0; i < samples; i++) {
             chain = chain.thenCompose(ignored ->
-                    manager.allocateNextSafeSpawn(indices::getAndIncrement).thenAccept(report::record));
+                    manager.simulateNextSafeSpawn(indices::getAndIncrement).thenAccept(report::record));
         }
         return chain.thenApply(ignored -> report);
     }

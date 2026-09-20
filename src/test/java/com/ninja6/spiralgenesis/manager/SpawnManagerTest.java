@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.SpiralMath;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.io.StringReader;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -784,6 +786,71 @@ class SpawnManagerTest {
 
         assertTrue(world.getWorldBorder().isInside(res.location()),
                 "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation is not refused by an exhaustion the live spiral ran into")
+    void simulationIsNotRefusedByALiveExhaustion() throws Exception {
+        // The border covers the origin cell's centre and nothing a live spiral this far out
+        // can reach, which is the state an operator runs /sgen simulate to understand.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, new AtomicInteger(100)));
+
+        // Refusing here would answer the one diagnostic for this failure with a line claiming
+        // nothing is inside the border, while the origin plainly is.
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, report.completed(), "the simulation must still run and report");
+    }
+
+    @Test
+    @DisplayName("A simulation cannot refuse a player allocation the live spiral could still fill")
+    void simulationCannotRefuseALaterAllocation() throws Exception {
+        // The border sits over cell (2,0) and misses the origin, so a simulation counting
+        // from zero exhausts while the cells the live spiral has reached are inside.
+        borderAround(2 * CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                rootCause(SpawnSimulator.run(manager, 1)),
+                "the simulation should exhaust near the origin");
+
+        // A read-only diagnostic must not be able to lock allocation out.
+        int insideIndex = indexOfGrid(2, 0);
+        AtomicInteger indices = new AtomicInteger(insideIndex);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(insideIndex, res.index(), "the joining player's own cell was usable");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    /** The spiral index that lands on a given grid cell. */
+    private static int indexOfGrid(int gridU, int gridV) {
+        for (int index = 0; index < 10_000; index++) {
+            int[] grid = SpiralMath.indexToGrid(index);
+            if (grid[0] == gridU && grid[1] == gridV) {
+                return index;
+            }
+        }
+        throw new AssertionError("no spiral index maps to (" + gridU + ", " + gridV + ")");
+    }
+
+    /** Unwraps the completion wrappers a chained future adds, and hands back the cause. */
+    private static Throwable rootCause(CompletableFuture<?> pending) {
+        ExecutionException thrown = assertThrows(ExecutionException.class,
+                () -> pending.get(10, TimeUnit.SECONDS));
+        Throwable cause = thrown.getCause();
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     /** Runs an allocation that is expected to fail, and hands back the cause. */

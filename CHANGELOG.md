@@ -36,7 +36,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that are refused on the spot, without claiming a spiral index, so a player rejoining
   cannot walk the spiral outward a scan at a time with no plot to show for it. The refusal
   is held against the border's position and size rather than as a latch, so widening or
-  moving the border resumes allocation with nothing for an operator to reset.
+  moving the border resumes allocation with nothing for an operator to reset. `/sgen
+  simulate` is outside all of this in both directions: it scans from the origin rather than
+  from where the live spiral has reached, so it still runs and reports after a live
+  allocation has given up, and a run of its own can never refuse a joining player.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
