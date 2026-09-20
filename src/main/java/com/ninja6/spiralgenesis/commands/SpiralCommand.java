@@ -637,6 +637,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
     private void handleReload(CommandSender sender) {
         plugin.reload();
         sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
+        // Reloading the file and binding a world are two outcomes, and only the first one
+        // succeeded here. Reported to the sender rather than to the console alone: the
+        // administrator correcting origin.world is the one person who needs to know the
+        // correction did not take, and a green "reloaded successfully" on its own reads as
+        // confirmation that it did.
+        if (plugin.getSpawnManager() == null) {
+            sender.sendMessage(ChatColor.RED + "No world is bound: origin.world is '"
+                    + plugin.getPluginConfig().getWorldName()
+                    + "', which is not a loaded world. Nothing will be allocated until it is.");
+        }
     }
 
     private void sendHelp(CommandSender sender) {

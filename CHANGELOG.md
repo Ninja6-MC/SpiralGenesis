@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **`origin.world` is matched exactly, and no other world is ever substituted for it.**
+  Previously a name that matched no loaded world fell back to whichever world the server
+  loaded first, silently, so a typo carved spiral plots into a lobby or the Nether and
+  overwrote the respawn points of everyone it allocated. The plugin now binds nothing,
+  reports the configured name and the loaded worlds at SEVERE, and tells `/sgen reload`
+  what it bound. **On upgrade, a server whose `origin.world` does not name a loaded world
+  stops allocating entirely** rather than allocating into the wrong one; correct the name
+  and run `/sgen reload`. A world created after the plugin enables is still picked up on
+  the first join that needs it.
 - **The Hangar resource page is synced on release.** After the version upload succeeds,
   the release workflow writes `docs/modrinth-description.md`, without its generated
   comment, to the Hangar resource page, then reads the page back and fails the job unless

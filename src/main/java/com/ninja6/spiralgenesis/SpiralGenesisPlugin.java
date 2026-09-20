@@ -43,9 +43,25 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     private PluginConfig pluginConfig;
     private DataStorage dataStorage;
-    private SpawnManager spawnManager;
-    /** Configured world name the unresolved-world error has already been reported for. */
-    private String unresolvedWorldReported;
+    /**
+     * The bound spawn manager, or {@code null} while {@code origin.world} names no loaded
+     * world.
+     *
+     * <p>Volatile because a reload can unbind it while allocation is running: the reload
+     * arrives on the thread that typed the command, and {@code initSpawnManager} is also
+     * reached from {@link #handlePlayerFirstJoin}, which the action gate invokes from
+     * whichever region thread saw the player act. A stale non-null read here is the whole
+     * failure this refusal exists to prevent - it would keep allocating into a world the
+     * configuration no longer names.
+     */
+    private volatile SpawnManager spawnManager;
+
+    /**
+     * Configured world name the unresolved-world error has already been reported for.
+     *
+     * <p>Volatile for the same reason, and written from the same threads.
+     */
+    private volatile String unresolvedWorldReported;
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
@@ -216,6 +232,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // are all reloadable, and the minimum-size check the provider makes at construction
         // is only correct for the size it was constructed with.
         this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
+        // Cleared so an operator-initiated reload always re-reports the bind outcome. The
+        // suppression exists to keep the per-join retry quiet, and an administrator who has
+        // just edited the file and reloaded is owed the answer whether or not the name they
+        // tried is the same one that failed last time.
+        this.unresolvedWorldReported = null;
         initSpawnManager();
     }
 
@@ -398,6 +419,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }).exceptionally(ex -> {
                 getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
                 applied.complete(null);
+                regateIfUnbound(player, clientType);
                 return null;
             });
         } catch (Exception e) {
@@ -408,6 +430,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
                     + " failed before it could start.", e);
             applied.complete(null);
+            regateIfUnbound(player, clientType);
         } catch (Throwable t) {
             applied.complete(null);
             throw t;
@@ -447,7 +470,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * cannot be reached from outside.
      */
     CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
-        return spawnManager.allocateNextSafeSpawn(indexSupplier);
+        // Read once. The caller's guard is no longer proof that the field is still set: a
+        // reload onto an unresolvable world unbinds it, and it can land between that guard
+        // and this line. Failing the future rather than dereferencing null keeps the
+        // outcome a reported failure instead of a swallowed NullPointerException.
+        SpawnManager manager = spawnManager;
+        if (manager == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "no world is bound; origin.world names no loaded world"));
+        }
+        return manager.allocateNextSafeSpawn(indexSupplier);
     }
 
     /**
@@ -548,7 +580,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * it was specified.
      */
     CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
-        return spawnManager.findSafeSpawnInCell(index);
+        // Read once, for the reason allocateSpawn does: repairSpawn null-checked the
+        // manager several ticks ago, across a revalidation that awaits a chunk.
+        SpawnManager manager = spawnManager;
+        if (manager == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "no world is bound; origin.world names no loaded world"));
+        }
+        return manager.findSafeSpawnInCell(index);
     }
 
     /**
@@ -707,6 +746,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (actionGate != null) {
             actionGate.forget(uuid);
         }
+    }
+
+    /**
+     * Puts a player back in the gate when an allocation failed with no world bound.
+     *
+     * <p>{@code takeAllocation} has already dropped them, on the assumption that the caller
+     * holding them will finish the job. A reload onto an unresolvable world between that
+     * point and the scan breaks that assumption: nothing was allocated, nothing is watching
+     * them any more, and they would go the rest of the session with no plot. Returning them
+     * to the gate makes their next action retry it, which is what fixing the configuration
+     * needs to be enough.
+     */
+    private void regateIfUnbound(Player player, String clientType) {
+        if (spawnManager != null || actionGate == null || !player.isOnline()) {
+            return;
+        }
+        actionGate.markPending(player, clientType);
+        getLogger().warning("No world is bound, so " + player.getName()
+                + " was not allocated; they are held by the gate and retried on their next "
+                + "action once origin.world names a loaded world.");
     }
 
     /**
