@@ -77,12 +77,17 @@ class SpawnManagerTest {
      * {@code whenComplete}, turning any bug into an unexplained timeout.
      */
     private static class InlineSpawnManager extends SpawnManager {
+
+        /** Counts what a real server would have generated, for the tests that care. */
+        private final AtomicInteger chunkLoads = new AtomicInteger();
+
         InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
         }
 
         @Override
         CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+            chunkLoads.incrementAndGet();
             return CompletableFuture.completedFuture(null);
         }
 
@@ -722,18 +727,72 @@ class SpawnManagerTest {
         borderAround(100_000, 100_000, 16);
 
         int budget = 4;
-        SpawnManager manager = managerWith(config(0, budget));
+        InlineSpawnManager manager = new InlineSpawnManager(plugin, world, config(0, budget));
         AtomicInteger indices = new AtomicInteger();
 
-        CompletableFuture<SpawnManager.LocationResult> pending =
-                manager.allocateNextSafeSpawn(sequentialIndices(indices));
-
-        ExecutionException thrown = assertThrows(ExecutionException.class,
-                () -> pending.get(10, TimeUnit.SECONDS));
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class, thrown.getCause(),
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices),
                 "the failure must name the border, not surface as a generic error");
         assertEquals(budget, indices.get(),
                 "the scan must stop at max-scan-attempts rather than walking outward forever");
+        assertEquals(0, manager.chunkLoads.get(),
+                "the border test must come before the chunk request, or the scan generates "
+                        + "terrain outside the border that no player may stand on");
+    }
+
+    @Test
+    @DisplayName("A repeat join after border exhaustion claims no further indices")
+    void repeatedAllocationAfterBorderExhaustionBurnsNoIndices() {
+        // The scan cannot succeed and nothing is written for the player, so the next join
+        // arrives unallocated and asks again. Rescanning would advance the spiral by another
+        // max-scan-attempts indices that hold no plot, every join, for every player.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+        assertEquals(budget, indices.get(), "the first scan pays for itself, once");
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices),
+                "the repeat must fail the same way rather than placing the player");
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+        assertEquals(budget, indices.get(),
+                "a refusal must not claim an index: the spiral stood still across two retries");
+    }
+
+    @Test
+    @DisplayName("Widening the border lets allocation run again without an operator reset")
+    void wideningTheBorderResumesAllocation() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+
+        // The refusal is held against the border's geometry, not as a latch: the operator
+        // fixes the border and the next join works, with nothing to clear by hand.
+        borderAround(0, 0, 1000);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    /** Runs an allocation that is expected to fail, and hands back the cause. */
+    private Throwable allocationFailure(SpawnManager manager, AtomicInteger indices) {
+        CompletableFuture<SpawnManager.LocationResult> pending =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        ExecutionException thrown = assertThrows(ExecutionException.class,
+                () -> pending.get(10, TimeUnit.SECONDS));
+        return thrown.getCause();
     }
 
     @Test
