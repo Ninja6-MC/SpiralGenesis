@@ -122,8 +122,11 @@ protection:
   # Who owns the claim that gets created.
   # ADMIN_CLAIM  - create it as an administrative claim and trust the player on it. Costs
   #                the player no claim blocks, so it still works on a server whose starting
-  #                balance is zero. They cannot resize, delete or manage trust on it, and it
-  #                is not listed as theirs by the protection plugin. It also sits in the way:
+  #                balance is zero. They are given both building and trust management, so
+  #                they can /trust and /untrust a friend onto the plot themselves; they
+  #                cannot resize, subdivide or delete it, and it is not listed as theirs by
+  #                the protection plugin. That last part cuts both ways - it is also why
+  #                they cannot abandon the protection by accident. It also sits in the way:
   #                a protection plugin refuses any new claim overlapping an existing one, so
   #                a player later claiming the ground around their spawn has to claim around
   #                this square rather than through it. (Default)

@@ -3,6 +3,7 @@ package com.ninja6.spiralgenesis.protection;
 import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import com.ninja6.spiralgenesis.config.ClaimOwnership;
+import me.ryanhamshire.GriefPrevention.ClaimPermission;
 import org.bukkit.Location;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.Plugin;
@@ -119,6 +120,62 @@ class GriefPreventionProtectionProviderTest {
         assertTrue(detail.contains("81"), detail);
         assertTrue(detail.contains("ADMIN_CLAIM"),
                 "a zero starting balance is the common case, so name the setting that fixes it");
+    }
+
+    // -- What the owner is granted on an administrative claim -------------------------
+
+    @Test
+    @DisplayName("Build does not imply Manage, which is the whole reason two grants are made")
+    void testBuildDoesNotGrantManage() {
+        // Asserted against the GriefPrevention on the classpath rather than taken on trust,
+        // because the fix depends on it and the enum's declaration order reads the other
+        // way: Manage is declared last, which looks like the top of an Edit > Build >
+        // Inventory > Access > Manage chain and is not one. isGrantedBy takes Manage out of
+        // the chain and answers it separately. If a future GriefPrevention folds Manage into
+        // the hierarchy, this fails and the second grant below becomes redundant rather than
+        // silently wrong.
+        assertFalse(ClaimPermission.Manage.isGrantedBy(ClaimPermission.Build),
+                "Build must not confer Manage, or the bug this guards could not have existed");
+        assertFalse(ClaimPermission.Build.isGrantedBy(ClaimPermission.Manage),
+                "Manage must not confer Build either, which is why Build is still granted");
+        assertTrue(ClaimPermission.Manage.isGrantedBy(ClaimPermission.Edit),
+                "Edit is the only level above Manage, and it is the one that cannot be granted");
+    }
+
+    @Test
+    @DisplayName("A fresh admin claim's owner is granted Build and Manage, in that order")
+    void testFreshClaimGrantsBuildAndManage() {
+        // The permission set is what decides whether a player can invite somebody onto their
+        // own spawn plot, so it is asserted as a list and not as a count. Manage is the
+        // level /trust checks - Claim.allowGrantPermission is checkPermission(player, Manage,
+        // null) - and Build is the ground, the bed and the first chest.
+        List<ClaimPermission> granted =
+                GriefPreventionProtectionProvider.missingOwnerPermissions(level -> false);
+
+        assertEquals(List.of(ClaimPermission.Build, ClaimPermission.Manage), granted);
+    }
+
+    @Test
+    @DisplayName("A claim from before the fix is topped up with Manage and not re-granted Build")
+    void testLegacyClaimGainsOnlyTheMissingGrant() {
+        // The upgrade path. Every admin claim this plugin created before Manage was granted
+        // carries Build alone, and /sgen protect walking over one must add the level it
+        // lacks rather than a second copy of the level it has: Claim.setPermission appends
+        // Manage to a plain ArrayList of managers without checking, so an unguarded repeat
+        // grows that list every pass.
+        List<ClaimPermission> granted = GriefPreventionProtectionProvider
+                .missingOwnerPermissions(level -> level == ClaimPermission.Build);
+
+        assertEquals(List.of(ClaimPermission.Manage), granted);
+    }
+
+    @Test
+    @DisplayName("A claim already carrying both grants is left entirely alone")
+    void testFullyTrustedClaimIsNotWrittenTo() {
+        // Empty is what suppresses the saveClaim as well as the setPermission calls, so this
+        // is also the assertion that a repeated backfill on a healthy server writes nothing.
+        assertTrue(GriefPreventionProtectionProvider.missingOwnerPermissions(level -> true)
+                .isEmpty());
     }
 
     // -- Behaviour with GriefPrevention absent ---------------------------------------

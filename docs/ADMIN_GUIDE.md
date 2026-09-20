@@ -434,19 +434,31 @@ behave differently in ways their names do not suggest.
 
 | | `ADMIN_CLAIM` (default) | `PLAYER_CLAIM` |
 | :--- | :--- | :--- |
-| What GriefPrevention creates | An administrative claim, owned by the server, with the player granted `Build` trust on it | An ordinary claim the player owns outright |
+| What GriefPrevention creates | An administrative claim, owned by the server, with the player granted `Build` and `Manage` trust on it | An ordinary claim the player owns outright |
 | Claim blocks | None. Charged to nobody | The full area, charged to the player's balance |
 | Works with a zero starting balance | Yes | No: every claim is refused until players are given blocks |
 | `MinimumWidth` / `MinimumArea` | Exempt. GriefPrevention applies neither to admin claims | Enforced |
 | `MaximumNumberOfClaimsPerPlayer` | Does not count against it | Counts against it |
-| Player can resize, abandon or share it | No | Yes |
+| Player can share it with `/trust` | Yes | Yes |
+| Player can resize, subdivide or abandon it | No | Yes |
 
 `ADMIN_CLAIM` is the default because it is the one that works on an untouched
 GriefPrevention install, and on a server that starts players at zero claim blocks. Its
-cost is ownership: the player is trusted to build there, which is what makes the claim
-useful to them, but the claim is not theirs. They cannot resize it, cannot abandon it, and
-cannot trust a friend onto it - only an administrator can, through GriefPrevention's own
-commands.
+cost is ownership: the player is trusted to build there and to hand out trust there, which
+is what makes the claim useful to them, but the claim itself is not theirs.
+
+The trust half is worth spelling out, because it is the half GriefPrevention does not
+derive for you. `Build` and `Manage` are separate grants in its permission model -
+`Manage` is not implied by `Build`, and `Build` is not implied by `Manage` - so the claim
+carries both. `Build` is the ground, the bed and the first chest; `Manage` is what
+`/trust`, `/untrust` and `/permissiontrust` check for, so the player can invite a friend
+onto their spawn plot and withdraw the invitation again without an administrator.
+
+What stays with the server is `Edit`: resizing, subdividing and deleting. GriefPrevention
+will not let that level be delegated on an administrative claim at all - it belongs to
+`griefprevention.adminclaims` - so on an `ADMIN_CLAIM` server those three are an operator's
+job. If that is the wrong trade for your server, `PLAYER_CLAIM` is the alternative, and
+the two sections above are its price.
 
 `PLAYER_CLAIM` gives the player a claim that is genuinely theirs, and every one of
 GriefPrevention's rules then applies to it. Read the next two sections before switching.
@@ -645,7 +657,8 @@ matches what SpiralGenesis would have created at that point: the same square to 
 no subdivisions inside it, and either the same owner under `PLAYER_CLAIM` or - under
 `ADMIN_CLAIM`, where there is no owner to compare against - an administrative claim
 carrying the explicit `Build` trust SpiralGenesis grants in the same breath as creating
-one. A claim the player has since resized outward over their house, one belonging to
+one. `Build` and not `Manage` is deliberately the signature it looks for: claims created
+before SpiralGenesis granted `Manage` carry only `Build`, and they are still ours. A claim the player has since resized outward over their house, one belonging to
 somebody else, or one made by hand is reported and left completely alone. Declining costs
 you one stale square; deleting the wrong claim costs a player everything inside it.
 
@@ -670,6 +683,13 @@ new permission node. It walks every stored spawn and claims the square around it
   and is counted as skipped. There is no flag in `data.yml`, nothing to migrate, and no
   way for an interrupted run to leave anything in a state a later run reads wrongly. Run
   it again after fixing a setting that was refusing claims.
+* **Under `ADMIN_CLAIM` it also repairs an existing spawn claim that is missing the
+  `Manage` grant.** SpiralGenesis granted `Build` alone before this was fixed, which left
+  those players unable to `/trust` anyone onto their own plot. A claim that is still
+  recognisably one of ours - the same square, no subdivisions, the owner trusted on it -
+  has the missing grant added, and the fact is said in the skip reason. The claim is
+  otherwise untouched, it is still counted as skipped rather than created, and a claim that
+  is not recognisably ours or already carries both grants is not written to at all.
 * **It does not freeze the server.** The work has to happen on the main thread, and a
   large `data.yml` has thousands of entries, so the job does a bounded slice per tick - at
   most 50 entries, and at most two milliseconds - and carries on across ticks until it is
