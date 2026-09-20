@@ -7,9 +7,14 @@ import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Map;
@@ -34,9 +39,23 @@ public class YamlDataStorage implements DataStorage {
 
     private final JavaPlugin plugin;
     private final Path dataFile;
+    /** Scratch file the next snapshot is written to before it replaces {@link #dataFile}. */
+    private final Path tempFile;
 
     /** Guards {@link #yaml} mutation and serialisation. */
     private final Object yamlLock = new Object();
+
+    /**
+     * Serialises whole save operations against each other.
+     *
+     * <p>{@link #save()} has three callers on three different threads - the asynchronous
+     * flush task, {@code /sgen reload} on the main thread, and shutdown - so two of them
+     * can overlap. They would otherwise share one temp path, each truncating the other's
+     * half-written scratch file and racing to rename it, which can publish an older
+     * snapshot over a newer one. Held across serialisation as well as the write, so the
+     * snapshot that reaches disk last is always the one taken last.
+     */
+    private final Object writeLock = new Object();
     private YamlConfiguration yaml;
 
     private final Map<UUID, StoredSpawn> spawnCache = new ConcurrentHashMap<>();
@@ -49,6 +68,7 @@ public class YamlDataStorage implements DataStorage {
     public YamlDataStorage(JavaPlugin plugin) {
         this.plugin = plugin;
         this.dataFile = plugin.getDataFolder().toPath().resolve("data.yml");
+        this.tempFile = dataFile.resolveSibling(dataFile.getFileName() + ".tmp");
     }
 
     @Override
@@ -58,8 +78,13 @@ public class YamlDataStorage implements DataStorage {
             if (!Files.exists(dataFile)) {
                 Files.createFile(dataFile);
             }
+            // A scratch file left by a crash is never a recovery candidate: the rename that
+            // publishes it is the last step, so anything still under the temp name was
+            // incomplete when the process died, and data.yml still holds the last complete
+            // snapshot. Removing it keeps a stale half-file from being mistaken for a backup.
+            Files.deleteIfExists(tempFile);
         } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Failed to create data.yml", e);
+            plugin.getLogger().log(Level.SEVERE, "Failed to prepare data.yml", e);
         }
 
         YamlConfiguration loaded = YamlConfiguration.loadConfiguration(dataFile.toFile());
@@ -138,23 +163,75 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public void save() {
-        String serialised;
-        synchronized (yamlLock) {
-            if (yaml == null) {
-                return;
+        synchronized (writeLock) {
+            String serialised;
+            synchronized (yamlLock) {
+                if (yaml == null) {
+                    return;
+                }
+                yaml.set("current-spiral-index", currentIndex.get());
+                // Serialising under the yaml lock is cheap and in-memory; the disk write
+                // below happens outside it so a slow disk never stalls an allocation.
+                serialised = yaml.saveToString();
+                dirty.set(false);
             }
-            yaml.set("current-spiral-index", currentIndex.get());
-            // Serialising under the lock is cheap and in-memory; the actual disk write below
-            // happens outside it so a slow disk never stalls a caller holding the lock.
-            serialised = yaml.saveToString();
-            dirty.set(false);
+
+            try {
+                writeAtomically(serialised);
+            } catch (IOException e) {
+                dirty.set(true); // Retry on the next flush rather than dropping the change.
+                plugin.getLogger().log(Level.SEVERE, "Failed to save data.yml", e);
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException cleanup) {
+                    plugin.getLogger().log(Level.WARNING,
+                            "Failed to remove the partial data.yml.tmp", cleanup);
+                }
+            }
+        }
+    }
+
+    /**
+     * Publishes a snapshot without ever leaving {@code data.yml} truncated.
+     *
+     * <p>Writing in place would mean truncating the only copy of every plot assignment and
+     * the spiral counter, then refilling it: a crash, a forced stop or a full disk inside
+     * that window leaves an empty or half-written file and the allocations are gone. The
+     * snapshot therefore goes to a sibling scratch file, is forced to the platter, and only
+     * then replaces the target by rename - so a reader sees either the previous complete
+     * file or the new complete one.
+     *
+     * <p>The rename is atomic where the filesystem supports it. {@code ATOMIC_MOVE} is
+     * required on the same filesystem by every mainstream platform, but a few - network and
+     * fuse mounts in particular - refuse it, and a plain replace there is still strictly
+     * better than truncating in place.
+     *
+     * <p>The containing directory is deliberately not synced. That final fsync is what makes
+     * the rename itself survive a power cut on ext4-style filesystems, but the JDK exposes no
+     * portable way to open a directory as a channel - it fails outright on Windows, a
+     * first-class target for this plugin. The data loss this closes is the truncation window,
+     * which is wide and routine; the unsynced-rename window is a single metadata commit.
+     */
+    private void writeAtomically(String serialised) throws IOException {
+        byte[] bytes = serialised.getBytes(StandardCharsets.UTF_8);
+        try (FileChannel channel = FileChannel.open(tempFile,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING,
+                StandardOpenOption.WRITE)) {
+            ByteBuffer buffer = ByteBuffer.wrap(bytes);
+            while (buffer.hasRemaining()) {
+                channel.write(buffer);
+            }
+            // Without this the rename can be committed ahead of the contents it publishes,
+            // which turns a crash into a valid-looking but empty data.yml.
+            channel.force(true);
         }
 
         try {
-            Files.writeString(dataFile, serialised, StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            dirty.set(true); // Retry on the next flush rather than dropping the change.
-            plugin.getLogger().log(Level.SEVERE, "Failed to save data.yml", e);
+            Files.move(tempFile, dataFile,
+                    StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+        } catch (AtomicMoveNotSupportedException e) {
+            Files.move(tempFile, dataFile, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
