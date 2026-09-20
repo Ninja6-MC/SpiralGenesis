@@ -34,6 +34,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 import java.util.function.IntSupplier;
 import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Main plugin lifecycle entrypoint for SpiralGenesis.
@@ -42,7 +43,25 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     private PluginConfig pluginConfig;
     private DataStorage dataStorage;
-    private SpawnManager spawnManager;
+    /**
+     * The bound spawn manager, or {@code null} while {@code origin.world} names no loaded
+     * world.
+     *
+     * <p>Volatile because a reload can unbind it while allocation is running: the reload
+     * arrives on the thread that typed the command, and {@code initSpawnManager} is also
+     * reached from {@link #handlePlayerFirstJoin}, which the action gate invokes from
+     * whichever region thread saw the player act. A stale non-null read here is the whole
+     * failure this refusal exists to prevent - it would keep allocating into a world the
+     * configuration no longer names.
+     */
+    private volatile SpawnManager spawnManager;
+
+    /**
+     * Configured world name the unresolved-world error has already been reported for.
+     *
+     * <p>Volatile for the same reason, and written from the same threads.
+     */
+    private volatile String unresolvedWorldReported;
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
@@ -213,6 +232,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // are all reloadable, and the minimum-size check the provider makes at construction
         // is only correct for the size it was constructed with.
         this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
+        // Cleared so an operator-initiated reload always re-reports the bind outcome. The
+        // suppression exists to keep the per-join retry quiet, and an administrator who has
+        // just edited the file and reloaded is owed the answer whether or not the name they
+        // tried is the same one that failed last time.
+        this.unresolvedWorldReported = null;
         initSpawnManager();
     }
 
@@ -226,23 +250,44 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
-     * Binds the spawn manager to the configured world, or to the first loaded one.
+     * Binds the spawn manager to the configured world, and to nothing else.
      *
-     * <p>Package-private as a test seam: because of that fallback the manager is only ever
-     * absent on a server with no worlds at all, so the branch in
-     * {@link #handlePlayerFirstJoin} that copes with it cannot otherwise be reached from a
-     * test that has a player to allocate.
+     * <p>There is deliberately no fallback to another world. Allocation force-overwrites a
+     * player's respawn point and teleports them, so a bind to the wrong world cannot be
+     * undone for anyone it has already touched, while declining to bind can be fixed by
+     * correcting one line of config. Every caller of {@link #getSpawnManager()} already
+     * treats an absent manager as "cannot allocate yet".
+     *
+     * <p>Absent is not fatal: {@link #handlePlayerFirstJoin} calls this again whenever the
+     * manager is missing, so a world that only exists after enable - world managers create
+     * theirs from their own {@code onEnable}, in load order nobody controls - is picked up
+     * on the first join that needs it. The error is reported once per configured name so
+     * that retry does not fill the log.
+     *
+     * <p>Package-private as a test seam.
      */
     void initSpawnManager() {
-        World world = Bukkit.getWorld(pluginConfig.getWorldName());
-        if (world == null && !Bukkit.getWorlds().isEmpty()) {
-            world = Bukkit.getWorlds().get(0);
+        String configured = pluginConfig.getWorldName();
+        World world = Bukkit.getWorld(configured);
+        if (world == null) {
+            if (!configured.equals(unresolvedWorldReported)) {
+                unresolvedWorldReported = configured;
+                String loaded = Bukkit.getWorlds().stream().map(World::getName)
+                        .collect(Collectors.joining(", "));
+                getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded, "
+                        + "so no spawn will be allocated. Loaded worlds: "
+                        + (loaded.isEmpty() ? "(none)" : loaded)
+                        + ". Correct origin.world and run /sgen reload.");
+            }
+            // Cleared as well as left unset: a reload that breaks the name must not leave
+            // the previous world still bound behind a config that no longer names it.
+            this.spawnManager = null;
+            return;
         }
-        if (world != null) {
-            this.spawnManager = new SpawnManager(this, world, pluginConfig);
-        } else {
-            getLogger().warning("Could not find target world '" + pluginConfig.getWorldName() + "' for SpawnManager.");
-        }
+        unresolvedWorldReported = null;
+        this.spawnManager = new SpawnManager(this, world, pluginConfig);
+        getLogger().info("SpawnManager bound to world '" + world.getName()
+                + "' (origin.world: '" + configured + "').");
     }
 
     /**
@@ -267,13 +312,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
 
         if (spawnManager == null) {
-            // Effectively unreachable: initSpawnManager falls back to the first loaded world,
-            // so this needs Bukkit.getWorlds() to be empty, which cannot be true while a
-            // player is connected. Left as a guard rather than an assertion because the
-            // fallback is a detail of that method, not a contract.
+            // Reached whenever origin.world names a world the server has not loaded:
+            // initSpawnManager refuses to bind anywhere else, and the re-resolve above is
+            // what picks the world up if it appears later.
             //
             // Returns before takeAllocation, so the player keeps their place in the gate.
-            getLogger().severe("Cannot allocate spawn: SpawnManager world is unavailable!");
+            getLogger().severe("Cannot allocate spawn for " + player.getName()
+                    + ": no world is bound. See the origin.world error above.");
             return;
         }
 
@@ -374,6 +419,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }).exceptionally(ex -> {
                 getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
                 applied.complete(null);
+                regateIfUnbound(player, clientType);
                 return null;
             });
         } catch (Exception e) {
@@ -384,6 +430,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
                     + " failed before it could start.", e);
             applied.complete(null);
+            regateIfUnbound(player, clientType);
         } catch (Throwable t) {
             applied.complete(null);
             throw t;
@@ -423,7 +470,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * cannot be reached from outside.
      */
     CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
-        return spawnManager.allocateNextSafeSpawn(indexSupplier);
+        // Read once. The caller's guard is no longer proof that the field is still set: a
+        // reload onto an unresolvable world unbinds it, and it can land between that guard
+        // and this line. Failing the future rather than dereferencing null keeps the
+        // outcome a reported failure instead of a swallowed NullPointerException.
+        SpawnManager manager = spawnManager;
+        if (manager == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "no world is bound; origin.world names no loaded world"));
+        }
+        return manager.allocateNextSafeSpawn(indexSupplier);
     }
 
     /**
@@ -524,7 +580,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * it was specified.
      */
     CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
-        return spawnManager.findSafeSpawnInCell(index);
+        // Read once, for the reason allocateSpawn does: repairSpawn null-checked the
+        // manager several ticks ago, across a revalidation that awaits a chunk.
+        SpawnManager manager = spawnManager;
+        if (manager == null) {
+            return CompletableFuture.failedFuture(new IllegalStateException(
+                    "no world is bound; origin.world names no loaded world"));
+        }
+        return manager.findSafeSpawnInCell(index);
     }
 
     /**
@@ -683,6 +746,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (actionGate != null) {
             actionGate.forget(uuid);
         }
+    }
+
+    /**
+     * Puts a player back in the gate when an allocation failed with no world bound.
+     *
+     * <p>{@code takeAllocation} has already dropped them, on the assumption that the caller
+     * holding them will finish the job. A reload onto an unresolvable world between that
+     * point and the scan breaks that assumption: nothing was allocated, nothing is watching
+     * them any more, and they would go the rest of the session with no plot. Returning them
+     * to the gate makes their next action retry it, which is what fixing the configuration
+     * needs to be enough.
+     */
+    private void regateIfUnbound(Player player, String clientType) {
+        if (spawnManager != null || actionGate == null || !player.isOnline()) {
+            return;
+        }
+        actionGate.markPending(player, clientType);
+        getLogger().warning("No world is bound, so " + player.getName()
+                + " was not allocated; they are held by the gate and retried on their next "
+                + "action once origin.world names a loaded world.");
     }
 
     /**

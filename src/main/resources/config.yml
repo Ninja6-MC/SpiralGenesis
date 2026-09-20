@@ -4,7 +4,9 @@
 
 # Global spiral origin settings
 origin:
-  # The world where spiral allocation takes place
+  # The world where spiral allocation takes place. This must match a loaded world's name
+  # exactly; no other world is ever substituted for it. If the name does not resolve, the
+  # plugin logs a SEVERE error and allocates nothing until it does.
   world: "world"
   # Global X center coordinate
   x: 0
