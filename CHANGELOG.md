@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A player can share their own spawn plot again.** Under the default
+  `protection.claim-as: ADMIN_CLAIM` the spawn claim granted the player
+  `ClaimPermission.Build` and nothing else, and `Build` does not imply `Manage` in
+  GriefPrevention's permission model - the two are separate grants and `isGrantedBy`
+  connects neither to the other. `/trust` checks for `Manage`, so the player could build on
+  the plot the plugin had made for them but could not invite anybody onto it, and because
+  administrative claims are administered through `griefprevention.adminclaims`, no
+  ordinary player could work around it. The claim now carries both grants. Resizing,
+  subdividing and deleting still belong to the server, because GriefPrevention refuses to
+  delegate `ClaimPermission.Edit` on an administrative claim at all; `PLAYER_CLAIM` remains
+  the setting for a plot the player owns outright. No default changed and no configuration
+  key was added or renamed. Claims created before this fix carry `Build` alone and are
+  repaired in place by `/sgen protect`, which under `ADMIN_CLAIM` now adds the missing
+  grant to a claim it still recognises as one of its own and says so in the skip reason.
+
 ### Changed
 - **The Hangar resource page is synced on release.** After the version upload succeeds,
   the release workflow writes `docs/modrinth-description.md`, without its generated
