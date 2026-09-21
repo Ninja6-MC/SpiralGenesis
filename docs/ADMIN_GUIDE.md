@@ -465,13 +465,15 @@ else a manager, and cannot clear the claim's trust list in one go. If that is th
 trade for your server, `PLAYER_CLAIM` is the alternative, and the two sections above are
 its price.
 
-**How a player can lock themselves out of their own plot.** GriefPrevention holds one
-trust level per player per claim, and a new grant replaces the old one instead of adding
-to it. A player who runs `/accesstrust` or `/containertrust` on their own name - almost
-always by mistake - replaces their `Build` with the lower level. Their `Manage` survives
-and does not help: `/trust` only lets someone grant a level they hold themselves, so they
-cannot give `Build` back. A second manager an operator has added with `/permissiontrust`
-can do the same to the plot holder, down to whatever level that manager holds. Nobody
+**How a player can lock themselves out of their own plot.** GriefPrevention holds one of
+`Build`, container or access trust per player per claim, and a new grant of one of those
+replaces the old one instead of adding to it. `Manage` is kept in a separate list and is
+not affected. A player who runs `/accesstrust` or `/containertrust` on their own name -
+almost always by mistake - replaces their `Build` with the lower level. Their `Manage`
+survives and does not help: GriefPrevention only lets someone grant a level they hold
+themselves, so they cannot give `Build` back. A second manager an operator has added can
+replace the plot holder's `Build` with any level that manager holds themselves; one added
+with `/permissiontrust` alone holds none of the three and cannot downgrade anyone. Nobody
 without `Edit` can remove the plot holder's `Manage`, because `/untrust` on a manager is
 one of the three `Edit` commands above.
 
