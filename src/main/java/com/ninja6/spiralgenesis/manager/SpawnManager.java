@@ -35,6 +35,14 @@ public class SpawnManager {
     private final World world;
     private final PluginConfig config;
 
+    /**
+     * The border geometry a scan has already given up against, or {@code null} if none has.
+     *
+     * <p>Volatile because allocations resolve on whichever region thread owned the last
+     * candidate, and the next one may start on another.
+     */
+    private volatile BorderGeometry exhaustedAgainst;
+
     private static final Set<Material> HAZARD_MATERIALS = EnumSet.of(
             Material.WATER, Material.LAVA, Material.ICE, Material.PACKED_ICE,
             Material.BLUE_ICE, Material.SEAGRASS, Material.TALL_SEAGRASS,
@@ -103,12 +111,67 @@ public class SpawnManager {
      * allocations can never converge on the same cell. Probes are spread one-per-tick: this
      * keeps chunk generation off any single tick's budget and bounds the callback stack.
      *
+     * <p>Fails with {@link BorderExhaustedException} when the whole scan stayed outside the
+     * world border, which is the one case where there is no point to fall back to. Once that
+     * has happened, later calls are refused on the spot, without claiming an index, until
+     * the border changes.
+     *
      * @param indexSupplier atomic source of candidate spiral indices
      * @return CompletableFuture resolving to safe LocationResult
      */
     public CompletableFuture<LocationResult> allocateNextSafeSpawn(IntSupplier indexSupplier) {
         CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        nextCell(new Scan(indexSupplier, false, result));
+
+        // Refused before a single index is claimed. A scan that has already walked its whole
+        // budget outside this exact border will do it again for the same reason, and every
+        // repeat would advance the spiral by another max-scan-attempts indices that no
+        // player is ever recorded against - once per join, for every affected player, for
+        // as long as the border stays where it is.
+        //
+        // Held against the border's geometry rather than as a flag, so widening or moving
+        // the border makes the next join scan again with nothing for an operator to reset.
+        //
+        // Read-then-act, and deliberately not made atomic: allocations already in flight when
+        // the first exhaustion is recorded each finish their own scan, so a join surge costs
+        // one scan per joiner in flight and one only. Serialising them would buy nothing but
+        // a lock on the join path.
+        BorderGeometry gaveUpAgainst = exhaustedAgainst;
+        if (gaveUpAgainst != null && gaveUpAgainst.equals(BorderGeometry.of(world))) {
+            result.completeExceptionally(new BorderExhaustedException(
+                    "Spawn allocation refused: an earlier scan found nothing inside the world "
+                            + "border of world '" + world.getName() + "' and the border has not "
+                            + "changed since. Widen the border or move its centre and the next "
+                            + "join scans again on its own; if you change origin.x, origin.z or "
+                            + "cell-size instead, run /sgen reload."));
+            return result;
+        }
+
+        nextCell(new Scan(indexSupplier, false, true, result));
+        return result;
+    }
+
+    /**
+     * Allocates a spawn for a diagnostic run rather than for a player.
+     *
+     * <p>Identical to {@link #allocateNextSafeSpawn} except that it neither consults nor
+     * records the border exhaustion above, because a simulation scans an index range of its
+     * own: {@code SpawnSimulator} counts from zero so that a run cannot advance the live
+     * spiral, which means its cells are near the origin no matter how far the live spiral
+     * has grown, and a conclusion drawn about one range says nothing about the other.
+     *
+     * <p>Both directions of that would be wrong. A real exhaustion far out must not refuse
+     * the one diagnostic an operator has for it, which would answer with a failure claiming
+     * nothing is inside the border while the origin plainly is. And a simulation that
+     * exhausts near an off-centre origin must not be able to refuse joining players at
+     * indices that are inside the border: a read-only diagnostic cannot be allowed to lock
+     * allocation out.
+     *
+     * @param indexSupplier throwaway source of indices, never the live reservation
+     * @return CompletableFuture resolving to safe LocationResult
+     */
+    public CompletableFuture<LocationResult> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<LocationResult> result = new CompletableFuture<>();
+        nextCell(new Scan(indexSupplier, false, false, result));
         return result;
     }
 
@@ -130,7 +193,10 @@ public class SpawnManager {
      */
     public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
         CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        nextCell(new Scan(() -> index, true, result));
+        // Live, not diagnostic: it repairs a real player's plot. The distinction never comes
+        // up in practice, because a cell-only scan resolves to null before the exhaustion
+        // branch is reached.
+        nextCell(new Scan(() -> index, true, true, result));
         return result;
     }
 
@@ -166,6 +232,31 @@ public class SpawnManager {
         // Flooding shows up at the feet and head; lava poured on the plot shows up
         // underfoot once it settles into the surface block allocation approved.
         return !isHazard(x, y, z) && !isHazard(x, y + 1, z) && !isHazard(x, y - 1, z);
+    }
+
+    /**
+     * Raised when a scan spent its whole budget without finding one point inside the border.
+     *
+     * <p>Distinct from an ordinary allocation failure because it is neither transient nor a
+     * defect: the spiral has grown past the border, and no retry helps until an operator
+     * widens the border or moves the origin.
+     *
+     * <p>Carries no stack trace. It is raised from exactly one place, its message says
+     * everything an operator can act on, and the caller logs it per join: frames of
+     * scheduler internals under a line about a misconfigured border are noise, not evidence.
+     */
+    public static final class BorderExhaustedException extends IllegalStateException {
+
+        private static final long serialVersionUID = 1L;
+
+        BorderExhaustedException(String message) {
+            super(message);
+        }
+
+        @Override
+        public synchronized Throwable fillInStackTrace() {
+            return this;
+        }
     }
 
     /**
@@ -232,6 +323,34 @@ public class SpawnManager {
     }
 
     /**
+     * Whether a candidate column stands inside the world border.
+     *
+     * <p>Y is irrelevant to the border, which is a column test, so the cheapest available
+     * value is used rather than a heightmap read: this runs before the candidate's chunk
+     * has been requested, and reading the surface here would defeat the point of asking
+     * early.
+     */
+    private boolean isInsideBorder(int x, int z) {
+        return world.getWorldBorder().isInside(new Location(world, x + 0.5, 0, z + 0.5));
+    }
+
+    /**
+     * The part of a world border that decides whether a point is inside it.
+     *
+     * <p>Compared by value, never by identity: {@code getWorldBorder()} is free to hand
+     * back a different object each call, and a border that is being moved changes its
+     * centre and size without changing anything else.
+     */
+    private record BorderGeometry(double centreX, double centreZ, double size) {
+
+        private static BorderGeometry of(World world) {
+            var border = world.getWorldBorder();
+            Location centre = border.getCenter();
+            return new BorderGeometry(centre.getX(), centre.getZ(), border.getSize());
+        }
+    }
+
+    /**
      * Claims the next spiral index and restarts the candidate search inside its cell.
      */
     private void nextCell(Scan scan) {
@@ -263,6 +382,24 @@ public class SpawnManager {
         int[] offset = SpiralMath.indexToGrid(scan.candidate);
         final int x = scan.centreX + (offset[0] * config.getStride());
         final int z = scan.centreZ + (offset[1] * config.getStride());
+
+        // Ahead of the chunk request, because the border test needs nothing but x and z.
+        // Behind it, a scan that never reaches inside the border would generate a chunk per
+        // candidate - 96 of them by default - and write region files for land no player may
+        // legally stand on.
+        //
+        // Read per candidate rather than once per scan: the border can be moved or resized
+        // at any time, including while an allocation is in flight.
+        if (!isInsideBorder(x, z)) {
+            scan.candidatesProbed++;
+            scan.rejections.merge(RejectionReason.OUTSIDE_BORDER, 1, Integer::sum);
+            // Never scored, so it can never win the cell and can never become the least-bad
+            // fallback either. Outside the border the terrain is beside the point: however
+            // good the ground is, a player standing on it takes border damage until they
+            // die, and the respawn point forced onto that same spot puts them straight back.
+            runGlobally(scan.result, () -> nextCandidate(scan));
+            return;
+        }
 
         loadChunk(x >> 4, z >> 4).whenComplete((chunk, error) -> {
             if (error != null) {
@@ -312,6 +449,33 @@ public class SpawnManager {
         }
         if (scan.attempt < config.getMaxScanAttempts()) {
             nextCell(scan);
+            return;
+        }
+
+        // Exhausted the budget without seeing one point inside the world border. The spiral
+        // only grows, so advancing walks further out and every later cell is further
+        // outside than this one; there is nothing left to settle on and nowhere useful to
+        // advance to. Failing is the only outcome that neither strands the player outside
+        // the border nor spins: the caller logs it and leaves them standing where they are,
+        // which is inside the border by definition.
+        if (scan.bestOverall == null) {
+            String message = "Spawn allocation failed: every candidate across " + scan.attempt
+                    + " cells fell outside the world border of world '" + world.getName()
+                    + "'. The spiral has outgrown the border; widen it, or move origin.x and "
+                    + "origin.z so the spiral keeps growing inside it. This scan claimed "
+                    + scan.attempt + " spiral indices, the last of them " + scan.index
+                    + ", and none of them holds a plot.";
+            if (scan.liveSpiral) {
+                // Recorded before the failure is published, so the next join is refused
+                // without claiming an index rather than repeating this scan and burning
+                // another max-scan-attempts of them. Never recorded for a diagnostic run,
+                // whose cells say nothing about where the live spiral has reached.
+                exhaustedAgainst = BorderGeometry.of(world);
+                message += " Further allocations are refused without claiming an index until "
+                        + "the border changes.";
+            }
+            plugin.getLogger().severe(message);
+            scan.result.completeExceptionally(new BorderExhaustedException(message));
             return;
         }
 
@@ -573,6 +737,8 @@ public class SpawnManager {
         private final IntSupplier indexSupplier;
         /** Pins the scan to the single cell it starts in; see {@link #findSafeSpawnInCell}. */
         private final boolean cellOnly;
+        /** False for a diagnostic run, whose index range is not the live spiral's. */
+        private final boolean liveSpiral;
         private final CompletableFuture<LocationResult> result;
 
         private int attempt;
@@ -587,10 +753,11 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(IntSupplier indexSupplier, boolean cellOnly,
+        private Scan(IntSupplier indexSupplier, boolean cellOnly, boolean liveSpiral,
                      CompletableFuture<LocationResult> result) {
             this.indexSupplier = indexSupplier;
             this.cellOnly = cellOnly;
+            this.liveSpiral = liveSpiral;
             this.result = result;
         }
 

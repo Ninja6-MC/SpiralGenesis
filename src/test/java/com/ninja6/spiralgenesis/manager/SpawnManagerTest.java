@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.SpiralMath;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.Test;
 import java.io.StringReader;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -27,8 +29,10 @@ import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -75,12 +79,17 @@ class SpawnManagerTest {
      * {@code whenComplete}, turning any bug into an unexplained timeout.
      */
     private static class InlineSpawnManager extends SpawnManager {
+
+        /** Counts what a real server would have generated, for the tests that care. */
+        private final AtomicInteger chunkLoads = new AtomicInteger();
+
         InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
         }
 
         @Override
         CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+            chunkLoads.incrementAndGet();
             return CompletableFuture.completedFuture(null);
         }
 
@@ -674,6 +683,197 @@ class SpawnManagerTest {
 
         assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
+    }
+
+    // --- World border ------------------------------------------------------------------
+
+    /**
+     * Confines the world border to a box around the given centre.
+     *
+     * <p>MockBukkit's border spans {@code centre +/- size} rather than the half-size vanilla
+     * uses, so these fixtures state the reach they want and do not convert. What is under
+     * test is which side of the border a candidate falls on, not how the size is measured.
+     */
+    private void borderAround(double centreX, double centreZ, double reach) {
+        world.getWorldBorder().setCenter(centreX, centreZ);
+        world.getWorldBorder().setSize(reach);
+    }
+
+    @Test
+    @DisplayName("A cell outside the world border is skipped even though its terrain is safe")
+    void candidatesOutsideTheBorderAreRejected() throws Exception {
+        // The border reaches x in (44, 84): the whole of cell 0 is outside it, and cell 1's
+        // centre is inside. Terrain everywhere is the mock's default flat, safe surface, so
+        // the border is the only thing that can reject anything here.
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(1, res.index(), "cell 0 lies outside the border, so it must be skipped");
+        assertEquals(CELL + 0.5, res.location().getX(), 1e-9);
+        assertFalse(res.fallback(), "a real point was found; this is not a fallback");
+        assertEquals(12, res.rejections().get(RejectionReason.OUTSIDE_BORDER),
+                "every candidate of the skipped cell should be attributed to the border");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A scan that never reaches inside the border fails instead of stranding the player")
+    void scanEntirelyOutsideTheBorderFails() {
+        // The border is nowhere near the spiral, so no cell the scan can reach is inside it.
+        // Advancing cannot help: the spiral only grows, so each later cell is further out.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        InlineSpawnManager manager = new InlineSpawnManager(plugin, world, config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices),
+                "the failure must name the border, not surface as a generic error");
+        assertEquals(budget, indices.get(),
+                "the scan must stop at max-scan-attempts rather than walking outward forever");
+        assertEquals(0, manager.chunkLoads.get(),
+                "the border test must come before the chunk request, or the scan generates "
+                        + "terrain outside the border that no player may stand on");
+    }
+
+    @Test
+    @DisplayName("A repeat join after border exhaustion claims no further indices")
+    void repeatedAllocationAfterBorderExhaustionBurnsNoIndices() {
+        // The scan cannot succeed and nothing is written for the player, so the next join
+        // arrives unallocated and asks again. Rescanning would advance the spiral by another
+        // max-scan-attempts indices that hold no plot, every join, for every player.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+        assertEquals(budget, indices.get(), "the first scan pays for itself, once");
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices),
+                "the repeat must fail the same way rather than placing the player");
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+        assertEquals(budget, indices.get(),
+                "a refusal must not claim an index: the spiral stood still across two retries");
+    }
+
+    @Test
+    @DisplayName("Widening the border lets allocation run again without an operator reset")
+    void wideningTheBorderResumesAllocation() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, indices));
+
+        // The refusal is held against the border's geometry, not as a latch: the operator
+        // fixes the border and the next join works, with nothing to clear by hand.
+        borderAround(0, 0, 1000);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation is not refused by an exhaustion the live spiral ran into")
+    void simulationIsNotRefusedByALiveExhaustion() throws Exception {
+        // The border covers the origin cell's centre and nothing a live spiral this far out
+        // can reach, which is the state an operator runs /sgen simulate to understand.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                allocationFailure(manager, new AtomicInteger(100)));
+
+        // Refusing here would answer the one diagnostic for this failure with a line claiming
+        // nothing is inside the border, while the origin plainly is.
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, report.completed(), "the simulation must still run and report");
+    }
+
+    @Test
+    @DisplayName("A simulation cannot refuse a player allocation the live spiral could still fill")
+    void simulationCannotRefuseALaterAllocation() throws Exception {
+        // The border sits over cell (2,0) and misses the origin, so a simulation counting
+        // from zero exhausts while the cells the live spiral has reached are inside.
+        borderAround(2 * CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
+                rootCause(SpawnSimulator.run(manager, 1)),
+                "the simulation should exhaust near the origin");
+
+        // A read-only diagnostic must not be able to lock allocation out.
+        int insideIndex = indexOfGrid(2, 0);
+        AtomicInteger indices = new AtomicInteger(insideIndex);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(insideIndex, res.index(), "the joining player's own cell was usable");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    /** The spiral index that lands on a given grid cell. */
+    private static int indexOfGrid(int gridU, int gridV) {
+        for (int index = 0; index < 10_000; index++) {
+            int[] grid = SpiralMath.indexToGrid(index);
+            if (grid[0] == gridU && grid[1] == gridV) {
+                return index;
+            }
+        }
+        throw new AssertionError("no spiral index maps to (" + gridU + ", " + gridV + ")");
+    }
+
+    /** Unwraps the completion wrappers a chained future adds, and hands back the cause. */
+    private static Throwable rootCause(CompletableFuture<?> pending) {
+        ExecutionException thrown = assertThrows(ExecutionException.class,
+                () -> pending.get(10, TimeUnit.SECONDS));
+        Throwable cause = thrown.getCause();
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /** Runs an allocation that is expected to fail, and hands back the cause. */
+    private Throwable allocationFailure(SpawnManager manager, AtomicInteger indices) {
+        CompletableFuture<SpawnManager.LocationResult> pending =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        ExecutionException thrown = assertThrows(ExecutionException.class,
+                () -> pending.get(10, TimeUnit.SECONDS));
+        return thrown.getCause();
+    }
+
+    @Test
+    @DisplayName("An in-cell repair of a cell outside the border finds nothing rather than failing")
+    void inCellRepairOutsideTheBorderResolvesToNothing() throws Exception {
+        // Cell 1 sits outside a border drawn around the origin. A repair owns its cell and
+        // cannot leave it, so the honest answer is the same one an unusable cell already
+        // gives: nothing found, assignment untouched, caller sends them to world spawn.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+                "a cell outside the border holds no usable point");
     }
 
     /**
