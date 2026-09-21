@@ -130,6 +130,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   respawn that fired `PlayerRespawnEvent` without its point failing left the player in a
   set that only their next death cleared, so one entry stayed behind per player who quit
   before dying again. The entry is now dropped on quit.
+- **A step, slab or trapdoor under your spawn point no longer moves it.** The death-time
+  re-check treated anything a player can pass through as a missing floor, so a staircase
+  dug down from the spawn point or an open trapdoor over it failed, and the repair moved
+  the plot away from the build. The floor is now whatever has a collision shape under
+  the centre of the column: slabs, stairs, closed trapdoors, carpet, two or more layers of
+  snow and a closed fence gate all count, and air, fluids, plants, a single snow layer, a
+  door, an open trapdoor or an open fence gate do not. When the block under the spawn is
+  not a floor, a step of one block down onto a floor is accepted too. Anything deeper
+  still fails, so a spawn over a real drop is still repaired. The floor that is used,
+  and the block stepped into, get the same checks as before for water, lava, magma,
+  cactus and campfires. Allocation of new plots is unchanged.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
