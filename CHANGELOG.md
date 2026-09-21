@@ -71,10 +71,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   respawn, so the player landed at world spawn instead. When the server finds the bed or
   anchor gone during the respawn and clears the respawn point (`PlayerSetSpawnEvent` with
   cause `PLAYER_RESPAWN`), the plot is now stored in its place and, on Folia, the player is
-  moved there as soon as they are placed; with `doImmediateRespawn` as well. The respawn
-  itself still lands at world spawn for that one moment. A player left with no respawn
-  point at all has the plot restored when they die. A bed or anchor that still works, and
-  a point forced elsewhere such as by `/spawnpoint`, is left alone on both platforms.
+  moved there as soon as they are placed, after the plot passes a fresh safety check;
+  with `doImmediateRespawn` as well. The respawn itself still lands at world spawn for
+  that one moment. When the point the server rejected is the plot itself, flooded or
+  built over, nothing is changed and the player stays at world spawn while the existing
+  repair runs. A player left with no respawn point at all has the plot restored when they
+  die. A bed or anchor that still works, and a point forced elsewhere such as by
+  `/spawnpoint`, is left alone on both platforms.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

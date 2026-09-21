@@ -7,6 +7,8 @@ import be.seeseemelk.mockbukkit.WorldMock;
 import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
@@ -17,6 +19,7 @@ import org.bukkit.damage.DamageType;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -29,6 +32,7 @@ import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -88,9 +92,60 @@ class RespawnFallbackTest {
         Location point;
         boolean forced;
         final java.util.List<Location> teleports = new ArrayList<>();
+        /**
+         * Set while a Folia respawn has the player out of every region. Reading their
+         * respawn point then throws on the server, from {@code CraftHumanEntity.getHandle},
+         * so it throws here too.
+         */
+        boolean detached;
+        /** Tasks for the player's own thread, run by {@link #place} as the server would. */
+        private final java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
 
         RespawnPlayer(ServerMock server, String name) {
             super(server, name);
+        }
+
+        /**
+         * The respawn has placed the player, so their scheduler runs again. Tasks queued
+         * while running are run as well, as they would be on later ticks.
+         */
+        void place() {
+            detached = false;
+            Runnable next;
+            while ((next = queued.poll()) != null) {
+                next.run();
+            }
+        }
+
+        @Override
+        public EntityScheduler getScheduler() {
+            return new EntityScheduler() {
+                @Override
+                public boolean execute(Plugin plugin, Runnable run, Runnable retired, long delay) {
+                    queued.add(run);
+                    return true;
+                }
+
+                @Override
+                public ScheduledTask run(Plugin plugin, Consumer<ScheduledTask> task,
+                                         Runnable retired) {
+                    queued.add(() -> task.accept(null));
+                    return new DoneTask(plugin);
+                }
+
+                @Override
+                public ScheduledTask runDelayed(Plugin plugin, Consumer<ScheduledTask> task,
+                                                Runnable retired, long delayTicks) {
+                    return run(plugin, task, retired);
+                }
+
+                @Override
+                public ScheduledTask runAtFixedRate(Plugin plugin, Consumer<ScheduledTask> task,
+                                                    Runnable retired, long initialDelayTicks,
+                                                    long periodTicks) {
+                    return run(plugin, task, retired);
+                }
+            };
         }
 
         @Override
@@ -101,11 +156,13 @@ class RespawnFallbackTest {
 
         @Override
         public Location getPotentialBedLocation() {
+            checkAttached();
             return point == null ? null : point.clone();
         }
 
         @Override
         public Location getRespawnLocation() {
+            checkAttached();
             if (point == null) {
                 return null;
             }
@@ -120,6 +177,42 @@ class RespawnFallbackTest {
             teleports.add(location.clone());
             return super.teleportAsync(location, cause, flags);
         }
+
+        private void checkAttached() {
+            if (detached) {
+                throw new IllegalStateException("Accessing entity state off owning region's thread");
+            }
+        }
+    }
+
+    /** A handle for a task that the queue owns; nothing in the plugin reads one. */
+    private static final class DoneTask implements ScheduledTask {
+
+        private final Plugin plugin;
+
+        private DoneTask(Plugin plugin) {
+            this.plugin = plugin;
+        }
+
+        @Override
+        public Plugin getOwningPlugin() {
+            return plugin;
+        }
+
+        @Override
+        public boolean isRepeatingTask() {
+            return false;
+        }
+
+        @Override
+        public CancelledState cancel() {
+            return CancelledState.ALREADY_EXECUTED;
+        }
+
+        @Override
+        public ExecutionState getExecutionState() {
+            return ExecutionState.FINISHED;
+        }
     }
 
     /**
@@ -131,6 +224,8 @@ class RespawnFallbackTest {
     private static final class QuietManager extends SpawnManager {
 
         SpawnVerdict verdict = SpawnVerdict.USABLE;
+        /** What the asynchronous re-check reports, read when it is asked. */
+        boolean plotSafe = true;
 
         private QuietManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
@@ -138,7 +233,7 @@ class RespawnFallbackTest {
 
         @Override
         public CompletableFuture<Boolean> revalidate(Location stored) {
-            return CompletableFuture.completedFuture(true);
+            return CompletableFuture.completedFuture(plotSafe);
         }
 
         @Override
@@ -217,11 +312,22 @@ class RespawnFallbackTest {
     private PlayerSetSpawnEvent respawnPointFails(RespawnPlayer player) {
         PlayerSetSpawnEvent event = new PlayerSetSpawnEvent(player,
                 PlayerSetSpawnEvent.Cause.PLAYER_RESPAWN, null, false, false, null);
+        // Folia fires this with the player removed from their world and owned by no region.
+        player.detached = true;
         server.getPluginManager().callEvent(event);
+        player.detached = false;
         if (!event.isCancelled()) {
             player.setRespawnLocation(event.getLocation(), event.isForced());
         }
         return event;
+    }
+
+    /** What Paper fires for a death respawn, before or after the event above by version. */
+    private PlayerRespawnEvent paperRespawnEvent(RespawnPlayer player) {
+        PlayerRespawnEvent respawn = new PlayerRespawnEvent(player,
+                world.getSpawnLocation(), false, false, PlayerRespawnEvent.RespawnReason.DEATH);
+        server.getPluginManager().callEvent(respawn);
+        return respawn;
     }
 
     private static void assertSameBlock(Location expected, Location actual) {
@@ -244,6 +350,8 @@ class RespawnFallbackTest {
         die(player);
         // No PlayerRespawnEvent: Folia never fires one for a death respawn.
         respawnPointFails(player);
+        assertTrue(player.teleports.isEmpty(), "nothing may move a player still in transit");
+        player.place();
 
         assertSameBlock(plot, player.point);
         assertTrue(player.forced, "the plot is not a bed, so it only holds as a forced point");
@@ -253,8 +361,45 @@ class RespawnFallbackTest {
     }
 
     @Test
-    @DisplayName("on Paper, a respawn the respawn event already routed is not moved a second time")
-    void paperRespawnIsNotMovedTwice() {
+    @DisplayName("on Folia, a plot the server just rejected is not handed back, and nobody is moved into it")
+    void rejectedPlotIsNotHandedBack() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        // Flooded: the forced plot fails the server's own check, so it is the point that failed.
+        manager.plotSafe = false;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerSetSpawnEvent event = respawnPointFails(player);
+        player.place();
+
+        assertNull(event.getLocation(), "the rejected plot must not be stored again");
+        assertNull(player.point, "the server's clear stands; death restores the plot next time");
+        assertTrue(player.teleports.isEmpty(), "moving them into it is the defect: "
+                + player.teleports);
+    }
+
+    @Test
+    @DisplayName("a plot that is unsafe by the time the player is placed stops the move")
+    void plotUnsafeAtTeleportTimeIsNotEntered() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        bed.getBlock().setType(Material.AIR);
+
+        die(player);
+        respawnPointFails(player);
+        manager.plotSafe = false;
+        player.place();
+
+        assertTrue(player.teleports.isEmpty(), "the re-check must hold them where the respawn"
+                + " placed them: " + player.teleports);
+    }
+
+    @Test
+    @DisplayName("on Paper 1.21.11, respawn event first, the routed respawn is not moved again")
+    void paperNewOrderIsNotMovedTwice() {
         SpiralGenesisPlugin plugin = load();
         Location plot = plot();
         // Griefed: the respawn handler holds the player at world spawn while it repairs.
@@ -264,16 +409,37 @@ class RespawnFallbackTest {
         bed.getBlock().setType(Material.AIR);
 
         die(player);
-        PlayerRespawnEvent respawn = new PlayerRespawnEvent(player,
-                world.getSpawnLocation(), false, false, PlayerRespawnEvent.RespawnReason.DEATH);
-        server.getPluginManager().callEvent(respawn);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
         respawnPointFails(player);
+        player.place();
 
         assertFalse(sameBlock(plot, respawn.getRespawnLocation()),
                 "precondition: the respawn handler kept the player off the unsafe plot");
         assertTrue(player.teleports.isEmpty(),
                 "moving them onto the plot would undo that: " + player.teleports);
         assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("on Paper 1.20.4, respawn event last, the routed respawn is not moved again")
+    void paperOldOrderIsNotMovedTwice() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        bed.getBlock().setType(Material.AIR);
+
+        die(player);
+        respawnPointFails(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.place();
+
+        assertFalse(sameBlock(plot, respawn.getRespawnLocation()),
+                "precondition: the respawn handler kept the player off the unsafe plot");
+        assertTrue(player.teleports.isEmpty(),
+                "the mark is set after the teleport was scheduled, and must still stop it: "
+                        + player.teleports);
     }
 
     @Test
@@ -286,6 +452,7 @@ class RespawnFallbackTest {
 
         // A bed that works never makes the server clear the point, so death is all there is.
         die(player);
+        player.place();
 
         assertSameBlock(bed, player.getRespawnLocation());
         assertFalse(player.forced, "the bed must be left exactly as the player set it");
@@ -331,6 +498,7 @@ class RespawnFallbackTest {
         server.addPlayer(player);
 
         PlayerSetSpawnEvent event = respawnPointFails(player);
+        player.place();
 
         assertNull(event.getLocation());
         assertTrue(player.teleports.isEmpty());

@@ -14,6 +14,7 @@ import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -27,6 +28,14 @@ public class PlayerSpawnListener implements Listener {
      * death, set by {@link #onPlayerRespawn}, consumed by {@link #onRespawnPointLost}.
      */
     private final Set<UUID> respawnEventSeen = ConcurrentHashMap.newKeySet();
+    /**
+     * The respawn point each player died with, as {@link #onPlayerDeath} left it. Read by
+     * {@link #onRespawnPointLost} to learn which point failed: on Folia that handler runs
+     * while the player belongs to no region, and every getter that reads the point goes
+     * through {@code CraftHumanEntity.getHandle}, which throws off the owning thread. A dead
+     * player cannot set a new point, so the snapshot holds until they respawn.
+     */
+    private final Map<UUID, Location> pointAtDeath = new ConcurrentHashMap<>();
 
     public PlayerSpawnListener(SpiralGenesisPlugin plugin, PlayerActionGateListener gate) {
         this.plugin = plugin;
@@ -107,11 +116,17 @@ public class PlayerSpawnListener implements Listener {
         // before any respawn packet can be processed. getPotentialBedLocation reads the
         // stored point without touching a block, so it is safe here where
         // getRespawnLocation, which resolves the point in whatever region holds it, is not.
-        if (player.getPotentialBedLocation() == null) {
-            Location fallback = respawnFallback(player);
-            if (fallback != null) {
-                player.setRespawnLocation(fallback, true);
+        Location point = player.getPotentialBedLocation();
+        if (point == null) {
+            point = respawnFallback(player, null);
+            if (point != null) {
+                player.setRespawnLocation(point, true);
             }
+        }
+        if (point == null) {
+            pointAtDeath.remove(player.getUniqueId());
+        } else {
+            pointAtDeath.put(player.getUniqueId(), point);
         }
     }
 
@@ -139,7 +154,13 @@ public class PlayerSpawnListener implements Listener {
      * why the check for the respawn event is made in the deferred task rather than here.
      *
      * <p>Only the event and thread-safe calls are touched here, since on Folia this thread
-     * owns neither the player nor, necessarily, their plot.
+     * owns neither the player nor, necessarily, their plot. That is also why the failed
+     * point comes from {@link #pointAtDeath} rather than from the player.
+     *
+     * <p>The teleport re-checks the plot first, as {@link #onPlayerRespawn} does on Paper:
+     * the plot may have become unsafe since death, and a player held at world spawn is
+     * better off than one moved into lava. The repair started at death moves them once it
+     * finds a safe point.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onRespawnPointLost(PlayerSetSpawnEvent event) {
@@ -148,22 +169,43 @@ public class PlayerSpawnListener implements Listener {
             return;
         }
         Player player = event.getPlayer();
-        Location fallback = respawnFallback(player);
+        UUID uuid = player.getUniqueId();
+        Location fallback = respawnFallback(player, pointAtDeath.remove(uuid));
         if (fallback == null) {
             return;
         }
         event.setLocation(fallback);
         event.setForced(true);
 
-        UUID uuid = player.getUniqueId();
         player.getScheduler().run(plugin, task -> {
-            if (respawnEventSeen.remove(uuid) || !player.isOnline() || player.isDead()) {
+            if (respawnEventSeen.remove(uuid)) {
                 return;
             }
-            plugin.getLogger().info(player.getName() + "'s respawn point no longer resolved;"
-                    + " restored it to their plot and moved them there.");
-            player.teleportAsync(fallback);
+            SpawnManager manager = plugin.getSpawnManager();
+            if (manager == null) {
+                moveTo(player, fallback);
+                return;
+            }
+            manager.revalidate(fallback).whenComplete((safe, ex) -> {
+                if (ex != null || !Boolean.TRUE.equals(safe)) {
+                    plugin.getLogger().warning(player.getName() + "'s respawn point no longer"
+                            + " resolved and their plot failed its re-check; holding them"
+                            + " where they respawned until the repair moves them.");
+                    return;
+                }
+                player.getScheduler().run(plugin, t -> moveTo(player, fallback), null);
+            });
         }, null);
+    }
+
+    /** Moves a player placed by a respawn onto their plot, on the player's own thread. */
+    private void moveTo(Player player, Location plot) {
+        if (!player.isOnline() || player.isDead()) {
+            return;
+        }
+        plugin.getLogger().info(player.getName() + "'s respawn point no longer resolved;"
+                + " restored it to their plot and moved them there.");
+        player.teleportAsync(plot);
     }
 
     /**
@@ -171,15 +213,35 @@ public class PlayerSpawnListener implements Listener {
      * leave the server's own choice, which is world spawn.
      *
      * <p>The one place that decision is made, for both {@link #onRespawnPointLost} and the
-     * no-point case in {@link #onPlayerDeath}. Today it is the stored plot, unchanged. A
-     * case that needs a different answer - a plot obstructed by the player's own build,
-     * which fails Folia's forced-point check and arrives through the same event - belongs
-     * here rather than in either caller.
+     * no-point case in {@link #onPlayerDeath}. Any case that needs a different answer
+     * belongs here rather than in either caller.
+     *
+     * <p>When the point that failed is the plot itself, the answer is null: the server has
+     * just rejected it, because something now fills the space the player would stand in -
+     * water or lava poured on it, or the owner's own build. Handing it back would move the
+     * player straight into it. The repair started at death deals with a plot that is
+     * unsafe. A plot that is merely built over is the case to resolve here instead, to the
+     * first standable position above it, which is why this branch is kept separate.
+     *
+     * @param failed the point the respawn went through and that did not resolve, or null
+     *               when there was none or it is not known
      */
-    private Location respawnFallback(Player player) {
+    private Location respawnFallback(Player player, Location failed) {
         StoredSpawn record = plugin.getDataStorage().getRecord(player.getUniqueId());
         Location spawn = record == null ? null : record.toLocation();
-        return spawn == null || spawn.getWorld() == null ? null : spawn;
+        if (spawn == null || spawn.getWorld() == null) {
+            return null;
+        }
+        if (failed != null && sameBlock(failed, spawn)) {
+            return null;
+        }
+        return spawn;
+    }
+
+    private static boolean sameBlock(Location a, Location b) {
+        return a.getWorld() != null && a.getWorld().equals(b.getWorld())
+                && a.getBlockX() == b.getBlockX() && a.getBlockY() == b.getBlockY()
+                && a.getBlockZ() == b.getBlockZ();
     }
 
     /**
