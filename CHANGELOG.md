@@ -117,13 +117,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   taking border damage. A stored point outside the border now fails the re-check, even
   when its chunk is not loaded. The in-cell repair then looks for a point inside the
   border in the same cell. When the whole cell is outside, it finds none and the player
-  respawns at world spawn: on Folia, which accepts a forced respawn point without looking
-  at the border, the plot is taken off the player's respawn point at death, before the
-  respawn can use it; a bed, anchor or point set elsewhere is left alone. No new spiral
-  index is claimed and the stored plot is not rewritten. Once the border takes the plot
-  back in, the player's next death restores it as their respawn point and re-checks it.
-  Separately, on Folia a player whose repair finds no safe point while they are still on
-  the death screen now respawns at world spawn instead of back on the unsafe plot.
+  respawns at the main world's spawn, which is the plot world's only while the plot world
+  is the main world; Folia always uses the overworld. On Folia, which accepts a forced
+  respawn point without looking at the border, the plot is taken off the player's respawn
+  point at death, before the respawn can use it; a bed, anchor or point set elsewhere is
+  left alone. No new spiral index is claimed and the stored plot is not rewritten. Once
+  the border takes the plot back in, the player's next death restores it as their respawn
+  point and re-checks it. Separately, on Folia a player whose repair finds no safe point
+  while they are still on the death screen now respawns at the overworld's spawn instead
+  of back on the unsafe plot.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

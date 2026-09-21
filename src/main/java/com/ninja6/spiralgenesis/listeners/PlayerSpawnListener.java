@@ -100,11 +100,11 @@ public class PlayerSpawnListener implements Listener {
         // A new death respawn starts here; whatever the last one left behind is stale.
         respawnEventSeen.remove(player.getUniqueId());
 
-        // A player with no respawn point at all is sent to world spawn by Folia without any
-        // event to intercept: its respawn only calls setRespawnPosition, and so only fires
-        // onRespawnPointLost, when there was a point and it failed. So that case is fixed
-        // here, while the death is being handled on the player's own thread, which is
-        // before any respawn packet can be processed. getPotentialBedLocation reads the
+        // A player with no respawn point at all is sent to the overworld's spawn by Folia
+        // without any event to intercept: its respawn only calls setRespawnPosition, and so
+        // only fires onRespawnPointLost, when there was a point and it failed. So that case
+        // is fixed here, while the death is being handled on the player's own thread, which
+        // is before any respawn packet can be processed. getPotentialBedLocation reads the
         // stored point without touching a block, so it is safe here where
         // getRespawnLocation, which resolves the point in whatever region holds it, is not.
         Location point = player.getPotentialBedLocation();
@@ -113,10 +113,13 @@ public class PlayerSpawnListener implements Listener {
         // this death. Folia accepts a forced point on its feet and head blocks alone and
         // never looks at the border, so nothing else would stop it sending the player
         // straight back outside; the repair started above is asynchronous and can lose that
-        // race. With no point, both platforms respawn the player at world spawn. The border
-        // needs no block read, so it is judged here, on the player's own thread, before
-        // any respawn packet can be processed. Which point counts as the plot is decided as
-        // the repair decides it: its block column, since a lift puts the player above it.
+        // race. With no point, both platforms respawn the player at the main world's spawn:
+        // Folia always uses the overworld, Paper the main world's respawn dimension, which
+        // is the overworld unless an operator moved it. That is the plot world's spawn only
+        // while the plot world is the main world. The border needs no block read, so it is
+        // judged here, on the player's own thread, before any respawn packet can be
+        // processed. Which point counts as the plot is decided as the repair decides it:
+        // its block column, since a lift puts the player above it.
         // The record is not touched, and once the border takes the plot back in, the next
         // death restores it as the point below.
         SpawnManager manager = plugin.getSpawnManager();
