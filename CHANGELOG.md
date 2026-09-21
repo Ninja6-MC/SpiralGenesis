@@ -101,6 +101,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a save succeeds again, with the number of failed attempts. Removing a leftover
   `data.yml.tmp` at startup and on `/sgen reload` now also waits for a save in progress
   instead of deleting the scratch file out from under it.
+- **Repairing a plot no longer takes away a working bed or anchor.** When the death-time
+  re-check found a plot unsafe and the repair moved it within the cell, the player's
+  respawn point was forced onto the repaired point unconditionally, so a player with a bed,
+  a charged anchor or a point set elsewhere by `/spawnpoint` lost it the next time their
+  plot was repaired, and a player who had already respawned at their bed was teleported to
+  the plot. The repaired point is still recorded as the plot, but the respawn point now
+  follows it only when it is unset or is the old plot, matched on its block column in the
+  plot's world so a player lifted on top of a build still counts. Anything else is left
+  alone, and so is the player. Whether the bed still works is not checked: one that has
+  stopped working is handled when the server clears the point on respawn.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

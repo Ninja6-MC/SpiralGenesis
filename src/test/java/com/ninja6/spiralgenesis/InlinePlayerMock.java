@@ -31,8 +31,30 @@ public class InlinePlayerMock extends PlayerMock {
      */
     public boolean teleportSucceeds = true;
 
+    /** The stored respawn point, as the server keeps it: unresolved, and null when unset. */
+    public Location respawnPoint;
+
     public InlinePlayerMock(ServerMock server, String name) {
         super(server, name);
+    }
+
+    /**
+     * MockBukkit has no {@code getPotentialBedLocation}, which the revalidation repair reads,
+     * so the point is kept here and both getters return it unchecked.
+     */
+    @Override
+    public void setRespawnLocation(Location location, boolean force) {
+        respawnPoint = location == null ? null : location.clone();
+    }
+
+    @Override
+    public Location getRespawnLocation() {
+        return respawnPoint == null ? null : respawnPoint.clone();
+    }
+
+    @Override
+    public Location getPotentialBedLocation() {
+        return getRespawnLocation();
     }
 
     @Override
