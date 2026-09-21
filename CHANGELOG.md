@@ -65,6 +65,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   simulate` is outside all of this in both directions: it scans from the origin rather than
   from where the live spiral has reached, so it still runs and reports after a live
   allocation has given up, and a run of its own can never refuse a joining player.
+- **A broken bed on Folia no longer costs a player their plot.** Sleeping in a bed replaces
+  the respawn point allocation set, and on Paper a later respawn with that bed gone is
+  sent back to the plot by `PlayerRespawnEvent`. Folia never fires that event for a death
+  respawn, so the player landed at world spawn instead. When the server finds the bed or
+  anchor gone during the respawn and clears the respawn point (`PlayerSetSpawnEvent` with
+  cause `PLAYER_RESPAWN`), the plot is now stored in its place and, on Folia, the player is
+  moved there as soon as they are placed, after the plot passes a fresh safety check;
+  with `doImmediateRespawn` as well. The respawn itself still lands at world spawn for
+  that one moment. When the point the server rejected is the plot itself, flooded or
+  built over, nothing is changed and the player stays at world spawn while the existing
+  repair runs. A player left with no respawn point at all has the plot restored when they
+  die. A bed or anchor that still works, and a point forced elsewhere such as by
+  `/spawnpoint`, is left alone on both platforms.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
