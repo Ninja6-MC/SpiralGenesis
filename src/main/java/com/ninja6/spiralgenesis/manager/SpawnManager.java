@@ -50,6 +50,35 @@ public class SpawnManager {
     );
 
     /**
+     * Materials that fail a stored point on re-check, at the feet, head or underfoot.
+     *
+     * <p>{@link #HAZARD_MATERIALS} without the ice. Ice belongs there because allocation
+     * wants dry land, and a frozen lake is not that; but nothing about ice hurts a player
+     * standing on or beside it, and packed and blue ice are ordinary building blocks. Kept,
+     * the owner of an ice road or an ice floor through their spawn would be relocated for
+     * it. The underwater plants stay: they only exist in water, so finding one at the feet
+     * or head is the same flooding as finding the water itself.
+     *
+     * <p>Cactus, magma, and both campfires are added: each hurts a player standing on it,
+     * and each is solid by vanilla's respawn test, so one placed at the feet is exactly
+     * what a respawn lift puts the player on top of. Left out, a griefer could place one on a
+     * plot to damage its owner on every respawn. Underfoot they are caught by the same
+     * material check, since none of them is passable.
+     *
+     * <p>Pointed dripstone is left out on purpose. A stalagmite only hurts through
+     * {@code fallOn}, which adds 2.5 blocks to the fall and so stays under the 3-block safe
+     * fall distance for a player placed on it rather than dropped; a stalactite only hurts
+     * when it falls, which a respawn does not cause. Checked against folia-1.21.11. Failing
+     * a plot for it would move the owner off a decoration, which is the defect this set was
+     * narrowed to fix.
+     */
+    private static final Set<Material> REVALIDATION_HAZARDS = EnumSet.of(
+            Material.WATER, Material.LAVA, Material.SEAGRASS, Material.TALL_SEAGRASS,
+            Material.KELP, Material.KELP_PLANT, Material.POWDER_SNOW,
+            Material.CACTUS, Material.MAGMA_BLOCK, Material.CAMPFIRE, Material.SOUL_CAMPFIRE
+    );
+
+    /**
      * Materials that disqualify a candidate merely by being <em>near</em> it.
      *
      * <p>Deliberately narrower than {@link #HAZARD_MATERIALS}: water or ice a few blocks
@@ -207,11 +236,37 @@ public class SpawnManager {
      * chunk and no heightmap. That is what makes it callable from
      * {@code PlayerRespawnEvent}, which is synchronous and cannot await anything.
      *
-     * <p>It repeats the lethal subset of {@link #score}: whether the player fits, whether
-     * the ground is still under them, and whether anything that kills is at their feet,
-     * head or underfoot. The quality checks (ocean biome, pit, roughness) are deliberately
-     * left out - terrain shape is not what a griefer changes, and re-running them would
-     * relocate players over a plot that merely scores worse than it did.
+     * <p>It repeats the lethal subset of {@link #score}: whether the ground is still under
+     * the player, and whether anything that kills is at their feet, head or underfoot. The
+     * quality checks (ocean biome, pit, roughness) are deliberately left out - terrain shape
+     * is not what a griefer changes, and re-running them would relocate players over a plot
+     * that merely scores worse than it did.
+     *
+     * <p>Whether the player still fits is left out too, and that is not an oversight. A
+     * block at the feet or head is almost always the owner's own: a chest, a door, a slab,
+     * the house they built around the point they were given. Failing on it would move their
+     * stored spawn somewhere else in the cell, away from exactly that build. The same goes
+     * for a tree that grew or sand that fell there. Only what hurts is a reason to move a
+     * plot.
+     *
+     * <p>Where the player then stands is {@link #standingPoint}: the first clear position
+     * above the stored point, which the respawn handlers apply on every platform. The
+     * server cannot be relied on for it. paper-1.20.4 lifts a respawning player out of
+     * what they collide with ({@code PlayerList.respawn} with {@code avoidSuffocation}),
+     * but paper-1.21.11 and paper-26.2 do not: {@code PlayerList.respawn} there snaps the
+     * player to the {@code PlayerRespawnEvent} location as given, with no collision loop
+     * in {@code PlayerList} or {@code ServerPlayer} (javap of both server jars). Folia
+     * declines a forced point whose feet or head block is solid and places the player at
+     * world spawn. Either way it is a question of how the point is applied on respawn, not
+     * of whether it still belongs to the player, so it is not answered by rewriting the
+     * point here.
+     *
+     * <p>Vanilla's own check on a forced respawn point still runs first on Paper and still
+     * declines a point whose feet or head block is solid. So on every such death the server
+     * clears the respawn point and the client shows the vanilla "no respawn block
+     * available" message, before the plugin's respawn handler overrides the location. The
+     * placement is unaffected; the message is cosmetic, and the cleared point is put back
+     * by the plugin's {@code PlayerSetSpawnEvent} handler.
      *
      * <p>The caller must already own the chunk this location is in.
      */
@@ -220,18 +275,104 @@ public class SpawnManager {
         int y = location.getBlockY();
         int z = location.getBlockZ();
 
-        // Walled in, or dug out from under: both leave a stored point the player cannot
-        // simply stand on.
-        if (!isPassable(world.getBlockAt(x, y, z)) || !isPassable(world.getBlockAt(x, y + 1, z))) {
-            return false;
-        }
+        // Dug out from under: there is nothing to stand on, and a fall of unknown depth.
+        // Fluids are passable, so water or lava that has replaced the floor fails here.
         if (isPassable(world.getBlockAt(x, y - 1, z))) {
             return false;
         }
 
-        // Flooding shows up at the feet and head; lava poured on the plot shows up
-        // underfoot once it settles into the surface block allocation approved.
-        return !isHazard(x, y, z) && !isHazard(x, y + 1, z) && !isHazard(x, y - 1, z);
+        // Flooding shows up at the feet and head. Underfoot, the floor is solid by now, so
+        // what the material check catches there is a floor that hurts: magma, cactus or a
+        // campfire.
+        return !isRevalidationHazard(x, y, z)
+                && !isRevalidationHazard(x, y + 1, z)
+                && !isRevalidationHazard(x, y - 1, z);
+    }
+
+    private boolean isRevalidationHazard(int x, int y, int z) {
+        return REVALIDATION_HAZARDS.contains(world.getBlockAt(x, y, z).getType());
+    }
+
+    /**
+     * Where a player sent to a stored point can actually stand: the point itself when its
+     * feet and head blocks are clear, otherwise the first position straight above it where
+     * both are.
+     *
+     * <p>A plot the owner has built over is kept by {@link #isSafeNow}, and no current
+     * server places a respawning player clear of the build on its own: Paper 1.21.11 and
+     * later put them inside it, Folia sends them to world spawn. The respawn handlers place
+     * or move them here instead, on both platforms, so that the same hazard rule applies
+     * everywhere. The stored point itself is not changed.
+     *
+     * <p>"Clear" is vanilla's own test for a forced respawn point,
+     * {@code Block.isPossibleToRespawnInThis}: neither solid nor liquid. The search stops
+     * below the world's build limit, and the position found is then held to the same
+     * hazard rule as the plot: nobody is lifted onto magma or into a campfire at the top of
+     * a build.
+     *
+     * <p>Loads the chunk first and runs on the thread that owns it, as {@link #revalidate}
+     * does, so it is safe to call from any thread.
+     *
+     * @return a future resolving to the position to stand at, or {@code null} when the
+     *         column has no clear position below the build limit or the first one found is
+     *         hazardous
+     */
+    public CompletableFuture<Location> standingPoint(Location stored) {
+        CompletableFuture<Location> result = new CompletableFuture<>();
+        int chunkX = stored.getBlockX() >> 4;
+        int chunkZ = stored.getBlockZ() >> 4;
+        loadChunk(chunkX, chunkZ).whenComplete((chunk, error) -> {
+            if (error != null) {
+                result.completeExceptionally(error);
+                return;
+            }
+            runOnRegion(result, chunkX, chunkZ, () -> result.complete(standingPointNow(stored)));
+        });
+        return result;
+    }
+
+    /**
+     * {@link #standingPoint} for a caller that already owns the chunk, answered inline.
+     *
+     * <p>For {@code PlayerRespawnEvent}, which cannot await anything, once
+     * {@link #verifyStoredSpawn} has found the chunk resident.
+     */
+    public Location standingPointNow(Location stored) {
+        int x = stored.getBlockX();
+        int z = stored.getBlockZ();
+        int from = stored.getBlockY();
+        // The head block has to be inside the world too.
+        int top = world.getMaxHeight() - 2;
+        for (int y = from; y <= top; y++) {
+            if (!admitsRespawn(world.getBlockAt(x, y, z))
+                    || !admitsRespawn(world.getBlockAt(x, y + 1, z))) {
+                continue;
+            }
+            if (isRevalidationHazard(x, y - 1, z)
+                    || isRevalidationHazard(x, y, z)
+                    || isRevalidationHazard(x, y + 1, z)) {
+                return null;
+            }
+            Location standing = stored.clone();
+            standing.setY(stored.getY() + (y - from));
+            return standing;
+        }
+        return null;
+    }
+
+    /**
+     * Whether vanilla would respawn a player with this block at their feet or head.
+     *
+     * <p>{@code Block.isBuildable()} and {@code Block.isLiquid()} are exactly
+     * {@code BlockState.isSolid()} and {@code BlockState.liquid()} in CraftBlock, the two
+     * halves of {@code isPossibleToRespawnInThis}; verified against folia-1.21.11.
+     * {@code Block.isSolid()} is not, as it answers {@code blocksMotion()} instead.
+     *
+     * <p>Package-private for the same reason as {@link #isPassable}: MockBukkit does not
+     * answer these from block state.
+     */
+    boolean admitsRespawn(Block block) {
+        return !block.isBuildable() && !block.isLiquid();
     }
 
     /**
@@ -265,7 +406,7 @@ public class SpawnManager {
     public enum SpawnVerdict {
         /** Re-checked against live blocks and still safe. */
         USABLE,
-        /** Re-checked and no longer safe: something lethal or impassable is there now. */
+        /** Re-checked and no longer safe: something lethal is there, or the floor is gone. */
         UNSAFE,
         /** Not resident, so not checkable without loading a chunk the caller cannot await. */
         UNVERIFIED

@@ -16,6 +16,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.StringReader;
 import java.util.Locale;
@@ -97,6 +99,16 @@ class SpawnManagerTest {
         @Override
         boolean isPassable(Block block) {
             return block.getType().isAir();
+        }
+
+        /**
+         * MockBukkit does not answer {@code isBuildable()} from block state, so judge by
+         * material. Close enough to vanilla's solid test for every block these tests place.
+         */
+        @Override
+        boolean admitsRespawn(Block block) {
+            Material type = block.getType();
+            return !type.isSolid() && type != Material.WATER && type != Material.LAVA;
         }
 
         @Override
@@ -266,6 +278,21 @@ class SpawnManagerTest {
         Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
 
         assertNotEquals(0.5, loc.getX(), "the water column itself must not be chosen");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"ICE", "PACKED_ICE", "BLUE_ICE"})
+    @DisplayName("An ice surface is rejected for a new plot")
+    void iceSurfaceIsRejected(Material ice) throws Exception {
+        // Re-checking a stored plot accepts ice, so this is the only rule that still keys
+        // on it: allocation wants dry land, and a frozen lake is not that.
+        makeHazard(0, 0, ice);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
+
+        assertNotEquals(0.5, loc.getX(), "the ice column itself must not be chosen");
     }
 
     @Test
@@ -608,17 +635,219 @@ class SpawnManagerTest {
                 manager.verifyStoredSpawn(originCentreSpawn()));
     }
 
-    @Test
-    @DisplayName("A hazard underfoot is caught even when the column itself is clear")
-    void hazardousGroundIsUnsafe() {
-        // Solid, so the passability checks all pass; it is the material rule that has to
-        // fire here, exactly as it did when the point was first scored.
-        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.PACKED_ICE);
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A floor that hurts is caught even when the column itself is clear")
+    void hazardousGroundIsUnsafe(Material floor) {
+        // None of these is passable, so the floor check passes on a real server as well
+        // and it is the material rule that has to fire. Water or lava replacing the floor
+        // is passable and never gets this far; hollowedPlotIsUnsafe covers that path.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
 
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
                 manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("Water at head height still fails the re-check")
+    void floodedHeadIsUnsafe() {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.WATER);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    /*
+     * What a player plausibly builds on the point they were given. Doors, trapdoors, slabs
+     * and beds are here on purpose: Block.isPassable() reports them impassable although a
+     * player stands on or walks through them, which is what the old check keyed on.
+     */
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at their feet does not fail the re-check")
+    void ownBlockAtFeetKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at head height does not fail the re-check")
+    void ownBlockAtHeadKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A block that hurts, placed at the feet, fails the re-check")
+    void harmfulBlockAtFeetIsUnsafe(Material placed) {
+        // Each is solid, so a respawn lifts the player onto it: a griefer's way to hurt
+        // the owner on every death if the re-check let it through.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A block that hurts, placed at head height, fails the re-check")
+    void harmfulBlockAtHeadIsUnsafe(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("Pointed dripstone on the spawn does not fail the re-check")
+    void pointedDripstoneKeepsThePlot() {
+        // It only hurts through a fall, and a respawn does not drop the player onto it.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.POINTED_DRIPSTONE);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"PACKED_ICE", "BLUE_ICE", "ICE"})
+    @DisplayName("An ice floor laid over the spawn does not fail the re-check")
+    void iceFloorKeepsThePlot(Material floor) {
+        // Allocation rejects ice as a surface because it wants dry land. Nothing about it
+        // hurts a player standing on it, so a floor the owner lays later is no reason to
+        // move them.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("The asynchronous re-check the death repair uses keeps a built-over plot")
+    void asyncRevalidateKeepsABuiltOverPlot() throws Exception {
+        // repairSpawn rewrites the stored point exactly when this answers false, so this is
+        // the answer that decides whether the owner is moved off their build.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.OAK_SLAB);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
+                "a missing floor must still fail under a built-over point");
+    }
+
+    // --- Where a player stands on a plot that has been built over --------------------
+
+    private Location storedOrigin() {
+        return new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5, 90f, 10f);
+    }
+
+    @Test
+    @DisplayName("A clear plot is its own standing point")
+    void clearPlotStandsWhereStored() throws Exception {
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        assertEquals(stored, manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A built-over plot lifts the player to the first clear position above it")
+    void builtOverPlotLiftsToFirstClearPosition() throws Exception {
+        // Chest at the feet, slab at the head: the first position with both clear is two
+        // blocks up, standing on the slab. Folia's respawn would send them to world spawn.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.OAK_SLAB);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+
+        assertEquals(stored.getX(), standing.getX(), 1e-9);
+        assertEquals(stored.getZ(), standing.getZ(), 1e-9);
+        assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
+        assertEquals(stored.getYaw(), standing.getYaw(), 1e-6);
+        assertEquals(MOCK_SURFACE_Y + 1.0, stored.getY(), 1e-9,
+                "the stored point itself must not be moved");
+    }
+
+    @Test
+    @DisplayName("A gap too short for a player is skipped on the way up")
+    void liftSkipsAOneBlockGap() throws Exception {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(Material.OAK_PLANKS);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 4.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A lift that would land on something harmful finds no standing point")
+    void liftOntoAHazardIsRefused() throws Exception {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.MAGMA_BLOCK);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A column built up to the build limit has no standing point")
+    void columnWithoutClearPositionHasNoStandingPoint() throws Exception {
+        for (int y = MOCK_SURFACE_Y + 1; y < world.getMaxHeight(); y++) {
+            world.getBlockAt(0, y, 0).setType(Material.STONE);
+        }
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("The last clear position below the build limit is still found")
+    void liftReachesTheBuildLimit() throws Exception {
+        int top = world.getMaxHeight() - 2;
+        for (int y = MOCK_SURFACE_Y + 1; y < top; y++) {
+            world.getBlockAt(0, y, 0).setType(Material.STONE);
+        }
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(top, standing.getBlockY());
     }
 
     @Test
