@@ -94,6 +94,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   vanilla "no respawn block" message on such a death; the placement is unaffected. Ice
   no longer fails the re-check either, so an ice floor or ice road through the spawn is
   kept; allocation still rejects ice as a surface for new plots.
+- **A save that keeps failing no longer floods the console.** The background flush retries
+  `data.yml` every five seconds, and each failure logged a SEVERE stack trace, so a full
+  disk or read-only mount filled the console for as long as it lasted. The first failure
+  is still logged in full; the retries after it are logged at FINE, and one line is logged
+  when a save succeeds again, with the number of failed attempts. Removing a leftover
+  `data.yml.tmp` at startup and on `/sgen reload` now also waits for a save in progress
+  instead of deleting the scratch file out from under it.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

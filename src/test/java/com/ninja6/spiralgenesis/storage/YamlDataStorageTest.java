@@ -12,13 +12,22 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -120,5 +129,92 @@ class YamlDataStorageTest {
 
         assertFalse(Files.exists(tempFile), "a stale scratch file is never a recovery candidate");
         assertEquals(3, storage.getCurrentIndex());
+    }
+
+    @Test
+    @DisplayName("load waits for an in-flight save before removing the scratch file")
+    void loadDeletesScratchFileUnderWriteLock() throws Exception {
+        YamlDataStorage storage = loaded();
+        Files.writeString(tempFile, "being written by a concurrent save", StandardCharsets.UTF_8);
+
+        // Stand in for a save that holds the write lock while it fills the scratch file.
+        Field lockField = YamlDataStorage.class.getDeclaredField("writeLock");
+        lockField.setAccessible(true);
+        Object writeLock = lockField.get(storage);
+
+        Thread loader = new Thread(storage::load, "loader");
+        synchronized (writeLock) {
+            loader.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (loader.getState() != Thread.State.BLOCKED) {
+                assertTrue(loader.isAlive() && System.nanoTime() < deadline,
+                        "load should block on the write lock, not finish without it");
+                Thread.onSpinWait();
+            }
+            assertTrue(Files.exists(tempFile),
+                    "the scratch file must survive while the save holding the lock is running");
+        }
+        loader.join(TimeUnit.SECONDS.toMillis(10));
+
+        assertFalse(loader.isAlive(), "load should finish once the lock is released");
+        assertFalse(Files.exists(tempFile), "the stale scratch file is removed after the save");
+    }
+
+    @Test
+    @DisplayName("a save that keeps failing logs one stack trace, then once on recovery")
+    void repeatedSaveFailureIsNotRelogged() throws IOException {
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        Logger logger = plugin.getLogger();
+        logger.addHandler(capture);
+        try {
+            YamlDataStorage storage = loaded();
+            Files.createDirectory(tempFile);
+            Files.createFile(tempFile.resolve("occupant"));
+            record(storage, UUID.randomUUID(), "Alice", 1);
+
+            storage.save();
+            List<LogRecord> severe = records.stream()
+                    .filter(r -> r.getLevel() == Level.SEVERE).toList();
+            assertEquals(1, severe.size(), "the first failure is reported at SEVERE");
+            assertNotNull(severe.get(0).getThrown(), "the first failure carries its stack trace");
+
+            records.clear();
+            storage.save();
+            storage.save();
+            assertTrue(records.stream().noneMatch(r -> r.getLevel().intValue() >= Level.WARNING.intValue()),
+                    "repeat failures must not reach the console at WARNING or above");
+
+            Files.delete(tempFile.resolve("occupant"));
+            Files.delete(tempFile);
+            records.clear();
+            storage.save();
+            List<LogRecord> recovered = records.stream()
+                    .filter(r -> r.getLevel() == Level.INFO).toList();
+            assertEquals(1, recovered.size(), "recovery is reported exactly once");
+            assertTrue(recovered.get(0).getMessage().contains("3 failed attempt"),
+                    "the recovery message counts the failed attempts");
+
+            records.clear();
+            record(storage, UUID.randomUUID(), "Bob", 2);
+            storage.save();
+            assertTrue(records.stream().noneMatch(r -> r.getLevel() == Level.INFO),
+                    "an ordinary save after recovery logs nothing further");
+        } finally {
+            logger.removeHandler(capture);
+        }
     }
 }
