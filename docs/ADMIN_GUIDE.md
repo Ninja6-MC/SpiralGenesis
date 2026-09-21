@@ -451,14 +451,35 @@ The trust half is worth spelling out, because it is the half GriefPrevention doe
 derive for you. `Build` and `Manage` are separate grants in its permission model -
 `Manage` is not implied by `Build`, and `Build` is not implied by `Manage` - so the claim
 carries both. `Build` is the ground, the bed and the first chest; `Manage` is what
-`/trust`, `/untrust` and `/permissiontrust` check for, so the player can invite a friend
-onto their spawn plot and withdraw the invitation again without an administrator.
+`/trust`, `/containertrust`, `/accesstrust` and `/untrust <player>` check for, so the
+player can invite a friend onto their spawn plot and withdraw the invitation again
+without an administrator.
 
 What stays with the server is `Edit`: resizing, subdividing and deleting. GriefPrevention
 will not let that level be delegated on an administrative claim at all - it belongs to
 `griefprevention.adminclaims` - so on an `ADMIN_CLAIM` server those three are an operator's
-job. If that is the wrong trade for your server, `PLAYER_CLAIM` is the alternative, and
-the two sections above are its price.
+job. So are three trust commands that GriefPrevention checks against `Edit` as well as
+`Manage`: `/permissiontrust`, `/untrust all`, and `/untrust` aimed at a player who is
+themselves a manager on the claim. The player can hand out trust but cannot make anyone
+else a manager, and cannot clear the claim's trust list in one go. If that is the wrong
+trade for your server, `PLAYER_CLAIM` is the alternative, and the two sections above are
+its price.
+
+**How a player can lock themselves out of their own plot.** GriefPrevention holds one
+trust level per player per claim, and a new grant replaces the old one instead of adding
+to it. A player who runs `/accesstrust` or `/containertrust` on their own name - almost
+always by mistake - replaces their `Build` with the lower level. Their `Manage` survives
+and does not help: `/trust` only lets someone grant a level they hold themselves, so they
+cannot give `Build` back. A second manager an operator has added with `/permissiontrust`
+can do the same to the plot holder, down to whatever level that manager holds. Nobody
+without `Edit` can remove the plot holder's `Manage`, because `/untrust` on a manager is
+one of the three `Edit` commands above.
+
+Nothing repairs this on its own. An administrative claim has no owner to fall back on,
+and SpiralGenesis recognises its own claims by the owner's `Build` grant, so once that is
+gone `/sgen protect` no longer treats the claim as one of its own and will not touch it.
+An operator puts it right by standing in the claim and running `/trust <player>`, after
+which SpiralGenesis recognises the claim again.
 
 `PLAYER_CLAIM` gives the player a claim that is genuinely theirs, and every one of
 GriefPrevention's rules then applies to it. Read the next two sections before switching.
@@ -658,9 +679,10 @@ no subdivisions inside it, and either the same owner under `PLAYER_CLAIM` or - u
 `ADMIN_CLAIM`, where there is no owner to compare against - an administrative claim
 carrying the explicit `Build` trust SpiralGenesis grants in the same breath as creating
 one. `Build` and not `Manage` is deliberately the signature it looks for: claims created
-before SpiralGenesis granted `Manage` carry only `Build`, and they are still ours. A claim the player has since resized outward over their house, one belonging to
-somebody else, or one made by hand is reported and left completely alone. Declining costs
-you one stale square; deleting the wrong claim costs a player everything inside it.
+before SpiralGenesis granted `Manage` carry only `Build`, and they are still ours. A
+claim the player has since resized outward over their house, one belonging to somebody
+else, or one made by hand is reported and left completely alone. Declining costs you one
+stale square; deleting the wrong claim costs a player everything inside it.
 
 Both `reassign` and `setspawn` act on an online player, as they always have, so neither is
 a way to tidy up after somebody who has left.

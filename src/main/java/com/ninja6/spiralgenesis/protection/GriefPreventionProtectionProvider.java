@@ -468,9 +468,10 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
             // hand. Guarded by the same matches() the release path uses, so a claim that is
             // not recognisably ours is read and not written, and by the held check inside
             // trustOwner, so a claim already carrying both levels is not written either.
-            if (ownership == ClaimOwnership.ADMIN_CLAIM
+            boolean repaired = ownership == ClaimOwnership.ADMIN_CLAIM
                     && matches(covering, centre, requestedSize, owner) == null
-                    && trustOwner(gp, covering, owner)) {
+                    && trustOwner(gp, covering, owner);
+            if (repaired) {
                 return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering)
                         + " Its owner has been granted the permissions a spawn claim carries "
                         + "but this one was missing, so they can now manage trust on it.");
