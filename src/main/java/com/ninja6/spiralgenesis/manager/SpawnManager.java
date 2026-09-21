@@ -50,6 +50,21 @@ public class SpawnManager {
     );
 
     /**
+     * Materials that fail a stored point on re-check, at the feet, head or underfoot.
+     *
+     * <p>{@link #HAZARD_MATERIALS} without the ice. Ice belongs there because allocation
+     * wants dry land, and a frozen lake is not that; but nothing about ice hurts a player
+     * standing on or beside it, and packed and blue ice are ordinary building blocks. Kept,
+     * the owner of an ice road or an ice floor through their spawn would be relocated for
+     * it. The underwater plants stay: they only exist in water, so finding one at the feet
+     * or head is the same flooding as finding the water itself.
+     */
+    private static final Set<Material> REVALIDATION_HAZARDS = EnumSet.of(
+            Material.WATER, Material.LAVA, Material.SEAGRASS, Material.TALL_SEAGRASS,
+            Material.KELP, Material.KELP_PLANT, Material.POWDER_SNOW
+    );
+
+    /**
      * Materials that disqualify a candidate merely by being <em>near</em> it.
      *
      * <p>Deliberately narrower than {@link #HAZARD_MATERIALS}: water or ice a few blocks
@@ -207,11 +222,26 @@ public class SpawnManager {
      * chunk and no heightmap. That is what makes it callable from
      * {@code PlayerRespawnEvent}, which is synchronous and cannot await anything.
      *
-     * <p>It repeats the lethal subset of {@link #score}: whether the player fits, whether
-     * the ground is still under them, and whether anything that kills is at their feet,
-     * head or underfoot. The quality checks (ocean biome, pit, roughness) are deliberately
-     * left out - terrain shape is not what a griefer changes, and re-running them would
-     * relocate players over a plot that merely scores worse than it did.
+     * <p>It repeats the lethal subset of {@link #score}: whether the ground is still under
+     * the player, and whether anything that kills is at their feet, head or underfoot. The
+     * quality checks (ocean biome, pit, roughness) are deliberately left out - terrain shape
+     * is not what a griefer changes, and re-running them would relocate players over a plot
+     * that merely scores worse than it did.
+     *
+     * <p>Whether the player still fits is left out too, and that is not an oversight. A
+     * block at the feet or head is almost always the owner's own: a chest, a door, a slab,
+     * the house they built around the point they were given. Failing on it would move their
+     * stored spawn somewhere else in the cell, away from exactly that build. And it is not a
+     * danger: a death respawn on Paper lifts the player out of anything they would collide
+     * with, one block at a time, before placing them ({@code PlayerList.respawn} with
+     * {@code avoidSuffocation}, which is how a death respawn calls it; verified by
+     * decompiling paper-1.20.4). The same goes for a tree that grew or sand that fell there.
+     * Only what hurts is a reason to move a plot.
+     *
+     * <p>Folia does not reach that path, and vanilla's own check on a forced respawn point
+     * declines one whose feet or head block is solid, sending the player to world spawn
+     * instead. That is a question of how the point is applied on respawn, not of whether it
+     * still belongs to the player, so it is not answered by rewriting the point here.
      *
      * <p>The caller must already own the chunk this location is in.
      */
@@ -220,18 +250,20 @@ public class SpawnManager {
         int y = location.getBlockY();
         int z = location.getBlockZ();
 
-        // Walled in, or dug out from under: both leave a stored point the player cannot
-        // simply stand on.
-        if (!isPassable(world.getBlockAt(x, y, z)) || !isPassable(world.getBlockAt(x, y + 1, z))) {
-            return false;
-        }
+        // Dug out from under: there is nothing to stand on, and a fall of unknown depth.
         if (isPassable(world.getBlockAt(x, y - 1, z))) {
             return false;
         }
 
         // Flooding shows up at the feet and head; lava poured on the plot shows up
         // underfoot once it settles into the surface block allocation approved.
-        return !isHazard(x, y, z) && !isHazard(x, y + 1, z) && !isHazard(x, y - 1, z);
+        return !isRevalidationHazard(x, y, z)
+                && !isRevalidationHazard(x, y + 1, z)
+                && !isRevalidationHazard(x, y - 1, z);
+    }
+
+    private boolean isRevalidationHazard(int x, int y, int z) {
+        return REVALIDATION_HAZARDS.contains(world.getBlockAt(x, y, z).getType());
     }
 
     /**
@@ -265,7 +297,7 @@ public class SpawnManager {
     public enum SpawnVerdict {
         /** Re-checked against live blocks and still safe. */
         USABLE,
-        /** Re-checked and no longer safe: something lethal or impassable is there now. */
+        /** Re-checked and no longer safe: something lethal is there, or the floor is gone. */
         UNSAFE,
         /** Not resident, so not checkable without loading a chunk the caller cannot await. */
         UNVERIFIED

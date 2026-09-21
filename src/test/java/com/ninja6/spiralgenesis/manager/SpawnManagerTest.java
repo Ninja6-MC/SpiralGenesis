@@ -16,6 +16,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.io.StringReader;
 import java.util.Locale;
@@ -611,14 +613,91 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A hazard underfoot is caught even when the column itself is clear")
     void hazardousGroundIsUnsafe() {
-        // Solid, so the passability checks all pass; it is the material rule that has to
-        // fire here, exactly as it did when the point was first scored.
-        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.PACKED_ICE);
+        // The test seam counts anything but air as a floor, so the floor check passes on
+        // lava here and it is the material rule that has to fire.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.LAVA);
 
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
                 manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("Water at head height still fails the re-check")
+    void floodedHeadIsUnsafe() {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.WATER);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    /*
+     * What a player plausibly builds on the point they were given. Doors, trapdoors, slabs
+     * and beds are here on purpose: Block.isPassable() reports them impassable although a
+     * player stands on or walks through them, which is what the old check keyed on.
+     */
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at their feet does not fail the re-check")
+    void ownBlockAtFeetKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at head height does not fail the re-check")
+    void ownBlockAtHeadKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"PACKED_ICE", "BLUE_ICE", "ICE"})
+    @DisplayName("An ice floor laid over the spawn does not fail the re-check")
+    void iceFloorKeepsThePlot(Material floor) {
+        // Allocation rejects ice as a surface because it wants dry land. Nothing about it
+        // hurts a player standing on it, so a floor the owner lays later is no reason to
+        // move them.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("The asynchronous re-check the death repair uses keeps a built-over plot")
+    void asyncRevalidateKeepsABuiltOverPlot() throws Exception {
+        // repairSpawn rewrites the stored point exactly when this answers false, so this is
+        // the answer that decides whether the owner is moved off their build.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.OAK_SLAB);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
+                "a missing floor must still fail under a built-over point");
     }
 
     @Test
