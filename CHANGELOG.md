@@ -85,16 +85,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "unsafe", and the repair rewrote the stored spawn to another point in the cell, away
   from what had been built. The re-check now fails a plot only for what can hurt a player:
   a missing floor, or water, lava, powder snow, underwater plants, cactus, magma or a
-  campfire at the feet, head or underfoot. An obstruction is not one of them, because a
-  death respawn on Paper lifts the player clear of whatever they would collide with, and
-  on Folia, which declines such a point and places the player at world spawn, the plugin
-  moves them to the first clear position above the plot once they are placed. The stored
-  spawn is not changed by the lift. If the column has no clear position below the build
-  limit, or the first one sits on something that hurts, the player is left at world
-  spawn. On Paper the client still shows the vanilla "no respawn block" message on such a
-  death; the placement is unaffected. Ice no longer fails the re-check either, so an ice
-  floor or ice road through the spawn is kept; allocation still rejects ice as a surface
-  for new plots.
+  campfire at the feet, head or underfoot. An obstruction is not one of them. Instead
+  the player respawns at the first clear position above the plot, on top of the build:
+  on Paper that position is the respawn location itself, since Paper 1.21.11 and later
+  place a respawning player exactly where they are sent, inside any block there; on
+  Folia, which declines such a point and places the player at world spawn, the player is
+  moved there once they are placed. The stored spawn is not changed by the lift. If the
+  column has no clear position below the build limit, or the first one sits on something
+  that hurts, the player is held at world spawn. On Paper the client still shows the
+  vanilla "no respawn block" message on such a death; the placement is unaffected. Ice
+  no longer fails the re-check either, so an ice floor or ice road through the spawn is
+  kept; allocation still rejects ice as a surface for new plots.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

@@ -61,7 +61,7 @@ public class SpawnManager {
      *
      * <p>Cactus, magma, and both campfires are added: each hurts a player standing on it,
      * and each is solid by vanilla's respawn test, so one placed at the feet is exactly
-     * what the respawn lifts the player on top of. Left out, a griefer could place one on a
+     * what a respawn lift puts the player on top of. Left out, a griefer could place one on a
      * plot to damage its owner on every respawn. Underfoot they are caught by the same
      * material check, since none of them is passable.
      *
@@ -245,26 +245,28 @@ public class SpawnManager {
      * <p>Whether the player still fits is left out too, and that is not an oversight. A
      * block at the feet or head is almost always the owner's own: a chest, a door, a slab,
      * the house they built around the point they were given. Failing on it would move their
-     * stored spawn somewhere else in the cell, away from exactly that build. And it is not a
-     * danger: a death respawn on Paper lifts the player out of anything they would collide
-     * with, one block at a time, before placing them ({@code PlayerList.respawn} with
-     * {@code avoidSuffocation}, which is how a death respawn calls it; verified by
-     * decompiling paper-1.20.4). The same goes for a tree that grew or sand that fell there.
-     * Only what hurts is a reason to move a plot.
+     * stored spawn somewhere else in the cell, away from exactly that build. The same goes
+     * for a tree that grew or sand that fell there. Only what hurts is a reason to move a
+     * plot.
      *
-     * <p>That lift comes after vanilla's own check on a forced respawn point, which still
-     * runs first on Paper and still declines a point whose feet or head block is solid. So
-     * on every such death the server clears the respawn point and the client shows the
-     * vanilla "no respawn block available" message, before the plugin's respawn handler
-     * overrides the location and the lift places the player on top of the build. The
-     * placement is right; the message is cosmetic, and the cleared point is put back by
-     * the plugin's {@code PlayerSetSpawnEvent} handler.
+     * <p>Where the player then stands is {@link #standingPoint}: the first clear position
+     * above the stored point, which the respawn handlers apply on every platform. The
+     * server cannot be relied on for it. paper-1.20.4 lifts a respawning player out of
+     * what they collide with ({@code PlayerList.respawn} with {@code avoidSuffocation}),
+     * but paper-1.21.11 and paper-26.2 do not: {@code PlayerList.respawn} there snaps the
+     * player to the {@code PlayerRespawnEvent} location as given, with no collision loop
+     * in {@code PlayerList} or {@code ServerPlayer} (javap of both server jars). Folia
+     * declines a forced point whose feet or head block is solid and places the player at
+     * world spawn. Either way it is a question of how the point is applied on respawn, not
+     * of whether it still belongs to the player, so it is not answered by rewriting the
+     * point here.
      *
-     * <p>Folia does not reach that path at all: after the same check fails it places the
-     * player at world spawn. The plugin moves them afterwards, to {@link #standingPoint},
-     * which is the same lift done by hand. That is a question of how the point is applied
-     * on respawn, not of whether it still belongs to the player, so it is not answered by
-     * rewriting the point here.
+     * <p>Vanilla's own check on a forced respawn point still runs first on Paper and still
+     * declines a point whose feet or head block is solid. So on every such death the server
+     * clears the respawn point and the client shows the vanilla "no respawn block
+     * available" message, before the plugin's respawn handler overrides the location. The
+     * placement is unaffected; the message is cosmetic, and the cleared point is put back
+     * by the plugin's {@code PlayerSetSpawnEvent} handler.
      *
      * <p>The caller must already own the chunk this location is in.
      */
@@ -296,10 +298,11 @@ public class SpawnManager {
      * feet and head blocks are clear, otherwise the first position straight above it where
      * both are.
      *
-     * <p>This is Paper's suffocation lift, for Folia, which does not have it. A plot the
-     * owner has built over is kept by {@link #isSafeNow}, but Folia's respawn declines a
-     * forced point whose feet or head block is solid and sends the player to world spawn,
-     * so the plugin moves them here afterwards. The stored point itself is not changed.
+     * <p>A plot the owner has built over is kept by {@link #isSafeNow}, and no current
+     * server places a respawning player clear of the build on its own: Paper 1.21.11 and
+     * later put them inside it, Folia sends them to world spawn. The respawn handlers place
+     * or move them here instead, on both platforms, so that the same hazard rule applies
+     * everywhere. The stored point itself is not changed.
      *
      * <p>"Clear" is vanilla's own test for a forced respawn point,
      * {@code Block.isPossibleToRespawnInThis}: neither solid nor liquid. The search stops
@@ -323,12 +326,18 @@ public class SpawnManager {
                 result.completeExceptionally(error);
                 return;
             }
-            runOnRegion(result, chunkX, chunkZ, () -> result.complete(clearPointAbove(stored)));
+            runOnRegion(result, chunkX, chunkZ, () -> result.complete(standingPointNow(stored)));
         });
         return result;
     }
 
-    private Location clearPointAbove(Location stored) {
+    /**
+     * {@link #standingPoint} for a caller that already owns the chunk, answered inline.
+     *
+     * <p>For {@code PlayerRespawnEvent}, which cannot await anything, once
+     * {@link #verifyStoredSpawn} has found the chunk resident.
+     */
+    public Location standingPointNow(Location stored) {
         int x = stored.getBlockX();
         int z = stored.getBlockZ();
         int from = stored.getBlockY();

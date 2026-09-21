@@ -247,10 +247,15 @@ class RespawnFallbackTest {
 
         @Override
         public CompletableFuture<Location> standingPoint(Location stored) {
+            return CompletableFuture.completedFuture(standingPointNow(stored));
+        }
+
+        @Override
+        public Location standingPointNow(Location stored) {
             if (noStandingPoint) {
-                return CompletableFuture.completedFuture(null);
+                return null;
             }
-            return CompletableFuture.completedFuture(lifted == null ? stored : lifted.clone());
+            return lifted == null ? stored : lifted.clone();
         }
 
         @Override
@@ -457,24 +462,100 @@ class RespawnFallbackTest {
     }
 
     @Test
-    @DisplayName("on Paper, a built-over plot keeps its point and the routed respawn is not moved again")
-    void paperBuiltOverPlotIsNotMovedTwice() {
+    @DisplayName("on Paper, a built-over plot respawns the player at the lifted position")
+    void paperBuiltOverPlotRespawnsLifted() {
         SpiralGenesisPlugin plugin = load();
         Location plot = plot();
-        manager.lifted = plot.clone().add(0, 2, 0);
+        Location top = plot.clone().add(0, 2, 0);
+        manager.lifted = top;
         RespawnPlayer player = join(plugin, plot);
 
-        // Paper's forced check fails first as well, then the respawn event routes the
-        // player to the plot and the server lifts them itself.
+        // Paper 1.21.11 and later place the player at the event's location exactly, with
+        // no suffocation lift of their own, so the lift has to be in the location.
         die(player);
         PlayerRespawnEvent respawn = paperRespawnEvent(player);
         respawnPointFails(player);
         player.place();
 
-        assertTrue(sameBlock(plot, respawn.getRespawnLocation()));
-        assertTrue(player.teleports.isEmpty(), "the server has placed them already: "
+        assertSameBlock(top, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), "placed correctly, so nothing to move: "
                 + player.teleports);
         assertSameBlock(plot, player.point);
+        assertSameBlock(plot, plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
+    }
+
+    @Test
+    @DisplayName("on Paper, a built-over plot capped with something harmful holds the player at world spawn")
+    void paperPlotWithHarmfulTopHoldsAtWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        // Cobblestone at feet and head with magma on top: the plot is safe, the only clear
+        // position above it is not.
+        manager.noStandingPoint = true;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertSameBlock(world.getSpawnLocation(), respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("on Paper, a built-over plot that could not be checked inline is lifted once the player is placed")
+    void paperUnverifiedBuiltOverPlotIsLiftedAfterPlacement() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        Location top = plot.clone().add(0, 1, 0);
+        manager.lifted = top;
+        manager.verdict = SpawnManager.SpawnVerdict.UNVERIFIED;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertSameBlock(plot, respawn.getRespawnLocation());
+        assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
+        assertSameBlock(top, player.teleports.get(0));
+    }
+
+    @Test
+    @DisplayName("on Paper, an unchecked plot with no clear position above it sends the player to world spawn once placed")
+    void paperUnverifiedPlotWithNoStandingPointMovesToWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.noStandingPoint = true;
+        manager.verdict = SpawnManager.SpawnVerdict.UNVERIFIED;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        paperRespawnEvent(player);
+        player.place();
+
+        assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
+        assertSameBlock(world.getSpawnLocation(), player.teleports.get(0));
+    }
+
+    @Test
+    @DisplayName("on Paper, an unchecked plot that is clear is not moved again")
+    void paperUnverifiedClearPlotIsNotMoved() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.verdict = SpawnManager.SpawnVerdict.UNVERIFIED;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.place();
+
+        assertSameBlock(plot, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
     }
 
     @Test

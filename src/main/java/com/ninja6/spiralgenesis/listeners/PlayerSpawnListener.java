@@ -150,14 +150,7 @@ public class PlayerSpawnListener implements Listener {
      * owns neither the player nor, necessarily, their plot. Nothing here reads a block or
      * the player's own state.
      *
-     * <p>The deferred task decides where the player goes. It re-checks the plot first, as
-     * {@link #onPlayerRespawn} does on Paper: the plot may have become unsafe since death,
-     * and a player held at world spawn is better off than one moved into lava. The repair
-     * started at death moves them once it finds a safe point. A plot that passes is then
-     * resolved to {@link SpawnManager#standingPoint}, which is the plot itself or, when it
-     * has been built over, the first clear position above it - the lift Paper applies to a
-     * respawn and Folia does not. Both steps run on the thread owning the plot, reached
-     * through the manager, never on this one.
+     * <p>The deferred task decides where the player goes, through {@link #placeOnPlot}.
      */
     @EventHandler(priority = EventPriority.HIGH, ignoreCancelled = true)
     public void onRespawnPointLost(PlayerSetSpawnEvent event) {
@@ -178,42 +171,82 @@ public class PlayerSpawnListener implements Listener {
             if (respawnEventSeen.remove(uuid)) {
                 return;
             }
-            SpawnManager manager = plugin.getSpawnManager();
-            if (manager == null) {
-                moveTo(player, fallback);
-                return;
-            }
-            manager.revalidate(fallback).whenComplete((safe, ex) -> {
-                if (ex != null || !Boolean.TRUE.equals(safe)) {
-                    plugin.getLogger().warning(player.getName() + "'s respawn point no longer"
-                            + " resolved and their plot failed its re-check; holding them"
-                            + " where they respawned until the repair moves them.");
-                    return;
-                }
-                manager.standingPoint(fallback).whenComplete((standing, error) -> {
-                    if (error != null || standing == null) {
-                        // Nothing to repair: the plot is safe, just built up to the build
-                        // limit or capped with something that hurts. The player walks from
-                        // where they are, and the plot stays their respawn point.
-                        plugin.getLogger().warning(player.getName() + "'s respawn point no"
-                                + " longer resolved and there is no clear, safe position"
-                                + " above their plot; leaving them where they respawned.");
-                        return;
-                    }
-                    player.getScheduler().run(plugin, t -> moveTo(player, standing), null);
-                });
-            });
+            placeOnPlot(player, fallback, false);
         }, null);
     }
 
-    /** Moves a player placed by a respawn onto their plot, on the player's own thread. */
-    private void moveTo(Player player, Location plot) {
+    /**
+     * Moves a player who has just been placed by a respawn to where they can stand on their
+     * plot. Called on the player's own thread, once the respawn has placed them.
+     *
+     * <p>It re-checks the plot first: the plot may have become unsafe since death, and a
+     * player held where they are is better off than one moved into lava. The repair
+     * started at death moves them once it finds a safe point. A plot that passes is then
+     * resolved to {@link SpawnManager#standingPoint}, which is the plot itself or, when it
+     * has been built over, the first clear position above it. No current server does that
+     * lift for a respawn on its own; see {@link SpawnManager#isSafeNow}. Both steps run on
+     * the thread owning the plot, reached through the manager, never on this one.
+     *
+     * <p>When there is no clear, safe position above the plot - built up to the build
+     * limit, or capped with something that hurts - there is nothing to repair, since the
+     * plot itself is safe. A player placed elsewhere is left there, and one already placed
+     * on the plot, inside the build, is moved to world spawn. The plot stays their respawn
+     * point either way.
+     *
+     * @param onPlot whether the respawn placed them on the stored plot itself, as the
+     *               Paper path does when the plot could not be checked inline
+     */
+    private void placeOnPlot(Player player, Location plot, boolean onPlot) {
+        SpawnManager manager = plugin.getSpawnManager();
+        if (manager == null) {
+            if (!onPlot) {
+                moveTo(player, plot);
+            }
+            return;
+        }
+        manager.revalidate(plot).whenComplete((safe, ex) -> {
+            if (ex != null || !Boolean.TRUE.equals(safe)) {
+                if (!onPlot) {
+                    plugin.getLogger().warning(player.getName() + "'s respawn point no longer"
+                            + " resolved and their plot failed its re-check; holding them"
+                            + " where they respawned until the repair moves them.");
+                }
+                return;
+            }
+            manager.standingPoint(plot).whenComplete((standing, error) -> {
+                if (error != null || standing == null) {
+                    plugin.getLogger().warning("There is no clear, safe position above "
+                            + player.getName() + "'s plot; leaving them "
+                            + (onPlot ? "at world spawn." : "where they respawned."));
+                    if (onPlot) {
+                        Location worldSpawn = plot.getWorld().getSpawnLocation();
+                        player.getScheduler().run(plugin, t -> moveTo(player, worldSpawn), null);
+                    }
+                    return;
+                }
+                if (onPlot && sameBlock(standing, plot)) {
+                    return;
+                }
+                player.getScheduler().run(plugin, t -> moveTo(player, standing), null);
+            });
+        });
+    }
+
+    /** Moves a player placed by a respawn, on the player's own thread. */
+    private void moveTo(Player player, Location target) {
         if (!player.isOnline() || player.isDead()) {
             return;
         }
-        plugin.getLogger().info(player.getName() + "'s respawn point no longer resolved;"
-                + " restored it to their plot and moved them there.");
-        player.teleportAsync(plot);
+        plugin.getLogger().info("Moved " + player.getName() + " after their respawn to ("
+                + target.getBlockX() + ", " + target.getBlockY() + ", " + target.getBlockZ()
+                + ").");
+        player.teleportAsync(target);
+    }
+
+    private static boolean sameBlock(Location a, Location b) {
+        return a.getWorld() != null && a.getWorld().equals(b.getWorld())
+                && a.getBlockX() == b.getBlockX() && a.getBlockY() == b.getBlockY()
+                && a.getBlockZ() == b.getBlockZ();
     }
 
     /**
@@ -258,6 +291,13 @@ public class PlayerSpawnListener implements Listener {
      * unloaded is the ordinary case, and the rare griefed one costs its owner one extra
      * death either way.
      *
+     * <p>A plot that passes is not respawned onto as stored but at
+     * {@link SpawnManager#standingPoint}, because paper-1.21.11 and later place the player
+     * at this event's location exactly, inside whatever the owner built there. When the
+     * chunk is resident that is resolved inline; when it is not, the player respawns at
+     * the plot and {@link #placeOnPlot} lifts them once they are placed. A plot with no
+     * clear, safe position above it holds the player at world spawn.
+     *
      * <p>Never reached on Folia <em>for a death respawn</em>; see {@link #onPlayerDeath} for
      * why. It is still reached there when a player leaves the End, because
      * {@code EndPortalBlock} fires this event itself with {@code RespawnReason.END_PORTAL}
@@ -300,9 +340,23 @@ public class PlayerSpawnListener implements Listener {
             return;
         }
 
-        event.setRespawnLocation(spawn);
-        if (verdict == SpawnManager.SpawnVerdict.UNVERIFIED) {
-            plugin.repairSpawn(player, record, true);
+        if (verdict == SpawnManager.SpawnVerdict.USABLE) {
+            // Resident, so the same chunk the verdict just read: answered inline.
+            Location standing = manager.standingPointNow(spawn);
+            if (standing == null) {
+                plugin.getLogger().warning("There is no clear, safe position above "
+                        + player.getName() + "'s plot; respawning them at world spawn.");
+                event.setRespawnLocation(spawn.getWorld().getSpawnLocation());
+                return;
+            }
+            event.setRespawnLocation(standing);
+            return;
         }
+
+        // Unverified: nothing can be read here, so they respawn at the plot and are lifted,
+        // or repaired, once the chunk has been checked.
+        event.setRespawnLocation(spawn);
+        plugin.repairSpawn(player, record, true);
+        player.getScheduler().run(plugin, task -> placeOnPlot(player, spawn, true), null);
     }
 }
