@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -428,6 +429,89 @@ class PlayerActionGateListenerTest {
 
         assertEquals(List.of(), reasserted);
         assertFalse(gate.isUnreached(player.getUniqueId()));
+    }
+
+    // --- Holding a player while allocation is unavailable -----------------------------
+
+    @Test
+    @DisplayName("a held player is retried on every action and stays held")
+    void heldPlayerStaysHeldAcrossActions() {
+        PlayerMock player = server.addPlayer("Waiting");
+        gate.markPending(player, "JAVA");
+        simulateMove(player, false);
+
+        // What the plugin does when that release finds allocation unavailable.
+        assertTrue(gate.hold(player, "JAVA"), "the first hold starts the hold");
+        simulateMove(player, false);
+        simulateMove(player, false);
+        simulateMove(player, false);
+
+        assertEquals(List.of("Waiting", "Waiting", "Waiting", "Waiting"), released,
+                "every action must retry, not only the first after the hold");
+        assertTrue(gate.isHeld(player.getUniqueId()), "an action must not end the hold");
+        assertFalse(gate.isPending(player.getUniqueId()), "a held player is past the gate");
+    }
+
+    @Test
+    @DisplayName("holding an already held player reports that it was already held")
+    void holdIsReportedOnce() {
+        PlayerMock player = server.addPlayer("Repeat");
+
+        assertTrue(gate.hold(player, "JAVA"));
+        assertFalse(gate.hold(player, "JAVA"), "a repeated hold is not a new one");
+    }
+
+    @Test
+    @DisplayName("a hold never reads or arms the timeout")
+    void holdArmsNoTimeout() {
+        AtomicInteger timeoutReads = new AtomicInteger();
+        PlayerActionGateListener counting = new PlayerActionGateListener(plugin,
+                (player, type) -> { }, player -> { },
+                () -> {
+                    timeoutReads.incrementAndGet();
+                    return 0;
+                }, () -> "");
+        PlayerMock player = server.addPlayer("NoBackstop");
+
+        counting.hold(player, "JAVA");
+        counting.hold(player, "JAVA");
+
+        assertEquals(0, timeoutReads.get(),
+                "allocating anyway is what a hold exists to prevent");
+    }
+
+    @Test
+    @DisplayName("forget and quit both end a hold")
+    void forgetAndQuitEndTheHold() {
+        PlayerMock allocated = server.addPlayer("Allocated");
+        PlayerMock leaving = server.addPlayer("Leaving");
+        gate.hold(allocated, "JAVA");
+        gate.hold(leaving, "JAVA");
+
+        gate.forget(allocated.getUniqueId());
+        server.getPluginManager().callEvent(new PlayerQuitEvent(leaving, "left"));
+        simulateMove(allocated, false);
+
+        assertFalse(gate.isHeld(allocated.getUniqueId()));
+        assertFalse(gate.isHeld(leaving.getUniqueId()));
+        assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("every held player is visited when allocation becomes available")
+    void heldPlayersAreVisited() {
+        PlayerMock first = server.addPlayer("HeldOne");
+        PlayerMock second = server.addPlayer("HeldTwo");
+        gate.hold(first, "JAVA");
+        gate.hold(second, "BEDROCK");
+
+        List<String> visited = new ArrayList<>();
+        gate.forEachHeld((player, type) -> visited.add(player.getName() + "/" + type));
+        visited.sort(null);
+
+        assertEquals(List.of("HeldOne/JAVA", "HeldTwo/BEDROCK"), visited);
+        assertTrue(gate.isHeld(first.getUniqueId()),
+                "visiting does not end the hold; allocating does");
     }
 
     @Test
