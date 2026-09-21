@@ -226,6 +226,10 @@ class RespawnFallbackTest {
         SpawnVerdict verdict = SpawnVerdict.USABLE;
         /** What the asynchronous re-check reports, read when it is asked. */
         boolean plotSafe = true;
+        /** Where the lift puts a player on the plot; null means the plot itself is clear. */
+        Location lifted;
+        /** The column above the plot has no clear, safe position. */
+        boolean noStandingPoint;
 
         private QuietManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
@@ -239,6 +243,14 @@ class RespawnFallbackTest {
         @Override
         public SpawnVerdict verifyStoredSpawn(Location stored) {
             return verdict;
+        }
+
+        @Override
+        public CompletableFuture<Location> standingPoint(Location stored) {
+            if (noStandingPoint) {
+                return CompletableFuture.completedFuture(null);
+            }
+            return CompletableFuture.completedFuture(lifted == null ? stored : lifted.clone());
         }
 
         @Override
@@ -361,8 +373,28 @@ class RespawnFallbackTest {
     }
 
     @Test
-    @DisplayName("on Folia, a plot the server just rejected is not handed back, and nobody is moved into it")
-    void rejectedPlotIsNotHandedBack() {
+    @DisplayName("a broken bed on Folia with the plot built over moves the player on top of the build")
+    void brokenBedWithBuiltOverPlotLifts() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        Location top = plot.clone().add(0, 1, 0);
+        manager.lifted = top;
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        bed.getBlock().setType(Material.AIR);
+
+        die(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
+        assertSameBlock(top, player.teleports.get(0));
+        assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("on Folia, a flooded plot the server just rejected is kept as the point, and nobody is moved into it")
+    void floodedPlotIsNotEntered() {
         SpiralGenesisPlugin plugin = load();
         Location plot = plot();
         // Flooded: the forced plot fails the server's own check, so it is the point that failed.
@@ -373,10 +405,76 @@ class RespawnFallbackTest {
         PlayerSetSpawnEvent event = respawnPointFails(player);
         player.place();
 
-        assertNull(event.getLocation(), "the rejected plot must not be stored again");
-        assertNull(player.point, "the server's clear stands; death restores the plot next time");
+        assertSameBlock(plot, event.getLocation());
+        assertSameBlock(plot, player.point);
         assertTrue(player.teleports.isEmpty(), "moving them into it is the defect: "
                 + player.teleports);
+    }
+
+    @Test
+    @DisplayName("on Folia, a plot the owner built over lifts them on top of the build")
+    void builtOverPlotLiftsThePlayer() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        // Built over: safe, but solid at the feet, so the server declined the forced point
+        // and placed them at world spawn. The first clear position is two blocks up.
+        Location top = plot.clone().add(0, 2, 0);
+        manager.lifted = top;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerSetSpawnEvent event = respawnPointFails(player);
+        assertTrue(player.teleports.isEmpty(), "nothing may move a player still in transit");
+        player.place();
+
+        assertEquals(1, player.teleports.size(), "the respawn chose world spawn: "
+                + player.teleports);
+        assertSameBlock(top, player.teleports.get(0));
+        assertSameBlock(plot, event.getLocation());
+        assertSameBlock(plot, player.point);
+        assertTrue(player.forced);
+        assertSameBlock(plot, plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
+    }
+
+    @Test
+    @DisplayName("on Folia, a built-over plot with no clear position above it leaves the player where they respawned")
+    void builtOverPlotWithNoStandingPointHoldsThePlayer() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.noStandingPoint = true;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertTrue(player.teleports.isEmpty(), "there is nowhere safe to put them: "
+                + player.teleports);
+        assertSameBlock(plot, player.point);
+        assertSameBlock(plot, plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
+    }
+
+    @Test
+    @DisplayName("on Paper, a built-over plot keeps its point and the routed respawn is not moved again")
+    void paperBuiltOverPlotIsNotMovedTwice() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.lifted = plot.clone().add(0, 2, 0);
+        RespawnPlayer player = join(plugin, plot);
+
+        // Paper's forced check fails first as well, then the respawn event routes the
+        // player to the plot and the server lifts them itself.
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertTrue(sameBlock(plot, respawn.getRespawnLocation()));
+        assertTrue(player.teleports.isEmpty(), "the server has placed them already: "
+                + player.teleports);
+        assertSameBlock(plot, player.point);
     }
 
     @Test

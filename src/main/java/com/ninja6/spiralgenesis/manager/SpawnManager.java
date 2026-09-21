@@ -58,10 +58,24 @@ public class SpawnManager {
      * the owner of an ice road or an ice floor through their spawn would be relocated for
      * it. The underwater plants stay: they only exist in water, so finding one at the feet
      * or head is the same flooding as finding the water itself.
+     *
+     * <p>Cactus, magma, and both campfires are added: each hurts a player standing on it,
+     * and each is solid by vanilla's respawn test, so one placed at the feet is exactly
+     * what the respawn lifts the player on top of. Left out, a griefer could place one on a
+     * plot to damage its owner on every respawn. Underfoot they are caught by the same
+     * material check, since none of them is passable.
+     *
+     * <p>Pointed dripstone is left out on purpose. A stalagmite only hurts through
+     * {@code fallOn}, which adds 2.5 blocks to the fall and so stays under the 3-block safe
+     * fall distance for a player placed on it rather than dropped; a stalactite only hurts
+     * when it falls, which a respawn does not cause. Checked against folia-1.21.11. Failing
+     * a plot for it would move the owner off a decoration, which is the defect this set was
+     * narrowed to fix.
      */
     private static final Set<Material> REVALIDATION_HAZARDS = EnumSet.of(
             Material.WATER, Material.LAVA, Material.SEAGRASS, Material.TALL_SEAGRASS,
-            Material.KELP, Material.KELP_PLANT, Material.POWDER_SNOW
+            Material.KELP, Material.KELP_PLANT, Material.POWDER_SNOW,
+            Material.CACTUS, Material.MAGMA_BLOCK, Material.CAMPFIRE, Material.SOUL_CAMPFIRE
     );
 
     /**
@@ -238,10 +252,19 @@ public class SpawnManager {
      * decompiling paper-1.20.4). The same goes for a tree that grew or sand that fell there.
      * Only what hurts is a reason to move a plot.
      *
-     * <p>Folia does not reach that path, and vanilla's own check on a forced respawn point
-     * declines one whose feet or head block is solid, sending the player to world spawn
-     * instead. That is a question of how the point is applied on respawn, not of whether it
-     * still belongs to the player, so it is not answered by rewriting the point here.
+     * <p>That lift comes after vanilla's own check on a forced respawn point, which still
+     * runs first on Paper and still declines a point whose feet or head block is solid. So
+     * on every such death the server clears the respawn point and the client shows the
+     * vanilla "no respawn block available" message, before the plugin's respawn handler
+     * overrides the location and the lift places the player on top of the build. The
+     * placement is right; the message is cosmetic, and the cleared point is put back by
+     * the plugin's {@code PlayerSetSpawnEvent} handler.
+     *
+     * <p>Folia does not reach that path at all: after the same check fails it places the
+     * player at world spawn. The plugin moves them afterwards, to {@link #standingPoint},
+     * which is the same lift done by hand. That is a question of how the point is applied
+     * on respawn, not of whether it still belongs to the player, so it is not answered by
+     * rewriting the point here.
      *
      * <p>The caller must already own the chunk this location is in.
      */
@@ -251,12 +274,14 @@ public class SpawnManager {
         int z = location.getBlockZ();
 
         // Dug out from under: there is nothing to stand on, and a fall of unknown depth.
+        // Fluids are passable, so water or lava that has replaced the floor fails here.
         if (isPassable(world.getBlockAt(x, y - 1, z))) {
             return false;
         }
 
-        // Flooding shows up at the feet and head; lava poured on the plot shows up
-        // underfoot once it settles into the surface block allocation approved.
+        // Flooding shows up at the feet and head. Underfoot, the floor is solid by now, so
+        // what the material check catches there is a floor that hurts: magma, cactus or a
+        // campfire.
         return !isRevalidationHazard(x, y, z)
                 && !isRevalidationHazard(x, y + 1, z)
                 && !isRevalidationHazard(x, y - 1, z);
@@ -264,6 +289,81 @@ public class SpawnManager {
 
     private boolean isRevalidationHazard(int x, int y, int z) {
         return REVALIDATION_HAZARDS.contains(world.getBlockAt(x, y, z).getType());
+    }
+
+    /**
+     * Where a player sent to a stored point can actually stand: the point itself when its
+     * feet and head blocks are clear, otherwise the first position straight above it where
+     * both are.
+     *
+     * <p>This is Paper's suffocation lift, for Folia, which does not have it. A plot the
+     * owner has built over is kept by {@link #isSafeNow}, but Folia's respawn declines a
+     * forced point whose feet or head block is solid and sends the player to world spawn,
+     * so the plugin moves them here afterwards. The stored point itself is not changed.
+     *
+     * <p>"Clear" is vanilla's own test for a forced respawn point,
+     * {@code Block.isPossibleToRespawnInThis}: neither solid nor liquid. The search stops
+     * below the world's build limit, and the position found is then held to the same
+     * hazard rule as the plot: nobody is lifted onto magma or into a campfire at the top of
+     * a build.
+     *
+     * <p>Loads the chunk first and runs on the thread that owns it, as {@link #revalidate}
+     * does, so it is safe to call from any thread.
+     *
+     * @return a future resolving to the position to stand at, or {@code null} when the
+     *         column has no clear position below the build limit or the first one found is
+     *         hazardous
+     */
+    public CompletableFuture<Location> standingPoint(Location stored) {
+        CompletableFuture<Location> result = new CompletableFuture<>();
+        int chunkX = stored.getBlockX() >> 4;
+        int chunkZ = stored.getBlockZ() >> 4;
+        loadChunk(chunkX, chunkZ).whenComplete((chunk, error) -> {
+            if (error != null) {
+                result.completeExceptionally(error);
+                return;
+            }
+            runOnRegion(result, chunkX, chunkZ, () -> result.complete(clearPointAbove(stored)));
+        });
+        return result;
+    }
+
+    private Location clearPointAbove(Location stored) {
+        int x = stored.getBlockX();
+        int z = stored.getBlockZ();
+        int from = stored.getBlockY();
+        // The head block has to be inside the world too.
+        int top = world.getMaxHeight() - 2;
+        for (int y = from; y <= top; y++) {
+            if (!admitsRespawn(world.getBlockAt(x, y, z))
+                    || !admitsRespawn(world.getBlockAt(x, y + 1, z))) {
+                continue;
+            }
+            if (isRevalidationHazard(x, y - 1, z)
+                    || isRevalidationHazard(x, y, z)
+                    || isRevalidationHazard(x, y + 1, z)) {
+                return null;
+            }
+            Location standing = stored.clone();
+            standing.setY(stored.getY() + (y - from));
+            return standing;
+        }
+        return null;
+    }
+
+    /**
+     * Whether vanilla would respawn a player with this block at their feet or head.
+     *
+     * <p>{@code Block.isBuildable()} and {@code Block.isLiquid()} are exactly
+     * {@code BlockState.isSolid()} and {@code BlockState.liquid()} in CraftBlock, the two
+     * halves of {@code isPossibleToRespawnInThis}; verified against folia-1.21.11.
+     * {@code Block.isSolid()} is not, as it answers {@code blocksMotion()} instead.
+     *
+     * <p>Package-private for the same reason as {@link #isPassable}: MockBukkit does not
+     * answer these from block state.
+     */
+    boolean admitsRespawn(Block block) {
+        return !block.isBuildable() && !block.isLiquid();
     }
 
     /**

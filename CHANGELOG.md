@@ -73,21 +73,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cause `PLAYER_RESPAWN`), the plot is now stored in its place and, on Folia, the player is
   moved there as soon as they are placed, after the plot passes a fresh safety check;
   with `doImmediateRespawn` as well. The respawn itself still lands at world spawn for
-  that one moment. When the point the server rejected is the plot itself, flooded or
-  built over, nothing is changed and the player stays at world spawn while the existing
-  repair runs. A player left with no respawn point at all has the plot restored when they
-  die. A bed or anchor that still works, and a point forced elsewhere such as by
-  `/spawnpoint`, is left alone on both platforms.
+  that one moment. When the point the server rejected is the plot itself, it is restored
+  as the respawn point all the same; a flooded or otherwise unsafe plot fails the safety
+  check, so the player stays at world spawn while the existing repair runs. A player left
+  with no respawn point at all has the plot restored when they die. A bed or anchor that
+  still works, and a point forced elsewhere such as by `/spawnpoint`, is left alone on
+  both platforms.
 - **Building on your own spawn point no longer moves it.** The death-time re-check failed
   a plot whenever the block at the player's feet or head could not be walked through, so
   a chest, crafting table, bed, door or slab placed on the landing spot made the plot
   "unsafe", and the repair rewrote the stored spawn to another point in the cell, away
   from what had been built. The re-check now fails a plot only for what can hurt a player:
-  a missing floor, or water, lava, powder snow or underwater plants at the feet, head or
-  underfoot. An obstruction is not one of them, because a death respawn on Paper lifts
-  the player clear of whatever they would collide with. Ice no longer fails the re-check
-  either, so an ice floor or ice road through the spawn is kept; allocation still rejects
-  ice as a surface for new plots.
+  a missing floor, or water, lava, powder snow, underwater plants, cactus, magma or a
+  campfire at the feet, head or underfoot. An obstruction is not one of them, because a
+  death respawn on Paper lifts the player clear of whatever they would collide with, and
+  on Folia, which declines such a point and places the player at world spawn, the plugin
+  moves them to the first clear position above the plot once they are placed. The stored
+  spawn is not changed by the lift. If the column has no clear position below the build
+  limit, or the first one sits on something that hurts, the player is left at world
+  spawn. On Paper the client still shows the vanilla "no respawn block" message on such a
+  death; the placement is unaffected. Ice no longer fails the re-check either, so an ice
+  floor or ice road through the spawn is kept; allocation still rejects ice as a surface
+  for new plots.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
