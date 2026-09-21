@@ -625,19 +625,38 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     return;
                 }
 
+                // Read before anything is written, on this thread, which owns the player.
+                // getPotentialBedLocation returns the stored point without resolving it, so
+                // it touches no block in whatever region a bed may stand in.
+                boolean headedForPlot = repairMovesRespawnPoint(
+                        player.getPotentialBedLocation(), stored);
+
                 dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
                         record.gridV(), player.getName(), record.clientType());
-                player.setRespawnLocation(res.location(), true);
-                // A player still on the death screen is not somewhere to be teleported
-                // from; updating their respawn point above is what places them, and it is
-                // also the only lever that works on Folia, whose respawn never consults a
-                // plugin. Anyone already back in the world is moved directly.
-                if (!player.isDead()) {
-                    player.teleportAsync(res.location());
+                if (headedForPlot) {
+                    player.setRespawnLocation(res.location(), true);
+                    // A player still on the death screen is not somewhere to be teleported
+                    // from; updating their respawn point above is what places them, and it
+                    // is also the only lever that works on Folia, whose respawn never
+                    // consults a plugin. Anyone already back in the world is moved directly.
+                    if (!player.isDead()) {
+                        player.teleportAsync(res.location());
+                    }
+                    getLogger().info("Repaired plot #" + record.index() + " for "
+                            + player.getName() + "; moved within the same cell to ("
+                            + res.location().getBlockX() + ", " + res.location().getBlockY()
+                            + ", " + res.location().getBlockZ() + ").");
+                } else {
+                    // A bed, an anchor or a point forced elsewhere is where this player
+                    // respawns, so neither it nor the player is moved: the repair only
+                    // changes where the plot is recorded. A bed that stops working is
+                    // handled when the server clears the point on respawn.
+                    getLogger().info("Repaired plot #" + record.index() + " for "
+                            + player.getName() + "; recorded at ("
+                            + res.location().getBlockX() + ", " + res.location().getBlockY()
+                            + ", " + res.location().getBlockZ() + "). Their respawn point is"
+                            + " elsewhere and was left alone.");
                 }
-                getLogger().info("Repaired plot #" + record.index() + " for " + player.getName()
-                        + "; moved within the same cell to (" + res.location().getBlockX() + ", "
-                        + res.location().getBlockY() + ", " + res.location().getBlockZ() + ").");
 
                 // Revalidation moved the spawn, so the claim has to move with it or the
                 // player ends up protected at a point they no longer spawn at - which is the
@@ -661,6 +680,35 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (scheduled == null) {
             repairing.remove(uuid);
         }
+    }
+
+    /**
+     * Whether a repair should move the player's respawn point onto the repaired plot.
+     *
+     * <p>Only when there is no point at all, or when the point is the plot being repaired.
+     * A bed, an anchor or a point forced elsewhere is a choice the player made, and a repair
+     * of the plot is no reason to take it away. Whether that bed still works is not checked:
+     * doing so reads blocks in whatever region holds it, and a bed that has stopped working
+     * is already handled when the server clears the point on respawn.
+     *
+     * <p>The plot is matched on its block column in its own world rather than on the exact
+     * block, because a plot that has been built over places the player above the stored
+     * point.
+     *
+     * @param current the player's stored respawn point, unresolved, or null if unset
+     * @param oldPlot the plot as it was recorded before the repair
+     */
+    private static boolean repairMovesRespawnPoint(Location current, Location oldPlot) {
+        if (current == null) {
+            return true;
+        }
+        if (oldPlot == null) {
+            return false;
+        }
+        World currentWorld = current.getWorld();
+        return currentWorld != null && currentWorld.equals(oldPlot.getWorld())
+                && current.getBlockX() == oldPlot.getBlockX()
+                && current.getBlockZ() == oldPlot.getBlockZ();
     }
 
     /**
