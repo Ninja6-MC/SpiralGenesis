@@ -497,6 +497,77 @@ class PlayerActionGateListenerTest {
         assertEquals(List.of(), released);
     }
 
+    /** A player who goes offline without the quit event reaching the gate. */
+    private static final class SilentlyLeavingPlayer extends PlayerMock {
+
+        private volatile boolean online = true;
+
+        SilentlyLeavingPlayer(ServerMock server, String name) {
+            super(server, name);
+        }
+
+        void leaveSilently() {
+            online = false;
+        }
+
+        @Override
+        public boolean isOnline() {
+            return online && super.isOnline();
+        }
+    }
+
+    @Test
+    @DisplayName("a hold that lands after the player quit leaves nothing behind")
+    void holdAfterQuitIsDropped() {
+        PlayerMock player = server.addPlayer("GoneAlready");
+        // Fires the quit event, which the gate handles, before the hold arrives: the order
+        // a console 'sgen allocate' or a completing future can produce on Folia.
+        player.disconnect();
+
+        assertFalse(gate.hold(player, "JAVA"), "a hold for an offline player starts nothing");
+        assertFalse(gate.isHeld(player.getUniqueId()), "no entry may pin the departed player");
+
+        List<String> visited = new ArrayList<>();
+        gate.forEachHeld((held, type) -> visited.add(held.getName()));
+        assertEquals(List.of(), visited);
+    }
+
+    @Test
+    @DisplayName("a rejoin replaces a hold left over from the previous session")
+    void rejoinReplacesStaleHold() {
+        SilentlyLeavingPlayer previous = new SilentlyLeavingPlayer(server, "Returning");
+        server.addPlayer(previous);
+        // The stale entry: held, then gone without the gate seeing the quit, which is what a
+        // hold racing the quit handler leaves behind.
+        gate.hold(previous, "JAVA");
+        previous.leaveSilently();
+        PlayerMock rejoined = new PlayerMock(server, "Returning", previous.getUniqueId());
+        server.addPlayer(rejoined);
+
+        assertTrue(gate.hold(rejoined, "JAVA"), "the new session's hold must be reported");
+
+        List<Object> visited = new ArrayList<>();
+        gate.forEachHeld((held, type) -> visited.add(held));
+        assertEquals(1, visited.size());
+        assertTrue(visited.get(0) == rejoined,
+                "a resume must be scheduled on the entity that is online now");
+    }
+
+    @Test
+    @DisplayName("a held player found offline is dropped rather than resumed")
+    void offlineHeldPlayerIsNotVisited() {
+        SilentlyLeavingPlayer player = new SilentlyLeavingPlayer(server, "Vanished");
+        server.addPlayer(player);
+        gate.hold(player, "JAVA");
+        player.leaveSilently();
+
+        List<String> visited = new ArrayList<>();
+        gate.forEachHeld((held, type) -> visited.add(held.getName()));
+
+        assertEquals(List.of(), visited);
+        assertFalse(gate.isHeld(player.getUniqueId()));
+    }
+
     @Test
     @DisplayName("every held player is visited when allocation becomes available")
     void heldPlayersAreVisited() {

@@ -153,12 +153,38 @@ public class PlayerActionGateListener implements Listener {
      * player is waiting on the server, not on themselves, and allocating anyway is exactly
      * what cannot be done.
      *
-     * @return true if the player was not already held
+     * <p>Callers can reach this off the player's own thread - {@code sgen allocate} from the
+     * console, or a failed allocation completing wherever its future completed - so it can
+     * land after {@link #onQuit} has already cleared the player. Two things keep that from
+     * leaving a stale entry. An entry holding a different {@code Player} instance for the
+     * same UUID belongs to an earlier session and is replaced, so a rejoin is held, reported
+     * and resumed as the entity that is actually online. And the player is checked after
+     * the put rather than before it: a quit that ran first is seen here, and one that runs
+     * after the put removes the entry itself.
+     *
+     * @return true if this call started a hold for this session of the player
      */
     public boolean hold(Player player, String clientType) {
         UUID uuid = player.getUniqueId();
         pending.remove(uuid);
-        return held.putIfAbsent(uuid, new Held(player, clientType)) == null;
+        boolean[] started = {false};
+        held.compute(uuid, (key, previous) -> {
+            if (previous != null && previous.player() == player) {
+                return previous;
+            }
+            started[0] = true;
+            return new Held(player, clientType);
+        });
+        if (!player.isOnline()) {
+            dropIfSame(uuid, player);
+            return false;
+        }
+        return started[0];
+    }
+
+    /** Removes the hold for this UUID only if it still belongs to this player instance. */
+    private void dropIfSame(UUID uuid, Player player) {
+        held.computeIfPresent(uuid, (key, entry) -> entry.player() == player ? null : entry);
     }
 
     /** Whether this player is held until allocation is available. */
@@ -172,10 +198,18 @@ public class PlayerActionGateListener implements Listener {
      * <p>Does not remove them. The caller allocates each one through the same idempotent
      * path an action takes, which drops them from the hold on the way through, so a player
      * whose allocation still cannot start stays held rather than being lost.
+     *
+     * <p>An entry whose player has gone offline is dropped instead of visited. Scheduling on
+     * a retired entity never runs, so visiting it would do nothing but keep it held.
      */
     public void forEachHeld(BiConsumer<Player, String> action) {
         for (Held entry : held.values()) {
-            action.accept(entry.player(), entry.clientType());
+            Player player = entry.player();
+            if (!player.isOnline()) {
+                dropIfSame(player.getUniqueId(), player);
+                continue;
+            }
+            action.accept(player, entry.clientType());
         }
     }
 
