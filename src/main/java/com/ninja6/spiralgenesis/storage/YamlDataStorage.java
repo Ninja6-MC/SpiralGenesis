@@ -56,6 +56,16 @@ public class YamlDataStorage implements DataStorage {
      * snapshot that reaches disk last is always the one taken last.
      */
     private final Object writeLock = new Object();
+
+    /**
+     * Saves that have failed in a row, guarded by {@link #writeLock}.
+     *
+     * <p>The flush task retries every few seconds, so a failure that persists - a full disk,
+     * a read-only mount - would otherwise print a SEVERE stack trace on every attempt and
+     * bury everything else on the console. Only the first failure of a run is logged in
+     * full; the repeats go to FINE, and the first success afterwards is logged once.
+     */
+    private int consecutiveSaveFailures;
     private YamlConfiguration yaml;
 
     private final Map<UUID, StoredSpawn> spawnCache = new ConcurrentHashMap<>();
@@ -82,7 +92,11 @@ public class YamlDataStorage implements DataStorage {
             // publishes it is the last step, so anything still under the temp name was
             // incomplete when the process died, and data.yml still holds the last complete
             // snapshot. Removing it keeps a stale half-file from being mistaken for a backup.
-            Files.deleteIfExists(tempFile);
+            // Under the write lock, because a save already in flight (the async flush, when
+            // reload runs save then load) may be writing that same path right now.
+            synchronized (writeLock) {
+                Files.deleteIfExists(tempFile);
+            }
         } catch (IOException e) {
             plugin.getLogger().log(Level.SEVERE, "Failed to prepare data.yml", e);
         }
@@ -180,13 +194,26 @@ public class YamlDataStorage implements DataStorage {
                 writeAtomically(serialised);
             } catch (IOException e) {
                 dirty.set(true); // Retry on the next flush rather than dropping the change.
-                plugin.getLogger().log(Level.SEVERE, "Failed to save data.yml", e);
+                boolean firstFailure = consecutiveSaveFailures++ == 0;
+                if (firstFailure) {
+                    plugin.getLogger().log(Level.SEVERE, "Failed to save data.yml; further"
+                            + " failures are logged at FINE until a save succeeds", e);
+                } else {
+                    plugin.getLogger().fine("Failed to save data.yml (attempt "
+                            + consecutiveSaveFailures + "): " + e);
+                }
                 try {
                     Files.deleteIfExists(tempFile);
                 } catch (IOException cleanup) {
-                    plugin.getLogger().log(Level.WARNING,
+                    plugin.getLogger().log(firstFailure ? Level.WARNING : Level.FINE,
                             "Failed to remove the partial data.yml.tmp", cleanup);
                 }
+                return;
+            }
+            if (consecutiveSaveFailures > 0) {
+                plugin.getLogger().info("Saved data.yml after " + consecutiveSaveFailures
+                        + " failed attempt(s).");
+                consecutiveSaveFailures = 0;
             }
         }
     }
