@@ -591,6 +591,27 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
+     * Whether a respawn point is the given plot, matched on its block column in the plot's
+     * world rather than on the exact block, because a plot that has been built over places
+     * the player above the stored point.
+     *
+     * <p>The one test for this, shared by the repair and by the death handler in
+     * {@code PlayerSpawnListener}, so they cannot disagree about which point is the plot.
+     *
+     * @param point a respawn point, unresolved
+     * @param plot  the stored plot
+     */
+    public static boolean isPlotColumn(Location point, Location plot) {
+        if (point == null || plot == null) {
+            return false;
+        }
+        World pointWorld = point.getWorld();
+        return pointWorld != null && pointWorld.equals(plot.getWorld())
+                && point.getBlockX() == plot.getBlockX()
+                && point.getBlockZ() == plot.getBlockZ();
+    }
+
+    /**
      * Applies the outcome of an in-cell repair search on the player's own thread.
      *
      * <p>Storage is rewritten only when a replacement was found. A cell where every sampled
@@ -619,7 +640,19 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                             + pluginConfig.getMaxCandidates() + " sampled candidates in plot #"
                             + record.index() + "; sending " + player.getName()
                             + " to world spawn. Their plot assignment is unchanged.");
-                    if (world != null && !player.isDead()) {
+                    if (player.isDead()) {
+                        // Still on the death screen, so there is nothing to teleport, and on
+                        // Folia a forced point on the plot would put them straight back on
+                        // it: its respawn checks only the feet and head blocks. Clearing the
+                        // point sends this respawn to world spawn on both platforms. Only
+                        // the plot is cleared; a bed or anchor elsewhere is theirs to keep.
+                        // The listener puts the plot back at the next death, when the plot
+                        // is re-checked again.
+                        Location point = player.getPotentialBedLocation();
+                        if (isPlotColumn(point, stored)) {
+                            player.setRespawnLocation(null, false);
+                        }
+                    } else if (world != null) {
                         player.teleportAsync(world.getSpawnLocation());
                     }
                     return;
@@ -691,24 +724,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * doing so reads blocks in whatever region holds it, and a bed that has stopped working
      * is already handled when the server clears the point on respawn.
      *
-     * <p>The plot is matched on its block column in its own world rather than on the exact
-     * block, because a plot that has been built over places the player above the stored
-     * point.
+     * <p>Which point is the plot is {@link #isPlotColumn}.
      *
      * @param current the player's stored respawn point, unresolved, or null if unset
      * @param oldPlot the plot as it was recorded before the repair
      */
     private static boolean repairMovesRespawnPoint(Location current, Location oldPlot) {
-        if (current == null) {
-            return true;
-        }
-        if (oldPlot == null) {
-            return false;
-        }
-        World currentWorld = current.getWorld();
-        return currentWorld != null && currentWorld.equals(oldPlot.getWorld())
-                && current.getBlockX() == oldPlot.getBlockX()
-                && current.getBlockZ() == oldPlot.getBlockZ();
+        return current == null || isPlotColumn(current, oldPlot);
     }
 
     /**

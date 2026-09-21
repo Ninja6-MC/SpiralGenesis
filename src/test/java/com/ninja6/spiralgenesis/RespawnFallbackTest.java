@@ -98,6 +98,8 @@ class RespawnFallbackTest {
          * so it throws here too.
          */
         boolean detached;
+        /** On the death screen: set by a death, cleared once a respawn places them. */
+        boolean dead;
         /** Tasks for the player's own thread, run by {@link #place} as the server would. */
         private final java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
 
@@ -111,10 +113,24 @@ class RespawnFallbackTest {
          */
         void place() {
             detached = false;
+            dead = false;
+            tick();
+        }
+
+        /**
+         * Runs the player's queued tasks without placing them, as their region does on
+         * every tick while they sit on the death screen.
+         */
+        void tick() {
             Runnable next;
             while ((next = queued.poll()) != null) {
                 next.run();
             }
+        }
+
+        @Override
+        public boolean isDead() {
+            return dead;
         }
 
         @Override
@@ -230,6 +246,8 @@ class RespawnFallbackTest {
         Location lifted;
         /** The column above the plot has no clear, safe position. */
         boolean noStandingPoint;
+        /** The in-cell search finds nothing, rather than staying in flight. */
+        boolean cellHasNoPoint;
 
         private QuietManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
@@ -260,7 +278,8 @@ class RespawnFallbackTest {
 
         @Override
         public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
-            return new CompletableFuture<>();
+            return cellHasNoPoint ? CompletableFuture.completedFuture(null)
+                    : new CompletableFuture<>();
         }
     }
 
@@ -317,6 +336,7 @@ class RespawnFallbackTest {
     }
 
     private void die(RespawnPlayer player) {
+        player.dead = true;
         server.getPluginManager().callEvent(
                 new PlayerDeathEvent(player, DamageSource.builder(DamageType.GENERIC).build(),
                         new ArrayList<ItemStack>(), 0, (String) null));
@@ -667,6 +687,92 @@ class RespawnFallbackTest {
 
         assertSameBlock(plot, player.getRespawnLocation());
         assertTrue(player.forced);
+    }
+
+    /**
+     * Draws the world border in around a box far from the plot, so the plot's whole cell
+     * is outside it. The re-check the repair runs is stubbed separately, since the border
+     * test at death is the manager's own and reads the world's real border.
+     */
+    private void shrinkBorderAwayFromPlot() {
+        world.getWorldBorder().setCenter(10_000, 10_000);
+        world.getWorldBorder().setSize(16);
+        manager.plotSafe = false;
+        manager.cellHasNoPoint = true;
+    }
+
+    @Test
+    @DisplayName("on Folia, a plot whose whole cell is outside the border is not respawned onto, and comes back with the border")
+    void foliaPlotOutsideTheBorderHoldsAtWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        shrinkBorderAwayFromPlot();
+
+        // Folia accepts the forced plot on its feet and head blocks and never looks at the
+        // border, and fires neither respawn event for it. So the point has to be gone by
+        // the time the respawn reads it, which is before the repair can answer.
+        die(player);
+        assertNull(player.point, "the plot must not be the respawn point for this death");
+
+        // The repair finds nothing in a cell entirely outside the border, while the player
+        // is still on the death screen.
+        player.tick();
+        // No point, so Folia respawns them at world spawn without firing anything.
+        player.place();
+
+        assertNull(player.point);
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(plot, plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
+
+        // The border grows back: the next death restores the plot as the point.
+        world.getWorldBorder().setCenter(0, 0);
+        world.getWorldBorder().setSize(1000);
+        manager.plotSafe = true;
+        die(player);
+
+        assertSameBlock(plot, player.point);
+        assertTrue(player.forced);
+    }
+
+    @Test
+    @DisplayName("a plot outside the border does not take away a bed")
+    void bedIsKeptWhenThePlotIsOutsideTheBorder() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        shrinkBorderAwayFromPlot();
+
+        die(player);
+        player.tick();
+        player.place();
+
+        assertSameBlock(bed, player.point);
+        assertFalse(player.forced);
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+    }
+
+    @Test
+    @DisplayName("on Folia, a repair that finds nothing while the player is dead clears the plot as their point")
+    void failedRepairWhileDeadClearsThePlotPoint() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        // Inside the border, but dug out, and no sampled candidate in the cell passes.
+        manager.plotSafe = false;
+        manager.cellHasNoPoint = true;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        assertSameBlock(plot, player.point);
+        player.tick();
+
+        assertNull(player.point, "a forced point on the plot would put them back in the hole");
+        assertTrue(player.teleports.isEmpty(), "nobody on the death screen is teleported: "
+                + player.teleports);
+        assertSameBlock(plot, plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
     }
 
     @Test

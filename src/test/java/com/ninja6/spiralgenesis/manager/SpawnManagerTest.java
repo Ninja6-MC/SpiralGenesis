@@ -1105,6 +1105,123 @@ class SpawnManagerTest {
                 "a cell outside the border holds no usable point");
     }
 
+    // --- Revalidation against a border shrunk after allocation -------------------------
+
+    @Test
+    @DisplayName("A plot left outside a shrunken border no longer verifies, though its terrain is untouched")
+    void plotOutsideAShrunkenBorderIsUnsafe() throws Exception {
+        // Allocated legally, then the border was drawn in around cell 1 alone. Nothing on
+        // the plot changed, so the border is the only thing that can fail it.
+        Location stored = originCentreSpawn();
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
+                "the asynchronous re-check the repair and the respawn lift use must agree");
+    }
+
+    @Test
+    @DisplayName("A plot outside the border is unsafe even when its chunk is not resident")
+    void unloadedPlotOutsideTheBorderIsUnsafe() {
+        // The border needs no chunk, so the synchronous respawn path can answer it rather
+        // than respawning the player onto the plot and correcting afterwards.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.isInsideBorder(stored));
+    }
+
+    @Test
+    @DisplayName("A plot still inside the border is judged on its terrain as before")
+    void plotInsideTheBorderIsJudgedAsBefore() throws Exception {
+        Location stored = originCentreSpawn();
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored));
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.LAVA);
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored),
+                "being inside the border must not excuse a hazard");
+    }
+
+    @Test
+    @DisplayName("A built-over plot outside the border is not rescued by the lift")
+    void builtOverPlotOutsideTheBorderIsUnsafe() throws Exception {
+        // A chest at the feet is kept, and the respawn handlers would lift the owner on top
+        // of it. The lift only moves along Y, so the column test has to fail the plot here,
+        // before any lift is asked for.
+        Location stored = originCentreSpawn();
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        borderAround(0, 0, 20);
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored));
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+        assertEquals(MOCK_SURFACE_Y + 2.0, standing.getY(), 1e-9);
+        assertTrue(world.getWorldBorder().isInside(standing),
+                "a lift must stay in the column the border was checked for: " + standing);
+
+        borderAround(CELL, 0, 20);
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A plot whose whole cell is outside the border fails and its repair finds nothing")
+    void wholeCellOutsideTheBorderHoldsThePlayer() {
+        // Nothing to move the owner to without taking another cell, which the repair never
+        // does: it resolves to null, and the caller holds them at world spawn and leaves the
+        // record as it is, so the plot comes back if the border is widened again.
+        Location stored = originCentreSpawn();
+        borderAround(3 * CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertNull(manager.findSafeSpawnInCell(0).join(),
+                "the repair must not return a point outside the border or outside the cell");
+
+        borderAround(0, 0, 1000);
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored),
+                "the untouched record must be usable again once the border grows back");
+    }
+
+    @Test
+    @DisplayName("A plot whose cell is only partly outside the border is repaired inside it")
+    void partlyOutsideCellIsRepairedInsideTheBorder() throws Exception {
+        // The border reaches x in (76, 116): cell 1's centre at x=64 is outside it, and the
+        // candidates at x=80 and x=96 are inside. The repair has to land on one of those.
+        world.loadChunk(CELL >> 4, 0);
+        Location stored = new Location(world, CELL + 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        borderAround(96, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, res.index(), "the repair must stay in the owner's cell");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "repaired outside the border: " + res.location());
+        double bound = CELL / 2.0 + 0.5;
+        assertTrue(Math.abs(res.location().getX() - CELL) <= bound,
+                "repair left the owner's cell: " + res.location().getX());
+        assertTrue(res.rejections().get(RejectionReason.OUTSIDE_BORDER) > 0,
+                "the centre and its neighbours should have been rejected for the border");
+        assertTrue(manager.revalidate(res.location()).get(10, TimeUnit.SECONDS),
+                "the replacement point must pass the same re-check the old one failed");
+    }
+
     /**
      * Raises the terrain-shape sample columns of the chunk containing the given point,
      * leaving the point itself low — a hole in otherwise higher ground.

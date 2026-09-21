@@ -107,10 +107,31 @@ public class PlayerSpawnListener implements Listener {
         // before any respawn packet can be processed. getPotentialBedLocation reads the
         // stored point without touching a block, so it is safe here where
         // getRespawnLocation, which resolves the point in whatever region holds it, is not.
-        if (player.getPotentialBedLocation() == null) {
-            Location plot = respawnFallback(player);
-            if (plot != null) {
-                player.setRespawnLocation(plot, true);
+        Location point = player.getPotentialBedLocation();
+
+        // A plot left outside a shrunken world border is kept off the respawn point for
+        // this death. Folia accepts a forced point on its feet and head blocks alone and
+        // never looks at the border, so nothing else would stop it sending the player
+        // straight back outside; the repair started above is asynchronous and can lose that
+        // race. With no point, both platforms respawn the player at world spawn. The border
+        // needs no block read, so it is judged here, on the player's own thread, before
+        // any respawn packet can be processed. Which point counts as the plot is decided as
+        // the repair decides it: its block column, since a lift puts the player above it.
+        // The record is not touched, and once the border takes the plot back in, the next
+        // death restores it as the point below.
+        SpawnManager manager = plugin.getSpawnManager();
+        Location plot = record.toLocation();
+        if (manager != null && !manager.isInsideBorder(plot)) {
+            if (SpiralGenesisPlugin.isPlotColumn(point, plot)) {
+                player.setRespawnLocation(null, false);
+            }
+            return;
+        }
+
+        if (point == null) {
+            Location fallback = respawnFallback(player);
+            if (fallback != null) {
+                player.setRespawnLocation(fallback, true);
             }
         }
     }
@@ -183,9 +204,10 @@ public class PlayerSpawnListener implements Listener {
      * player held where they are is better off than one moved into lava. The repair
      * started at death moves them once it finds a safe point. A plot that passes is then
      * resolved to {@link SpawnManager#standingPoint}, which is the plot itself or, when it
-     * has been built over, the first clear position above it. No current server does that
-     * lift for a respawn on its own; see {@link SpawnManager#isSafeNow}. Both steps run on
-     * the thread owning the plot, reached through the manager, never on this one.
+     * has been built over, the first clear position above it. Neither Folia nor Paper
+     * 1.21.11 and later does that lift for a respawn on its own; paper-1.20.4 does, and
+     * {@link SpawnManager#isSafeNow} has the detail. Both steps run on the thread owning
+     * the plot, reached through the manager, never on this one.
      *
      * <p>When there is no clear, safe position above the plot - built up to the build
      * limit, or capped with something that hurts - there is nothing to repair, since the
