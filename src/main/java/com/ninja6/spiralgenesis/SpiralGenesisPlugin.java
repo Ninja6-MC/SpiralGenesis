@@ -644,7 +644,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                         // Still on the death screen, so there is nothing to teleport, and on
                         // Folia a forced point on the plot would put them straight back on
                         // it: its respawn checks only the feet and head blocks. Clearing the
-                        // point sends this respawn to world spawn on both platforms. Only
+                        // point sends this respawn to the main world's spawn on both
+                        // platforms, the overworld's unless a Paper operator moved it, so
+                        // it is the plot world's only while that is the main world. Only
                         // the plot is cleared; a bed or anchor elsewhere is theirs to keep.
                         // The listener puts the plot back at the next death, when the plot
                         // is re-checked again.
