@@ -236,11 +236,12 @@ public class SpawnManager {
      * chunk and no heightmap. That is what makes it callable from
      * {@code PlayerRespawnEvent}, which is synchronous and cannot await anything.
      *
-     * <p>It repeats the lethal subset of {@link #score}: whether the ground is still under
-     * the player, and whether anything that kills is at their feet, head or underfoot. The
-     * quality checks (ocean biome, pit, roughness) are deliberately left out - terrain shape
-     * is not what a griefer changes, and re-running them would relocate players over a plot
-     * that merely scores worse than it did.
+     * <p>It repeats the lethal subset of {@link #score}: whether the point is still inside
+     * the world border, whether the ground is still under the player, and whether anything
+     * that kills is at their feet, head or underfoot. The quality checks (ocean biome, pit,
+     * roughness) are deliberately left out - terrain shape is not what a griefer changes,
+     * and re-running them would relocate players over a plot that merely scores worse than
+     * it did.
      *
      * <p>Whether the player still fits is left out too, and that is not an oversight. A
      * block at the feet or head is almost always the owner's own: a chest, a door, a slab,
@@ -275,6 +276,20 @@ public class SpawnManager {
         int y = location.getBlockY();
         int z = location.getBlockZ();
 
+        // Left outside by a border shrunk after allocation. Whatever the terrain, a player
+        // there takes border damage until they die and is respawned onto the same point.
+        // Unusable rather than rewritten: the in-cell repair looks for a point inside the
+        // border and, when the whole cell is outside, finds none and leaves the record
+        // alone, so the plot comes back if the border grows again. Keeping the player off
+        // it until then is the callers' part, and Folia's differs from Paper's: see
+        // PlayerSpawnListener.onPlayerDeath. The border is not region data and its getters
+        // carry no thread check (folia-1.21.11), so this read is legal on any thread. The
+        // lift in standingPointNow moves only along Y, so a point that passes here cannot
+        // be lifted outside the border.
+        if (!isInsideBorder(x, z)) {
+            return false;
+        }
+
         // Dug out from under: there is nothing to stand on, and a fall of unknown depth.
         // Fluids are passable, so water or lava that has replaced the floor fails here.
         if (isPassable(world.getBlockAt(x, y - 1, z))) {
@@ -298,11 +313,13 @@ public class SpawnManager {
      * feet and head blocks are clear, otherwise the first position straight above it where
      * both are.
      *
-     * <p>A plot the owner has built over is kept by {@link #isSafeNow}, and no current
-     * server places a respawning player clear of the build on its own: Paper 1.21.11 and
-     * later put them inside it, Folia sends them to world spawn. The respawn handlers place
-     * or move them here instead, on both platforms, so that the same hazard rule applies
-     * everywhere. The stored point itself is not changed.
+     * <p>A plot the owner has built over is kept by {@link #isSafeNow}, and neither Folia
+     * nor Paper 1.21.11 and later places a respawning player clear of the build on its own:
+     * Paper puts them inside it, Folia sends them to world spawn. paper-1.20.4 does lift
+     * them, as {@link #isSafeNow} records, but by its own collision test rather than this
+     * one. The respawn handlers place or move them here instead, on every platform, so
+     * that the same hazard rule applies everywhere. The stored point itself is not
+     * changed.
      *
      * <p>"Clear" is vanilla's own test for a forced respawn point,
      * {@code Block.isPossibleToRespawnInThis}: neither solid nor liquid. The search stops
@@ -406,7 +423,10 @@ public class SpawnManager {
     public enum SpawnVerdict {
         /** Re-checked against live blocks and still safe. */
         USABLE,
-        /** Re-checked and no longer safe: something lethal is there, or the floor is gone. */
+        /**
+         * Re-checked and no longer safe: something lethal is there, the floor is gone, or
+         * the point is outside the world border.
+         */
         UNSAFE,
         /** Not resident, so not checkable without loading a chunk the caller cannot await. */
         UNVERIFIED
@@ -419,8 +439,14 @@ public class SpawnManager {
      * Loading a chunk to reach a verdict is not on the table there, so the honest options
      * are to answer from what is already resident or to say so and let the caller correct
      * afterwards.
+     *
+     * <p>The world border is the exception: it needs no chunk, so a point outside it is
+     * answered {@link SpawnVerdict#UNSAFE} whether or not its chunk is resident.
      */
     public SpawnVerdict verifyStoredSpawn(Location stored) {
+        if (!isInsideBorder(stored)) {
+            return SpawnVerdict.UNSAFE;
+        }
         if (!isChunkResident(stored)) {
             return SpawnVerdict.UNVERIFIED;
         }
@@ -461,6 +487,16 @@ public class SpawnManager {
      */
     boolean isChunkResident(Location location) {
         return world.isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4);
+    }
+
+    /**
+     * Whether a stored point's column is inside the world border.
+     *
+     * <p>Reads no block and loads no chunk, so it is safe on any thread, including a
+     * player's own thread at death, where the plot's region is not owned.
+     */
+    public boolean isInsideBorder(Location location) {
+        return isInsideBorder(location.getBlockX(), location.getBlockZ());
     }
 
     /**
