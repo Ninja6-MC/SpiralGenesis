@@ -12,6 +12,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 
 import java.util.Set;
@@ -24,7 +25,8 @@ public class PlayerSpawnListener implements Listener {
     private final PlayerActionGateListener gate;
     /**
      * Players for whom {@code PlayerRespawnEvent} fired since their last death. Cleared on
-     * death, set by {@link #onPlayerRespawn}, consumed by {@link #onRespawnPointLost}.
+     * death and on quit, set by {@link #onPlayerRespawn}, consumed by
+     * {@link #onRespawnPointLost}.
      */
     private final Set<UUID> respawnEventSeen = ConcurrentHashMap.newKeySet();
 
@@ -62,6 +64,17 @@ public class PlayerSpawnListener implements Listener {
         // from the gate on its way through handlePlayerFirstJoin, so this one cannot fire
         // afterwards. That hand-off is what keeps the two from each reserving an index.
         gate.markPending(player, "JAVA");
+    }
+
+    /**
+     * Forgets a player who left. A respawn whose point did not fail leaves its entry in
+     * {@link #respawnEventSeen} until the next death, which a player who never comes back
+     * does not have. A deferred task that would still read the entry is retired with the
+     * player, so nothing is lost by dropping it.
+     */
+    @EventHandler(priority = EventPriority.MONITOR)
+    public void onQuit(PlayerQuitEvent event) {
+        respawnEventSeen.remove(event.getPlayer().getUniqueId());
     }
 
     /**

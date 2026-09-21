@@ -126,6 +126,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   point and re-checks it. Separately, on Folia a player whose repair finds no safe point
   while they are still on the death screen now respawns at the overworld's spawn instead
   of back on the unsafe plot.
+- **The respawn listener no longer keeps an entry for every player who has left.** Each
+  respawn that fired `PlayerRespawnEvent` without its point failing left the player in a
+  set that only their next death cleared, so one entry stayed behind per player who quit
+  before dying again. The entry is now dropped on quit.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

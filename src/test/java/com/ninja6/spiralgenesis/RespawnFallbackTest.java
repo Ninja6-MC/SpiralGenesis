@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
@@ -17,9 +18,11 @@ import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.damage.DamageSource;
 import org.bukkit.damage.DamageType;
 import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.Plugin;
+import org.bukkit.plugin.RegisteredListener;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +34,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -92,12 +97,6 @@ class RespawnFallbackTest {
         Location point;
         boolean forced;
         final java.util.List<Location> teleports = new ArrayList<>();
-        /**
-         * Set while a Folia respawn has the player out of every region. Reading their
-         * respawn point then throws on the server, from {@code CraftHumanEntity.getHandle},
-         * so it throws here too.
-         */
-        boolean detached;
         /** On the death screen: set by a death, cleared once a respawn places them. */
         boolean dead;
         /** Tasks for the player's own thread, run by {@link #place} as the server would. */
@@ -112,7 +111,6 @@ class RespawnFallbackTest {
          * while running are run as well, as they would be on later ticks.
          */
         void place() {
-            detached = false;
             dead = false;
             tick();
         }
@@ -172,13 +170,11 @@ class RespawnFallbackTest {
 
         @Override
         public Location getPotentialBedLocation() {
-            checkAttached();
             return point == null ? null : point.clone();
         }
 
         @Override
         public Location getRespawnLocation() {
-            checkAttached();
             if (point == null) {
                 return null;
             }
@@ -192,12 +188,6 @@ class RespawnFallbackTest {
                 io.papermc.paper.entity.TeleportFlag... flags) {
             teleports.add(location.clone());
             return super.teleportAsync(location, cause, flags);
-        }
-
-        private void checkAttached() {
-            if (detached) {
-                throw new IllegalStateException("Accessing entity state off owning region's thread");
-            }
         }
     }
 
@@ -349,10 +339,7 @@ class RespawnFallbackTest {
     private PlayerSetSpawnEvent respawnPointFails(RespawnPlayer player) {
         PlayerSetSpawnEvent event = new PlayerSetSpawnEvent(player,
                 PlayerSetSpawnEvent.Cause.PLAYER_RESPAWN, null, false, false, null);
-        // Folia fires this with the player removed from their world and owned by no region.
-        player.detached = true;
         server.getPluginManager().callEvent(event);
-        player.detached = false;
         if (!event.isCancelled()) {
             player.setRespawnLocation(event.getLocation(), event.isForced());
         }
@@ -787,6 +774,42 @@ class RespawnFallbackTest {
 
         assertNull(event.getLocation());
         assertTrue(player.teleports.isEmpty());
+    }
+
+    @Test
+    @DisplayName("a player who quits after a respawn leaves nothing behind")
+    void quitForgetsTheRespawn() {
+        SpiralGenesisPlugin plugin = load();
+        RespawnPlayer player = join(plugin, plot());
+
+        // A respawn whose point did not fail: nothing consumes the entry it records.
+        die(player);
+        paperRespawnEvent(player);
+        player.place();
+        assertTrue(respawnEventSeen(plugin).contains(player.getUniqueId()));
+
+        server.getPluginManager().callEvent(new PlayerQuitEvent(player, "left"));
+
+        assertFalse(respawnEventSeen(plugin).contains(player.getUniqueId()));
+    }
+
+    /** The listener's record of routed respawns, which has no accessor to read it by. */
+    @SuppressWarnings("unchecked")
+    private static Set<UUID> respawnEventSeen(SpiralGenesisPlugin plugin) {
+        for (RegisteredListener registered
+                : PlayerQuitEvent.getHandlerList().getRegisteredListeners()) {
+            if (registered.getPlugin() == plugin
+                    && registered.getListener() instanceof PlayerSpawnListener listener) {
+                try {
+                    Field field = PlayerSpawnListener.class.getDeclaredField("respawnEventSeen");
+                    field.setAccessible(true);
+                    return (Set<UUID>) field.get(listener);
+                } catch (ReflectiveOperationException e) {
+                    throw new IllegalStateException(e);
+                }
+            }
+        }
+        throw new IllegalStateException("PlayerSpawnListener is not registered for quits");
     }
 
     private static boolean sameBlock(Location a, Location b) {
