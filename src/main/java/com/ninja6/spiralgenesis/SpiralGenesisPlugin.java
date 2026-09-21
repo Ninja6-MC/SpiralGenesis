@@ -545,103 +545,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }
             if (Boolean.TRUE.equals(safe)) {
                 repairing.remove(uuid);
-                // Fine after all, which is the ordinary outcome. The plot is only reached
-                // if the respawn point still leads there, though.
-                restoreRespawnIfLost(player, stored);
-                return;
+                return; // Fine after all, which is the ordinary outcome.
             }
             startRepairSearch(player, record, stored);
         });
-    }
-
-    /**
-     * Points a player's respawn back at their plot when the bed or anchor that replaced it
-     * no longer works, and leaves it alone when it still does.
-     *
-     * <p>Sleeping in a bed overwrites the forced respawn point allocation set. On Paper a
-     * later respawn with that bed gone is caught by {@code PlayerRespawnEvent}; Folia never
-     * fires that event for a death respawn, so without this the player lands at world spawn.
-     *
-     * <p>Two reads, on two threads, because on Folia neither can stand in for the other.
-     * {@link Player#getPotentialBedLocation()} returns the stored coordinates without
-     * touching a block, so it is safe on the player's own thread. Deciding whether they
-     * still lead anywhere means reading the blocks there, which may be in another region or
-     * dimension; {@link #respawnPointHolds} does that on the thread owning them.
-     */
-    void restoreRespawnIfLost(Player player, Location stored) {
-        runForPlayer(player, () -> {
-            if (!player.isOnline()) {
-                return;
-            }
-            Location point = player.getPotentialBedLocation();
-            if (point == null) {
-                player.setRespawnLocation(stored, true);
-                return;
-            }
-            if (sameBlock(point, stored)) {
-                return;
-            }
-            respawnPointHolds(player, point).whenComplete((holds, ex) -> {
-                if (ex != null) {
-                    getLogger().log(Level.WARNING, "Could not check the respawn point of "
-                            + player.getName() + "; leaving it unchanged.", ex);
-                    return;
-                }
-                if (Boolean.TRUE.equals(holds)) {
-                    return; // A working bed or anchor outranks the plot.
-                }
-                runForPlayer(player, () -> {
-                    // Only if nothing has replaced the point that was checked meanwhile.
-                    Location now = player.getPotentialBedLocation();
-                    if (player.isOnline() && now != null && sameBlock(now, point)) {
-                        player.setRespawnLocation(stored, true);
-                    }
-                }, () -> { });
-            });
-        }, () -> { });
-    }
-
-    /**
-     * Whether the player's respawn point at {@code point} still resolves, judged by the
-     * server itself: {@link Player#getRespawnLocation()} returns null for a bed that is gone
-     * or obstructed and for an anchor with no charge, and honours a forced point such as
-     * one set by {@code /spawnpoint}.
-     *
-     * <p>That call reads blocks at {@code point}, so the chunk is loaded first and the call
-     * made on the thread owning it, the same ordering {@link SpawnManager#revalidate} uses.
-     * Package-private as a test seam: MockBukkit implements neither.
-     */
-    CompletableFuture<Boolean> respawnPointHolds(Player player, Location point) {
-        CompletableFuture<Boolean> result = new CompletableFuture<>();
-        World world = point.getWorld();
-        if (world == null) {
-            result.complete(false);
-            return result;
-        }
-        world.getChunkAtAsync(point).whenComplete((chunk, error) -> {
-            if (error != null) {
-                result.completeExceptionally(error);
-                return;
-            }
-            try {
-                getServer().getRegionScheduler().execute(this, point, () -> {
-                    try {
-                        result.complete(player.getRespawnLocation() != null);
-                    } catch (Throwable t) {
-                        result.completeExceptionally(t);
-                    }
-                });
-            } catch (Throwable t) {
-                result.completeExceptionally(t);
-            }
-        });
-        return result;
-    }
-
-    private static boolean sameBlock(Location a, Location b) {
-        return a.getWorld() != null && a.getWorld().equals(b.getWorld())
-                && a.getBlockX() == b.getBlockX() && a.getBlockY() == b.getBlockY()
-                && a.getBlockZ() == b.getBlockZ();
     }
 
     /** Announces the repair and hands off to the in-cell search. */

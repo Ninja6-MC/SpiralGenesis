@@ -4,15 +4,19 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
+import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
-import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Tag;
 import org.bukkit.World;
 import org.bukkit.configuration.file.YamlConfiguration;
-import org.bukkit.entity.Player;
+import org.bukkit.damage.DamageSource;
+import org.bukkit.damage.DamageType;
+import org.bukkit.event.entity.PlayerDeathEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -23,24 +27,33 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
+import java.util.ArrayList;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * What a death does to a respawn point that no longer matches the plot.
+ * What happens when the respawn point a player died with no longer leads anywhere.
  *
- * <p>Folia never fires {@code PlayerRespawnEvent} for a death respawn, so the death-time
- * re-check is the only place a player whose bed was broken can be sent back to their plot.
- * The same re-check must never touch a bed that still works: a player who sleeps at a base
- * away from their plot would otherwise lose that bed on every death, on both platforms.
+ * <p>Folia never fires {@code PlayerRespawnEvent} for a death respawn. What it does fire,
+ * inside the respawn and only when the point failed, is {@code PlayerSetSpawnEvent} with
+ * cause {@code PLAYER_RESPAWN} and a null location. These tests drive that event, as the
+ * server does, rather than calling into the plugin directly: an earlier version decided
+ * at death time and lost the race against the respawn, and tests that completed inline
+ * could not see it.
+ *
+ * <p>A working bed never produces that event, so it is never touched; the guards below
+ * hold that line for the one place the plugin still writes a respawn point at death.
  */
 class RespawnFallbackTest {
 
     private ServerMock server;
     private WorldMock world;
+    private QuietManager manager;
 
     @BeforeEach
     void setUp() {
@@ -65,15 +78,16 @@ class RespawnFallbackTest {
      * A player whose respawn point behaves as the server's does.
      *
      * <p>MockBukkit returns the stored point from {@code getRespawnLocation} unchecked and
-     * has no {@code getPotentialBedLocation} at all. On the server the first resolves the
-     * point and returns null for a bed that is gone, while honouring a forced point; the
-     * second returns the stored coordinates without looking at any block. Both confirmed
-     * with javap against CraftPlayer and CraftHumanEntity in paper 1.20.4 and folia 1.21.11.
+     * has no {@code getPotentialBedLocation}. On the server the first resolves the point
+     * and returns null for a bed that is gone, while honouring a forced point; the second
+     * returns the stored coordinates without looking at any block. Both confirmed with
+     * javap against CraftPlayer and CraftHumanEntity in paper 1.20.4 and folia 1.21.11.
      */
     static final class RespawnPlayer extends InlinePlayerMock {
 
         Location point;
         boolean forced;
+        final java.util.List<Location> teleports = new ArrayList<>();
 
         RespawnPlayer(ServerMock server, String name) {
             super(server, name);
@@ -98,12 +112,27 @@ class RespawnFallbackTest {
             boolean bed = Tag.BEDS.isTagged(point.getBlock().getType());
             return bed || forced ? point.clone() : null;
         }
+
+        @Override
+        public CompletableFuture<Boolean> teleportAsync(Location location,
+                org.bukkit.event.player.PlayerTeleportEvent.TeleportCause cause,
+                io.papermc.paper.entity.TeleportFlag... flags) {
+            teleports.add(location.clone());
+            return super.teleportAsync(location, cause, flags);
+        }
     }
 
-    /** A manager whose re-check always finds the plot safe, without loading a chunk. */
-    private static final class SafePlotManager extends SpawnManager {
+    /**
+     * A manager that answers without reading a block: MockBukkit implements neither
+     * {@code Block.isPassable}, async chunk loading nor the region schedulers. The in-cell
+     * search never finishes, which leaves a repair in flight, as it would be for a while
+     * on a real server.
+     */
+    private static final class QuietManager extends SpawnManager {
 
-        private SafePlotManager(JavaPlugin plugin, World world, PluginConfig config) {
+        SpawnVerdict verdict = SpawnVerdict.USABLE;
+
+        private QuietManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
         }
 
@@ -111,20 +140,20 @@ class RespawnFallbackTest {
         public CompletableFuture<Boolean> revalidate(Location stored) {
             return CompletableFuture.completedFuture(true);
         }
-    }
-
-    /** Resolves the respawn point inline; MockBukkit has no async chunks or regions. */
-    public static class RespawnPlugin extends SpiralGenesisPlugin {
 
         @Override
-        CompletableFuture<Boolean> respawnPointHolds(Player player, Location point) {
-            return CompletableFuture.completedFuture(player.getRespawnLocation() != null);
+        public SpawnVerdict verifyStoredSpawn(Location stored) {
+            return verdict;
+        }
+
+        @Override
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
+            return new CompletableFuture<>();
         }
     }
 
-    private RespawnPlugin load() {
-        RespawnPlugin plugin = MockBukkit.loadWith(RespawnPlugin.class,
-                getClass().getResourceAsStream("/plugin.yml"));
+    private SpiralGenesisPlugin load() {
+        SpiralGenesisPlugin plugin = MockBukkit.load(SpiralGenesisPlugin.class);
         File file = new File(plugin.getDataFolder(), "config.yml");
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
         yaml.set("allocation.action-timeout-seconds", 0);
@@ -134,7 +163,8 @@ class RespawnFallbackTest {
             throw new UncheckedIOException(e);
         }
         plugin.reload();
-        bind(plugin, new SafePlotManager(plugin, world, plugin.getPluginConfig()));
+        manager = new QuietManager(plugin, world, plugin.getPluginConfig());
+        bind(plugin, manager);
         return plugin;
     }
 
@@ -152,7 +182,12 @@ class RespawnFallbackTest {
         }
     }
 
-    private RespawnPlayer join(RespawnPlugin plugin, Location plot) {
+    /** The stored plot. Its blocks are never read: the manager's verdict is stubbed. */
+    private Location plot() {
+        return new Location(world, 10.5, 64, 10.5);
+    }
+
+    private RespawnPlayer join(SpiralGenesisPlugin plugin, Location plot) {
         RespawnPlayer player = new RespawnPlayer(server, "Bob");
         server.addPlayer(player);
         plugin.getDataStorage().setSpawn(player.getUniqueId(), plot, 3, 0, 0, "Bob", "JAVA");
@@ -169,73 +204,141 @@ class RespawnFallbackTest {
         return bed;
     }
 
-    private void die(RespawnPlugin plugin, Player player) {
-        StoredSpawn record = plugin.getDataStorage().getRecord(player.getUniqueId());
-        assertNotNull(record);
-        // What PlayerSpawnListener.onPlayerDeath calls.
-        plugin.repairSpawn(player, record, true);
+    private void die(RespawnPlayer player) {
+        server.getPluginManager().callEvent(
+                new PlayerDeathEvent(player, DamageSource.builder(DamageType.GENERIC).build(),
+                        new ArrayList<ItemStack>(), 0, (String) null));
     }
 
-    private static void assertAt(Location expected, Location actual) {
-        assertNotNull(actual, "the player must still have a respawn point");
+    /**
+     * What the server does when the point a respawn goes through has failed: fire the
+     * event with a null location, then store whatever the event ends up holding.
+     */
+    private PlayerSetSpawnEvent respawnPointFails(RespawnPlayer player) {
+        PlayerSetSpawnEvent event = new PlayerSetSpawnEvent(player,
+                PlayerSetSpawnEvent.Cause.PLAYER_RESPAWN, null, false, false, null);
+        server.getPluginManager().callEvent(event);
+        if (!event.isCancelled()) {
+            player.setRespawnLocation(event.getLocation(), event.isForced());
+        }
+        return event;
+    }
+
+    private static void assertSameBlock(Location expected, Location actual) {
+        assertNotNull(actual, "expected a location at " + expected);
+        assertEquals(expected.getWorld(), actual.getWorld());
         assertEquals(expected.getBlockX(), actual.getBlockX());
         assertEquals(expected.getBlockY(), actual.getBlockY());
         assertEquals(expected.getBlockZ(), actual.getBlockZ());
     }
 
     @Test
-    @DisplayName("a player whose bed was broken respawns at their plot, not world spawn")
-    void brokenBedFallsBackToThePlot() {
-        RespawnPlugin plugin = load();
-        Location plot = new Location(world, 10, 64, 10);
+    @DisplayName("a broken bed on Folia restores the plot as the respawn point and moves the player there")
+    void brokenBedRestoresThePlot() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
         RespawnPlayer player = join(plugin, plot);
         Location bed = sleepInBed(player);
         bed.getBlock().setType(Material.AIR);
 
-        die(plugin, player);
+        die(player);
+        // No PlayerRespawnEvent: Folia never fires one for a death respawn.
+        respawnPointFails(player);
 
-        assertAt(plot, player.getRespawnLocation());
+        assertSameBlock(plot, player.point);
         assertTrue(player.forced, "the plot is not a bed, so it only holds as a forced point");
+        assertEquals(1, player.teleports.size(), "the respawn in progress already chose"
+                + " world spawn, so the player has to be moved: " + player.teleports);
+        assertSameBlock(plot, player.teleports.get(0));
+    }
+
+    @Test
+    @DisplayName("on Paper, a respawn the respawn event already routed is not moved a second time")
+    void paperRespawnIsNotMovedTwice() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        // Griefed: the respawn handler holds the player at world spawn while it repairs.
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        bed.getBlock().setType(Material.AIR);
+
+        die(player);
+        PlayerRespawnEvent respawn = new PlayerRespawnEvent(player,
+                world.getSpawnLocation(), false, false, PlayerRespawnEvent.RespawnReason.DEATH);
+        server.getPluginManager().callEvent(respawn);
+        respawnPointFails(player);
+
+        assertFalse(sameBlock(plot, respawn.getRespawnLocation()),
+                "precondition: the respawn handler kept the player off the unsafe plot");
+        assertTrue(player.teleports.isEmpty(),
+                "moving them onto the plot would undo that: " + player.teleports);
+        assertSameBlock(plot, player.point);
     }
 
     @Test
     @DisplayName("a player whose bed still stands keeps it after dying")
     void workingBedIsKept() {
-        RespawnPlugin plugin = load();
-        Location plot = new Location(world, 10, 64, 10);
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
         RespawnPlayer player = join(plugin, plot);
         Location bed = sleepInBed(player);
 
-        die(plugin, player);
+        // A bed that works never makes the server clear the point, so death is all there is.
+        die(player);
 
-        assertAt(bed, player.getRespawnLocation());
-        assertEquals(false, player.forced, "the bed must be left exactly as the player set it");
+        assertSameBlock(bed, player.getRespawnLocation());
+        assertFalse(player.forced, "the bed must be left exactly as the player set it");
+        assertTrue(player.teleports.isEmpty());
     }
 
     @Test
     @DisplayName("a forced respawn point set elsewhere, such as by /spawnpoint, is kept")
     void forcedPointElsewhereIsKept() {
-        RespawnPlugin plugin = load();
-        Location plot = new Location(world, 10, 64, 10);
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
         RespawnPlayer player = join(plugin, plot);
         Location elsewhere = new Location(world, -300, 80, 40);
         player.setRespawnLocation(elsewhere, true);
 
-        die(plugin, player);
+        die(player);
 
-        assertAt(elsewhere, player.getRespawnLocation());
+        assertSameBlock(elsewhere, player.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty());
     }
 
     @Test
-    @DisplayName("a player left with no respawn point at all is pointed back at their plot")
-    void missingPointFallsBackToThePlot() {
-        RespawnPlugin plugin = load();
-        Location plot = new Location(world, 10, 64, 10);
+    @DisplayName("a player with no respawn point at all has the plot restored when they die")
+    void missingPointIsRestoredAtDeath() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
         RespawnPlayer player = join(plugin, plot);
         player.setRespawnLocation(null, false);
 
-        die(plugin, player);
+        // Folia sends a player with no point to world spawn without firing anything, so
+        // death is the only chance and the point has to be in place when it returns.
+        die(player);
 
-        assertAt(plot, player.getRespawnLocation());
+        assertSameBlock(plot, player.getRespawnLocation());
+        assertTrue(player.forced);
+    }
+
+    @Test
+    @DisplayName("a player with no plot is left to the server")
+    void noPlotLeavesTheEventAlone() {
+        load();
+        RespawnPlayer player = new RespawnPlayer(server, "Alice");
+        server.addPlayer(player);
+
+        PlayerSetSpawnEvent event = respawnPointFails(player);
+
+        assertNull(event.getLocation());
+        assertTrue(player.teleports.isEmpty());
+    }
+
+    private static boolean sameBlock(Location a, Location b) {
+        return a != null && b != null && a.getWorld() == b.getWorld()
+                && a.getBlockX() == b.getBlockX() && a.getBlockY() == b.getBlockY()
+                && a.getBlockZ() == b.getBlockZ();
     }
 }

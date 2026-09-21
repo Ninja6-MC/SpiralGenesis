@@ -68,11 +68,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A broken bed on Folia no longer costs a player their plot.** Sleeping in a bed replaces
   the respawn point allocation set, and on Paper a later respawn with that bed gone is
   sent back to the plot by `PlayerRespawnEvent`. Folia never fires that event for a death
-  respawn, so the player landed at world spawn instead. The re-check that runs on death
-  now also looks at the respawn point itself and, when the bed or anchor no longer
-  resolves, points it back at the plot before the player clicks respawn. A bed or anchor
-  that still works, and a point forced elsewhere such as by `/spawnpoint`, is left alone
-  on both platforms.
+  respawn, so the player landed at world spawn instead. When the server finds the bed or
+  anchor gone during the respawn and clears the respawn point (`PlayerSetSpawnEvent` with
+  cause `PLAYER_RESPAWN`), the plot is now stored in its place and, on Folia, the player is
+  moved there as soon as they are placed; with `doImmediateRespawn` as well. The respawn
+  itself still lands at world spawn for that one moment. A player left with no respawn
+  point at all has the plot restored when they die. A bed or anchor that still works, and
+  a point forced elsewhere such as by `/spawnpoint`, is left alone on both platforms.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
