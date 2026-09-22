@@ -422,6 +422,59 @@ class RefusedWriteTest {
                         + said.get(0).getMessage());
     }
 
+    /**
+     * A player who disconnects straight after the next connection check answers true.
+     *
+     * <p>That is the Folia interleaving the refused-write log guards against: the entity
+     * disconnects on its own region thread after {@code hold()} has checked it and kept the
+     * entry, and before the quit event that would remove the entry has run.
+     */
+    private static final class RacingPlayerMock extends InlinePlayerMock {
+
+        volatile boolean leaveAfterNextCheck;
+
+        RacingPlayerMock(ServerMock server, String name) {
+            super(server, name);
+        }
+
+        @Override
+        public boolean isConnected() {
+            boolean connected = super.isConnected();
+            if (leaveAfterNextCheck) {
+                leaveAfterNextCheck = false;
+                dropConnection();
+            }
+            return connected;
+        }
+    }
+
+    @Test
+    @DisplayName("a first allocation refused for a player who left after the hold says they left")
+    void refusedAllocationOfPlayerWhoLeftAfterTheHoldIsNotReportedHeld() {
+        RefusingPlugin plugin = load();
+        RacingPlayerMock racer = new RacingPlayerMock(server, "Racer");
+        server.addPlayer(racer);
+        failOnNextWrite(plugin);
+        Runnable fail = plugin.storage.beforeNextWrite;
+        plugin.storage.beforeNextWrite = () -> {
+            fail.run();
+            racer.leaveAfterNextCheck = true;
+        };
+        move(racer);
+
+        assertFalse(plugin.getDataStorage().hasSpawn(racer.getUniqueId()));
+        assertFalse(racer.isConnected(), "the fixture should have disconnected the player");
+        assertTrue(gate(plugin).isHeld(racer.getUniqueId()),
+                "the fixture should leave the entry in place, as before the quit event runs");
+        List<LogRecord> said = loggedContaining("Plot #0 for Racer was not recorded");
+        assertEquals(1, said.size(), "the refusal is logged once: " + said);
+        assertTrue(said.get(0).getMessage().contains("will be allocated when they next join"),
+                "the line must say they left: " + said.get(0).getMessage());
+        assertFalse(said.get(0).getMessage().contains("they are held"),
+                "a hold entry for a disconnected player is not a hold: "
+                        + said.get(0).getMessage());
+    }
+
     @Test
     @DisplayName("a first allocation refused for a connected player reports the hold")
     void refusedAllocationOfConnectedPlayerIsReportedHeld() {
