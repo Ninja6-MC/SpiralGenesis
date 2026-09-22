@@ -24,8 +24,10 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -86,6 +88,37 @@ public class YamlDataStorage implements DataStorage {
     private final Map<UUID, StoredSpawn> spawnCache = new ConcurrentHashMap<>();
     private final Map<String, UUID> nameIndex = new ConcurrentHashMap<>();
     private final AtomicInteger currentIndex = new AtomicInteger();
+
+    /**
+     * The highest value {@link #currentIndex} has held in this process, guarded by
+     * {@link #yamlLock}.
+     *
+     * <p>Every index below it has been handed to a scan or recorded, and a scan that
+     * reserved one may still write it after the load that follows. So a load never restores
+     * the counter below this, whatever the file says: the file can be older than the
+     * reservation, because the reservation was not flushed before the file became
+     * unreadable, or because it was made between the save and the load of a reload. Not
+     * cleared by a failed load, which is exactly the case it exists for.
+     */
+    private int highWater;
+
+    /**
+     * Indices whose write was refused since the last successful load, guarded by
+     * {@link #yamlLock}.
+     *
+     * <p>A refused index is never recorded and its scan is over, so it is the one reserved
+     * index nothing can still write. The next load lowers the high-water mark past those at
+     * its top, which hands them out again rather than burning them - but never past
+     * {@link #highestRecorded}, since a refused rewrite of a plot already recorded, such as
+     * an in-cell repair, names an index that is not free.
+     */
+    private final Set<Integer> refusedIndices = new HashSet<>();
+
+    /**
+     * The highest index recorded in this process, from a file or a write, guarded by
+     * {@link #yamlLock}. Like {@link #highWater}, not cleared by a failed load.
+     */
+    private int highestRecorded = -1;
     private final AtomicBoolean dirty = new AtomicBoolean();
 
     private ScheduledTask flushTask;
@@ -205,9 +238,19 @@ public class YamlDataStorage implements DataStorage {
         // Self-healing: if a crash lost the counter write, recover from the highest index
         // actually handed out. Skipping indices is harmless; reusing one is not.
         int stored = loaded.getInt("current-spiral-index", 0);
-        currentIndex.set(Math.max(stored, highestAssigned + 1));
 
+        // Under the lock reservations take, so a reservation lands either before the
+        // restore, and is counted in the high-water mark, or after it, on the new counter.
         synchronized (yamlLock) {
+            int reserved = highWater;
+            while (reserved > highestRecorded + 1 && refusedIndices.contains(reserved - 1)) {
+                reserved--;
+            }
+            refusedIndices.clear();
+            highestRecorded = Math.max(highestRecorded, highestAssigned);
+            int restored = Math.max(Math.max(stored, highestAssigned + 1), reserved);
+            currentIndex.set(restored);
+            highWater = restored;
             this.yaml = loaded;
         }
     }
@@ -486,9 +529,11 @@ public class YamlDataStorage implements DataStorage {
         // decided the write.
         synchronized (yamlLock) {
             if (failure != null) {
+                refusedIndices.add(index);
                 return false;
             }
             spawnCache.put(uuid, record);
+            highestRecorded = Math.max(highestRecorded, index);
             if (playerName != null && !playerName.isEmpty()) {
                 nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
             }
@@ -544,14 +589,19 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public int reserveNextIndex() {
-        // Lock-free, unlike the record mutators. A reservation racing the failure can still
-        // advance the zeroed counter, but nothing reads that counter until a successful load
-        // replaces it, and the record the reservation was for is refused by setSpawn.
-        StorageFailure failed = failure;
-        if (failed != null) {
-            throw new IllegalStateException("data.yml could not be read: " + failed.error());
+        // Under the lock the failure clears the counter under and a load restores it under.
+        // A reservation cannot then take an index from the zeroed counter of a failed load,
+        // which a scan could write after a later load succeeds, and every index it does take
+        // is in the high-water mark that load restores the counter past.
+        int reserved;
+        synchronized (yamlLock) {
+            StorageFailure failed = failure;
+            if (failed != null) {
+                throw new IllegalStateException("data.yml could not be read: " + failed.error());
+            }
+            reserved = currentIndex.getAndIncrement();
+            highWater = Math.max(highWater, reserved + 1);
         }
-        int reserved = currentIndex.getAndIncrement();
         dirty.set(true);
         return reserved;
     }

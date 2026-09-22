@@ -198,6 +198,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   storage reads again; a refused reassign changes nothing and tells the operator so. The
   refused plot's index is recorded against nobody, so it is never shared.
   `/sgen setspawn` and the in-cell repair are gated the same way.
+- **A scan in flight across a failed `/sgen reload` no longer shares its plot.** An
+  allocation reserves its spiral index when it starts and records the player when it
+  finishes. If a reload failed to read `data.yml` in between, and a later reload read back
+  a file saved before the reservation, the counter was restored below the scan's index:
+  the scan recorded its player there and the next player was handed the same plot. A
+  reservation made between a reload's save and its load could be handed out twice the
+  same way. A load now never restores the counter below an index already reserved or
+  recorded in this run, except one whose write was refused, which is handed out again.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

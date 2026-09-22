@@ -505,4 +505,109 @@ class YamlDataStorageTest {
         assertEquals(2, brokenCopies().size(),
                 "an edit that is still broken is a different file, and is kept too");
     }
+
+    /**
+     * The sequence from issue #134. A scan reserves an index, and before the flush writes
+     * the advanced counter the file becomes unreadable. The operator restores the file as
+     * it was, whose counter is the reserved index itself, and the scan then records its
+     * player there. The next reservation must not hand that index out a second time.
+     */
+    @Test
+    @DisplayName("a scan reserved before a failed load keeps its index after recovery")
+    void reservationSurvivesRecovery() throws IOException {
+        String restored = "current-spiral-index: 5\n";
+        writeDataFile(restored);
+        YamlDataStorage storage = loaded();
+
+        int scanned = storage.reserveNextIndex();
+        assertEquals(5, scanned);
+
+        writeDataFile(UNPARSEABLE);
+        assertEquals(DataStorage.LoadOutcome.UNREADABLE, storage.load());
+        writeDataFile(restored);
+        assertEquals(DataStorage.LoadOutcome.LOADED, storage.load());
+
+        UUID first = UUID.randomUUID();
+        assertTrue(storage.setSpawn(first, new Location(world, 0, 64, 0), scanned, 0, 0,
+                "First", "TEST"), "the scan's write is accepted once storage has recovered");
+        assertEquals(6, storage.reserveNextIndex(),
+                "the next player gets the index after the scan's, and no index is skipped");
+    }
+
+    /**
+     * A reload saves and then loads. A reservation made between the two is not in the file
+     * the load reads, and the load must not move the counter back under it.
+     */
+    @Test
+    @DisplayName("a reservation between a reload's save and load is not handed out again")
+    void reservationBetweenSaveAndLoadIsKept() throws IOException {
+        writeDataFile("current-spiral-index: 5\n");
+        YamlDataStorage storage = loaded();
+
+        storage.save();
+        assertEquals(5, storage.reserveNextIndex());
+        storage.load();
+
+        assertEquals(6, storage.reserveNextIndex());
+    }
+
+    @Test
+    @DisplayName("a reload with no reservation in flight resumes the counter exactly")
+    void reloadBurnsNoIndex() throws IOException {
+        writeDataFile("current-spiral-index: 5\n");
+        YamlDataStorage storage = loaded();
+        assertEquals(5, storage.reserveNextIndex());
+
+        storage.save();
+        storage.load();
+        assertEquals(6, storage.getCurrentIndex(), "a reload skips nothing");
+
+        writeDataFile(UNPARSEABLE);
+        storage.load();
+        writeDataFile("current-spiral-index: 6\n");
+        storage.load();
+        assertEquals(6, storage.getCurrentIndex(),
+                "recovering from a file that is up to date skips nothing either");
+    }
+
+    @Test
+    @DisplayName("an index whose write was refused is handed out again after recovery")
+    void refusedIndexIsReused() throws IOException {
+        String restored = "current-spiral-index: 5\n";
+        writeDataFile(restored);
+        YamlDataStorage storage = loaded();
+        int scanned = storage.reserveNextIndex();
+
+        writeDataFile(UNPARSEABLE);
+        storage.load();
+        assertFalse(storage.setSpawn(UUID.randomUUID(), new Location(world, 0, 64, 0),
+                scanned, 0, 0, "Refused", "TEST"));
+        writeDataFile(restored);
+        storage.load();
+
+        assertEquals(scanned, storage.reserveNextIndex(),
+                "nothing can still write a refused index, so it is not burned");
+    }
+
+    @Test
+    @DisplayName("a refused rewrite of a recorded plot does not free its index")
+    void refusedRewriteKeepsIndex() throws IOException {
+        String restored = "current-spiral-index: 5\n";
+        writeDataFile(restored);
+        YamlDataStorage storage = loaded();
+        UUID settled = UUID.randomUUID();
+        int index = storage.reserveNextIndex();
+        record(storage, settled, "Settled", index);
+
+        writeDataFile(UNPARSEABLE);
+        storage.load();
+        assertFalse(storage.setSpawn(settled, new Location(world, 0, 64, 0), index, 0, 0,
+                "Settled", "TEST"), "a repair during the failure is refused");
+        // A backup from before the allocation, so the file does not hold the record.
+        writeDataFile(restored);
+        storage.load();
+
+        assertEquals(index + 1, storage.reserveNextIndex(),
+                "an index recorded in this run is never handed out again");
+    }
 }
