@@ -94,10 +94,40 @@ public interface DataStorage {
      * the file in between, so anything that acts on the record - a respawn point, a
      * teleport, a claim - has to be gated on this return value and not on that check.
      *
+     * <p>Replaces any earlier record whole, so a record written here is never owed a
+     * placement.
+     *
      * @return true if the record was written, false if it was refused because storage is
      *         failed, in which case nothing changed
      */
-    boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV, String playerName, String clientType);
+    default boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                             String playerName, String clientType) {
+        return setSpawn(uuid, location, index, gridU, gridV, playerName, clientType, false);
+    }
+
+    /**
+     * Records a spawn assignment, as {@link #setSpawn(UUID, Location, int, int, int, String,
+     * String)} does, and whether its player is still owed a placement on it: set for a plot
+     * recorded after its player disconnected, so the mark survives a restart.
+     *
+     * @return true if the record was written, false if it was refused because storage is
+     *         failed, in which case nothing changed
+     */
+    boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                     String playerName, String clientType, boolean placementOwed);
+
+    /**
+     * Clears the placement mark on a player's record, once they have been placed.
+     *
+     * <p>Refused like a write while storage is failed, and answered the same way: a caller
+     * places the player only on true, so the file never goes on claiming a placement is
+     * owed after it has been made.
+     *
+     * @return true if the record now carries no mark, including when it had none or there is
+     *         no record; false if it was refused because storage is failed, in which case
+     *         nothing changed
+     */
+    boolean clearPlacementOwed(UUID uuid);
 
     /**
      * Removes a player's assigned spawn. Ignored while storage is failed.

@@ -208,6 +208,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reservation made between a reload's save and its load could be handed out twice the
   same way. A load now never restores the counter below an index already reserved or
   recorded in this run, except one whose write was refused, which is handed out again.
+- **A player who disconnects during their terrain scan keeps the plot it finds.** The
+  scan reserves a spiral index when it starts, and a player who left before the result
+  was applied had it dropped: the index was recorded against nobody and they were
+  allocated a second one on their next join, leaving a permanent gap in the spiral. The
+  plot is now recorded against them anyway, and they are placed on it when they return -
+  respawn point, teleport and claim - without another index being reserved. Placement
+  happens when a new player would have been allocated: under the default `FIRST_ACTION`,
+  on their first uncancelled action after they join, and at once under `ON_JOIN` and for
+  Bedrock players. The same holds for a player who rejoined while the scan was still
+  running, once it finishes. A write refused because `data.yml`
+  could not be read records nothing, as for a connected player. The pending placement is
+  saved with the record as an optional `placement-owed` key in `data.yml`, so it survives
+  a restart, and is removed once the player is placed; a file written before the key
+  existed loads with nobody owed a placement.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

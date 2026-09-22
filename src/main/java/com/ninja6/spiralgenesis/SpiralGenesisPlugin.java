@@ -364,8 +364,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         UUID uuid = player.getUniqueId();
 
         if (dataStorage.hasSpawn(uuid)) {
-            // Nothing to allocate, so nothing left to wait for either.
+            // Nothing to allocate, so nothing left to wait for either. A plot recorded while
+            // the player was away is placed here instead, at the point a new player would
+            // have been allocated.
             forgetFromGate(uuid);
+            placeIfOwed(player);
             return;
         }
 
@@ -389,6 +392,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
         if (!owned) {
             return; // An allocation for this player is already in flight.
+        }
+        // Read again now the guard is held. An allocation for this player's previous session
+        // can record its plot and release the guard on another region thread after the read
+        // at the top of this method, and allocating on that stale answer would reserve a
+        // second index and write over the first plot after it had been placed and claimed.
+        // The record is written before that guard is released, so it is visible here.
+        if (dataStorage.hasSpawn(uuid)) {
+            allocating.remove(uuid);
+            placeIfOwed(player);
+            return;
         }
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
@@ -432,7 +445,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // the task automatically if the player disconnects before it runs.
                 boolean scheduled = runForPlayer(player, () -> {
                     try {
-                        if (!player.isOnline()) return;
+                        // isConnected rather than isOnline: isOnline looks the UUID up, so it
+                        // reads true for this entity again once the player has rejoined as
+                        // a new one.
+                        if (!player.isConnected()) {
+                            recordForAbsentPlayer(player, clientType, res);
+                            return;
+                        }
                         // A reload that failed to read data.yml can land while the scan runs,
                         // or between any check made here and the write itself, so the write's
                         // own answer is what everything after it is gated on. A refused write
@@ -444,68 +463,34 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                             holdRefusedAllocation(player, clientType, res.index());
                             return;
                         }
-
-                        player.setRespawnLocation(res.location(), true);
-                        player.teleportAsync(res.location()).thenAccept(success -> {
-                            if (Boolean.TRUE.equals(success)) {
-                                getLogger().info("Assigned & teleported " + player.getName() + " to plot #" + res.index() +
-                                        " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
-                                return;
-                            }
-                            // Recoverable rather than fatal: the plot is recorded and their
-                            // respawn point already points at it. But storage now claims a
-                            // location the player is not standing at, so it is marked for a
-                            // retry on their next uncancelled action - a login plugin
-                            // cancelling teleports for unauthenticated players is the
-                            // likeliest cause, and that action is the signal it let go.
-                            markUnreached(player);
-                            getLogger().warning("Assigned " + player.getName() + " to plot #" + res.index()
-                                    + " but the teleport did not complete; they are recorded at ("
-                                    + res.location().getBlockX() + ", " + res.location().getBlockY() + ", "
-                                    + res.location().getBlockZ() + ") without having been moved there. "
-                                    + "Will retry on their next uncancelled action.");
-                        }).exceptionally(ex -> {
-                            // thenAccept above runs only on normal completion, so without this
-                            // a teleport that fails outright is exactly as silent as the case
-                            // the warning was added for.
-                            markUnreached(player);
-                            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
-                                    + res.index() + " but the teleport failed; they are recorded there "
-                                    + "without having been moved. Will retry on their next "
-                                    + "uncancelled action.", ex);
-                            return null;
-                        });
-
-                        // Last, and deliberately so. It is after the write, because a claim
-                        // around a point that is not yet the player's recorded spawn is a
-                        // claim around ground they may never be sent to - and under
-                        // PLAYER_CLAIM they would have paid for it. It is also after the
-                        // respawn point and the teleport request, so everything the player is
-                        // owed has already been asked for by the time a claim is attempted:
-                        // the claim is an enhancement to allocation, and nothing about it may
-                        // sit in front of the placement.
-                        //
-                        // Still inside this task rather than in the teleport callback above,
-                        // which resolves on whichever thread finished the teleport. This task
-                        // runs on the thread that owns the player - the main thread on every
-                        // server where a real provider exists - which is what the provider's
-                        // threading contract requires.
-                        getSpawnProtector().protect(uuid, res.location(), "first allocation");
+                        sendToPlot(player, res.location(), res.index(), false);
                     } finally {
                         // Inside the task, so the guard outlives the write that makes
                         // hasSpawn() true rather than being released before it.
                         applied.complete(null);
                     }
                 }, () -> {
-                    getLogger().fine("Player " + player.getName()
-                            + " disconnected before their plot could be applied; index already reserved.");
-                    applied.complete(null);
+                    // The player disconnected before the task ran. The index is theirs, so
+                    // the plot is recorded against them rather than dropped; see
+                    // recordForAbsentPlayer. Released after the write, for the reason the
+                    // task above releases in its finally.
+                    try {
+                        recordForAbsentPlayer(player, clientType, res);
+                    } finally {
+                        applied.complete(null);
+                    }
                 });
 
-                // A refused task means neither callback above ever runs, and the guard
-                // would leak.
+                // A refused task means neither callback above ever runs. The entity
+                // scheduler refuses only an entity that has already been retired, which is
+                // the same disconnect the retired callback reports, so it is handled the
+                // same way; the guard would otherwise leak as well.
                 if (!scheduled) {
-                    applied.complete(null);
+                    try {
+                        recordForAbsentPlayer(player, clientType, res);
+                    } finally {
+                        applied.complete(null);
+                    }
                 }
             }).exceptionally(ex -> {
                 getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
@@ -587,6 +572,201 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     boolean runForPlayer(Player player, Runnable action, Runnable retired) {
         ScheduledTask scheduled = player.getScheduler().run(this, task -> action.run(), retired);
         return scheduled != null;
+    }
+
+    /**
+     * Records a found plot for a player who disconnected before it could be applied, and
+     * marks them to be placed on it when they return.
+     *
+     * <p>The index was reserved for this player when the scan started, so it stays theirs:
+     * dropping the result would leave the cell recorded against nobody and allocate them a
+     * second one on their next join. Only the record is written here. The respawn point,
+     * the teleport and the claim all need the player's own thread, which a disconnected
+     * player does not have, so they wait for {@link #placeIfOwed}.
+     *
+     * <p>Reached from the retired callback, from a scheduler that refused the task, or from
+     * the task itself: on whichever thread retired the entity or finished the scan. Nothing
+     * here touches the player's state. {@link DataStorage#setSpawn} is safe from any thread,
+     * as it already is for the region threads first allocations run on.
+     *
+     * <p>The mark is written with the record, in the same storage write, so a rejoin that
+     * sees the record also sees the mark, and both survive a restart. A refused write is
+     * handled as it is for a connected player: nothing is recorded or marked, and the
+     * refusal is reported once.
+     */
+    private void recordForAbsentPlayer(Player player, String clientType,
+                                       SpawnManager.LocationResult res) {
+        UUID uuid = player.getUniqueId();
+        if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(),
+                player.getName(), clientType, true)) {
+            Player current = Bukkit.getPlayer(uuid);
+            if (current == null || !current.isConnected()) {
+                holdRefusedAllocation(player, clientType, res.index());
+                return;
+            }
+            // Rejoined. Decided on the new session's own thread, as the placement task is,
+            // because on Folia it can be found here before its join event has put it in
+            // the gate. If it is not retired first, the retired callback reports the
+            // departure the same way.
+            boolean scheduled = runForPlayer(current,
+                    () -> refuseForRejoined(current, clientType, res.index()),
+                    () -> holdRefusedAllocation(current, clientType, res.index()));
+            if (!scheduled) {
+                holdRefusedAllocation(current, clientType, res.index());
+            }
+            return;
+        }
+        getLogger().info(player.getName() + " disconnected before plot #" + res.index()
+                + " could be applied; it is recorded at (" + res.location().getBlockX() + ", "
+                + res.location().getBlockY() + ", " + res.location().getBlockZ()
+                + ") and they will be placed there when they return.");
+
+        // A player who rejoined while the scan ran was routed as unassigned, and their own
+        // allocation returned because this one was still in flight. One the gate is still
+        // watching is placed when it releases them, which now finds the record; anyone
+        // else is placed from here.
+        Player current = Bukkit.getPlayer(uuid);
+        if (current != null && current.isConnected()
+                && (actionGate == null || !actionGate.isPending(uuid))) {
+            placeIfOwed(current);
+        }
+    }
+
+    /**
+     * Reports a refused write for a player who has rejoined, on their own thread.
+     *
+     * <p>A session the gate is still waiting on is left to it. Holding it would take it off
+     * the gate, and a reload's resume would then allocate the player before they have
+     * acted. Their release reaches allocation anyway, finds no record, and allocates or
+     * holds them then. Any other session is held as the entity now connected, so a reload
+     * that recovers storage allocates them.
+     */
+    private void refuseForRejoined(Player current, String clientType, int index) {
+        if (actionGate != null && actionGate.isPending(current.getUniqueId())) {
+            getLogger().warning("Plot #" + index + " for " + current.getName()
+                    + " was not recorded, because data.yml could not be read when it was"
+                    + " written. They have rejoined and will be allocated after their"
+                    + " first uncancelled action.");
+            return;
+        }
+        holdRefusedAllocation(current, clientType, index);
+    }
+
+    /**
+     * Whether a player's plot was recorded while they were away and they have not been
+     * placed on it yet.
+     *
+     * <p>The join handler routes such a player as it would an unassigned one, so they are
+     * placed at the point a new player would have been allocated: at once for Bedrock and
+     * under {@code ON_JOIN}, on their first uncancelled action otherwise.
+     *
+     * <p>Read from the record, where the mark is stored, so it is as current as storage:
+     * loaded from {@code data.yml} at startup and on every reload, and false while storage
+     * is failed, since no record is readable then.
+     */
+    public boolean isPlacementOwed(UUID uuid) {
+        StoredSpawn record = dataStorage.getRecord(uuid);
+        return record != null && record.placementOwed();
+    }
+
+    /**
+     * Places a player on a plot recorded while they were away, if one is owed: sets their
+     * respawn point there, sends them there and requests its claim, exactly as a first
+     * allocation does.
+     *
+     * <p>Once only. The mark is read and cleared on the player's own thread, where every
+     * placement of this player runs, so two callers cannot both place them, and a record
+     * that cannot be resolved yet - its world not loaded, or storage failed - leaves the
+     * mark for the next call. The clear is a storage write, and like any other it is made
+     * before the player is moved and gates the move: a refused clear places nobody, so the
+     * file never goes on claiming a placement that has already been made. A player already
+     * standing on their plot is never marked, so this does nothing for an ordinary
+     * returning player.
+     */
+    private void placeIfOwed(Player player) {
+        UUID uuid = player.getUniqueId();
+        if (!isPlacementOwed(uuid)) {
+            return;
+        }
+        runForPlayer(player, () -> {
+            if (!player.isConnected() || dataStorage.isFailed()) {
+                return;
+            }
+            // Checked here, on the player's own thread, and not only by the caller: on Folia
+            // a rejoined session can be found before its join event has put it in the gate.
+            // A player the gate is waiting on keeps the mark, and is placed when the gate
+            // releases them, since release drops them from pending before calling in.
+            if (actionGate != null && actionGate.isPending(uuid)) {
+                return;
+            }
+            StoredSpawn record = dataStorage.getRecord(uuid);
+            Location plot = record == null ? null : record.toLocation();
+            if (plot == null || !record.placementOwed()) {
+                return;
+            }
+            if (!dataStorage.clearPlacementOwed(uuid)) {
+                getLogger().warning("Plot #" + record.index() + " for " + player.getName()
+                        + " was not placed, because data.yml could not be read when the"
+                        + " placement was recorded. They were not moved; they will be placed"
+                        + " once /sgen reload reads it and they rejoin.");
+                return;
+            }
+            sendToPlot(player, plot, record.index(), true);
+        }, null);
+    }
+
+    /**
+     * Sets a player's respawn point on their recorded plot, sends them there, and requests
+     * the plot's claim, in that order. Called on the thread that owns the player, once the
+     * plot is recorded.
+     *
+     * @param returning whether the plot was recorded while the player was away, which only
+     *                  changes the line logged on arrival
+     */
+    private void sendToPlot(Player player, Location plot, int index, boolean returning) {
+        player.setRespawnLocation(plot, true);
+        player.teleportAsync(plot).thenAccept(success -> {
+            if (Boolean.TRUE.equals(success)) {
+                getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
+                        + player.getName() + " to plot #" + index
+                        + (returning ? ", recorded while they were away," : "")
+                        + " at (" + plot.getBlockX() + ", " + plot.getBlockY() + ", " + plot.getBlockZ() + ")");
+                return;
+            }
+            // Recoverable rather than fatal: the plot is recorded and their respawn point
+            // already points at it. But storage now claims a location the player is not
+            // standing at, so it is marked for a retry on their next uncancelled action - a
+            // login plugin cancelling teleports for unauthenticated players is the likeliest
+            // cause, and that action is the signal it let go.
+            markUnreached(player);
+            getLogger().warning("Assigned " + player.getName() + " to plot #" + index
+                    + " but the teleport did not complete; they are recorded at ("
+                    + plot.getBlockX() + ", " + plot.getBlockY() + ", "
+                    + plot.getBlockZ() + ") without having been moved there. "
+                    + "Will retry on their next uncancelled action.");
+        }).exceptionally(ex -> {
+            // thenAccept above runs only on normal completion, so without this a teleport
+            // that fails outright is exactly as silent as the case the warning was added for.
+            markUnreached(player);
+            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
+                    + index + " but the teleport failed; they are recorded there "
+                    + "without having been moved. Will retry on their next "
+                    + "uncancelled action.", ex);
+            return null;
+        });
+
+        // Last, and deliberately so. It is after the write, because a claim around a point
+        // that is not yet the player's recorded spawn is a claim around ground they may never
+        // be sent to - and under PLAYER_CLAIM they would have paid for it. It is also after
+        // the respawn point and the teleport request, so everything the player is owed has
+        // already been asked for by the time a claim is attempted: the claim is an
+        // enhancement to allocation, and nothing about it may sit in front of the placement.
+        //
+        // Still on this thread rather than in the teleport callback above, which resolves on
+        // whichever thread finished the teleport. Callers run on the thread that owns the
+        // player - the main thread on every server where a real provider exists - which is
+        // what the provider's threading contract requires.
+        getSpawnProtector().protect(player.getUniqueId(), plot, "first allocation");
     }
 
     /**
@@ -764,8 +944,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // Gated on the write for the reason the allocation task is: storage can fail
                 // after the check above, and a refused write records nothing, so the point
                 // below would be one no record holds.
+                // The mark is carried over: a repair moves the point within the same plot,
+                // which is no placement of the player. Read now rather than from the record
+                // the search started with, which is from before the search: a placement
+                // since then has cleared it, on this same thread, and must stay cleared.
+                StoredSpawn latest = dataStorage.getRecord(uuid);
+                boolean owed = latest != null && latest.placementOwed();
                 if (!dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
-                        record.gridV(), player.getName(), record.clientType())) {
+                        record.gridV(), player.getName(), record.clientType(), owed)) {
                     getLogger().warning("Repair of plot #" + record.index() + " for "
                             + player.getName() + " was not recorded, because data.yml could not"
                             + " be read; nothing was moved.");
@@ -860,8 +1046,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * yet. It cannot, for two reasons that hold together.
      *
      * <p>A player is only ever marked for a retry from inside the teleport callbacks in
-     * {@link #handlePlayerFirstJoin}, and the claim is requested at the end of the same task
-     * those callbacks were armed from. That task runs on the thread owning the player, and
+     * {@link #sendToPlot}, and the claim is requested at the end of the same call those
+     * callbacks were armed from. That call runs on the thread owning the player, and
      * this method needs a subsequent uncancelled action from that player to fire at all - a
      * later tick, at the earliest - so the claim has certainly been attempted by then, even
      * though a completed teleport future could run its callback first. And this path never

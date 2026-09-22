@@ -8,6 +8,7 @@ import org.bukkit.Location;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.Plugin;
 
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -35,6 +36,11 @@ public class InlinePlayerMock extends SessionPlayerMock {
 
     public InlinePlayerMock(ServerMock server, String name) {
         super(server, name);
+    }
+
+    /** The same player again, as a new entity: a rejoin keeps the UUID and nothing else. */
+    public InlinePlayerMock(ServerMock server, String name, UUID uuid) {
+        super(server, name, uuid);
     }
 
     /**
