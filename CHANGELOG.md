@@ -175,6 +175,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the console summary line gains `exhausted=`. Any other failure ends the run at that
   sample and the report for the samples before it is still delivered, with the failure
   reported alongside it and logged in full.
+- **A respawn lifted above an open trapdoor or a door checks the drop beneath it.** When
+  a build over the spawn point lifts the player onto a block that leaves the column
+  centre clear, the player falls through it onto the build below, and only the cells at
+  the lifted position were checked. The fall is now followed to the first floor, and the
+  cells passed and that floor get the same checks for water, lava, magma, cactus and
+  campfires. A drop onto or through one of them, or one that falls past the step below
+  the spawn point, holds the player at world spawn as a hazard on top of the build does.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

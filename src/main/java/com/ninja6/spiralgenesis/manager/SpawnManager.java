@@ -442,14 +442,17 @@ public class SpawnManager {
      * trapdoor does, the player drops through it onto the build beneath, and at the lowest
      * onto that same accepted floor. {@link #floorUnder} is not applied to lifted positions
      * on purpose: the drop ends on the owner's own build, never below the plot, and
-     * refusing it would send them to world spawn instead.
+     * refusing it would send them to world spawn instead. The drop is followed instead (see
+     * {@link #dropLandsSafely}), and the cells it passes and the floor it ends on are held
+     * to the same hazard rule, so an open trapdoor over lava inside the build is refused
+     * like magma on top of it.
      *
      * <p>Loads the chunk first and runs on the thread that owns it, as {@link #revalidate}
      * does, so it is safe to call from any thread.
      *
      * @return a future resolving to the position to stand at, or {@code null} when the
-     *         column has no clear position below the build limit or the first one found is
-     *         hazardous
+     *         column has no clear position below the build limit, the first one found is
+     *         hazardous, or the drop from it passes or ends on a hazard or finds no floor
      */
     public CompletableFuture<Location> standingPoint(Location stored) {
         CompletableFuture<Location> result = new CompletableFuture<>();
@@ -487,11 +490,43 @@ public class SpawnManager {
                     || isRevalidationHazard(x, y + 1, z)) {
                 return null;
             }
+            if (y > from && !dropLandsSafely(x, y, z, from)) {
+                return null;
+            }
             Location standing = stored.clone();
             standing.setY(stored.getY() + (y - from));
             return standing;
         }
         return null;
+    }
+
+    /**
+     * Whether a player placed at a lifted {@code y} comes down on a floor, without passing
+     * through or landing on anything that hurts.
+     *
+     * <p>The block under a lifted position is one vanilla calls solid, but a door or an
+     * open trapdoor leaves the column centre clear and the player falls through it. The
+     * fall is followed down the column to the first block that supports the centre (see
+     * {@link #supportsCentre}), and every cell passed and that floor are held to the same
+     * hazard rule as {@link #isSafeNow}. When the lifted position has a floor directly
+     * under it, that block is the only one checked, as before.
+     *
+     * <p>The drop may not go below the lowest floor {@link #isSafeNow} accepts for the
+     * stored point, a step down from it. Falling past that is falling out of the build,
+     * which is a drop of unknown depth, and is refused like a plot with no floor. Every
+     * read is in the point's own column, so the chunk the caller already owns covers it.
+     */
+    private boolean dropLandsSafely(int x, int y, int z, int from) {
+        int lowest = from - 2;
+        for (int cell = y - 1; cell >= lowest; cell--) {
+            if (isRevalidationHazard(x, cell, z)) {
+                return false;
+            }
+            if (supportsCentre(world.getBlockAt(x, cell, z))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**
