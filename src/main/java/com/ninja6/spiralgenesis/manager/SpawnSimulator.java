@@ -39,14 +39,33 @@ public final class SpawnSimulator {
         Report report = new Report(samples);
         AtomicInteger indices = new AtomicInteger();
 
+        AtomicInteger current = new AtomicInteger();
+
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (int i = 1; i <= samples; i++) {
             int sample = i;
-            chain = chain.thenCompose(ignored -> report.failure() != null
-                    ? CompletableFuture.completedFuture(null)
-                    : sample(manager, indices, report, sample));
+            chain = chain.thenCompose(ignored -> {
+                if (report.failure() != null) {
+                    return CompletableFuture.completedFuture(null);
+                }
+                current.set(sample);
+                try {
+                    return sample(manager, indices, report, sample);
+                } catch (Throwable e) {
+                    report.fail(sample, unwrap(e));
+                    return CompletableFuture.completedFuture(null);
+                }
+            });
         }
-        return chain.thenApply(ignored -> report);
+        // The last line of defence rather than the expected path: sample() records its own
+        // failures, so a chain that fails anyway is charged to the sample it was running,
+        // and the report still goes out with it.
+        return chain.handle((ignored, error) -> {
+            if (error != null && report.failure() == null) {
+                report.fail(Math.max(1, current.get()), unwrap(error));
+            }
+            return report;
+        });
     }
 
     /**
@@ -67,17 +86,30 @@ public final class SpawnSimulator {
         CompletableFuture<SpawnManager.AllocationOutcome> pending;
         try {
             pending = manager.simulateNextSafeSpawn(indices::getAndIncrement);
-        } catch (RuntimeException e) {
+            if (pending == null) {
+                throw new IllegalStateException("Sample " + sample + " returned no allocation");
+            }
+        } catch (Throwable e) {
             pending = CompletableFuture.failedFuture(e);
         }
         return pending.handle((outcome, error) -> {
-            if (error != null) {
-                report.fail(sample, unwrap(error));
-                return null;
-            }
-            switch (outcome) {
-                case SpawnManager.LocationResult found -> report.record(found);
-                case SpawnManager.BorderExhausted ignored -> report.recordExhausted(sample, firstIndex);
+            // Guarded as a whole: a throw escaping this handler would fail the chain, and a
+            // failed chain is what used to discard the report.
+            try {
+                if (error != null) {
+                    report.fail(sample, unwrap(error));
+                } else if (outcome == null) {
+                    report.fail(sample, new IllegalStateException(
+                            "Sample " + sample + " completed with neither a result nor an error"));
+                } else {
+                    switch (outcome) {
+                        case SpawnManager.LocationResult found -> report.record(found);
+                        case SpawnManager.BorderExhausted ignored ->
+                                report.recordExhausted(sample, firstIndex);
+                    }
+                }
+            } catch (Throwable e) {
+                report.fail(sample, e);
             }
             return null;
         });
@@ -197,6 +229,24 @@ public final class SpawnSimulator {
         /** What ended the run early, or {@code null} if every sample ran. */
         public Throwable failure() {
             return failure;
+        }
+
+        /**
+         * What ended the run early, as one line for a chat reply, or {@code null} if every
+         * sample ran. The failure's message, or its simple class name when it has no
+         * message, so the reply never reads "null".
+         */
+        public String failureSummary() {
+            if (failure == null) {
+                return null;
+            }
+            String message = failure.getMessage();
+            if (message != null && !message.isBlank()) {
+                return message;
+            }
+            // An anonymous class has an empty simple name; its full name at least says where.
+            String type = failure.getClass().getSimpleName();
+            return type.isEmpty() ? failure.getClass().getName() : type;
         }
 
         /** 1-based number of the sample that failed, or 0 if none did. */

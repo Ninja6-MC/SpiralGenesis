@@ -655,7 +655,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                                 + "; no plot there fit inside the world border)"));
                 if (report.failure() != null) {
                     sender.sendMessage(ChatColor.RED + "Stopped at sample " + report.failedSample()
-                            + " of " + report.samples() + ": " + report.failure().getMessage()
+                            + " of " + report.samples() + ": " + report.failureSummary()
                             + ". Check the console for details.");
                 }
             });

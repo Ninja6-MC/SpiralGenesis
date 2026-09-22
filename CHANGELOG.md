@@ -59,7 +59,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that are refused on the spot, without claiming a spiral index, so a player rejoining
   cannot walk the spiral outward a scan at a time with no plot to show for it. The refusal
   is held against the border's position and size rather than as a latch, so widening or
-  moving the border resumes allocation with nothing for an operator to reset. `/sgen
+  moving the border resumes allocation with nothing for an operator to reset. The console
+  is told once, in plain text and without a stack trace: by the scan that gives up, not by
+  the refusals that follow or by other scans in flight that give up against the same
+  border. It is told again when a changed border is exhausted again, and when the border
+  is put back where a scan already gave up, by the first join refused on its return.
+  `/sgen reassign` that finds no plot tells the operator why in chat. `/sgen
   simulate` is outside all of this in both directions: it scans from the origin rather than
   from where the live spiral has reached, so it still runs and reports after a live
   allocation has given up, and a run of its own can never refuse a joining player.
@@ -162,15 +167,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write player records are refused. A `/sgen reload` that reads the repaired file clears
   the state and allocates everyone held; one that still cannot read it reports again
   without copying the same file twice. A missing or empty file is still a fresh install.
-- **A join refused because the world border is exhausted no longer logs an error with a
-  stack trace.** Once a scan had given up against the border, every later join was
-  refused as intended but reported at SEVERE with a trace, burying the rest of the console
-  under the same condition. The scan that gives up now reports it once, in plain text, and
-  scans already in flight that give up against the same border add nothing; later joins
-  are refused quietly until the border changes, and a changed border that is exhausted
-  again is reported again. `/sgen reassign` that finds no plot tells the operator why in
-  chat, without a trace in the console. Unexpected allocation errors are still logged in
-  full.
 - **`/sgen simulate` no longer discards its report when a sample fails.** One sample
   that found no plot inside the world border, or failed for any other reason, aborted the
   whole run with "Simulation failed" and none of the samples already taken. A sample that

@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -1275,6 +1276,39 @@ class SpawnManagerTest {
     }
 
     @Test
+    @DisplayName("A border put back where a scan gave up is reported once on its return")
+    void borderReturningToAnExhaustedPlaceIsReportedOnce() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+
+        // Moved somewhere a join succeeds, which leaves the old record where it was.
+        borderAround(0, 0, 1000);
+        allocate(manager, sequentialIndices(indices));
+        int claimed = indices.get();
+
+        // Put back: refused against the old record without scanning, and the operator has
+        // heard nothing about it since the border first moved.
+        borderAround(100_000, 100_000, 16);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+
+        assertEquals(claimed, indices.get(), "the refusals on its return claim no index");
+        List<LogRecord> border = logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .toList();
+        assertEquals(2, border.size(), "the first report, and one on the border's return");
+        assertEquals(Level.WARNING, border.get(1).getLevel());
+        assertNull(border.get(1).getThrown(), "the line carries no stack trace");
+        assertTrue(border.get(1).getMessage().contains("refused"), border.get(1).getMessage());
+    }
+
+    @Test
     @DisplayName("A repeat join after border exhaustion claims no further indices")
     void repeatedAllocationAfterBorderExhaustionBurnsNoIndices() {
         // The scan cannot succeed and nothing is written for the player, so the next join
@@ -1402,6 +1436,88 @@ class SpawnManagerTest {
         assertEquals(3, calls.get(), "the run stops at the failed sample");
         assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
                 "the smoke test still sees the run finish");
+    }
+
+    @Test
+    @DisplayName("A sample that completes with neither a result nor an error keeps the report")
+    void simulationKeepsTheReportWhenASampleCompletesEmpty() throws Exception {
+        SpawnManager manager = simulatingManager(3, () -> CompletableFuture.completedFuture(null));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the empty one are kept");
+        assertEquals(3, report.failedSample());
+        assertInstanceOf(IllegalStateException.class, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A sample whose result cannot be recorded keeps the report")
+    void simulationKeepsTheReportWhenRecordingASampleThrows() throws Exception {
+        // No rejection map: recording it throws inside the handler that reads the outcome.
+        SpawnManager manager = simulatingManager(3, () -> CompletableFuture.completedFuture(
+                new SpawnManager.LocationResult(new Location(world, 0, 64, 0), 0, 0, 0, 64,
+                        1, 1, false, null)));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(3, report.failedSample());
+        assertInstanceOf(NullPointerException.class, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A sample that throws an Error rather than an exception keeps the report")
+    void simulationKeepsTheReportWhenASampleThrowsAnError() throws Exception {
+        StackOverflowError overflow = new StackOverflowError();
+        SpawnManager manager = simulatingManager(3, () -> {
+            throw overflow;
+        });
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the failure are kept");
+        assertEquals(3, report.failedSample());
+        assertEquals(overflow, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A failure with no message is named by its class, never as null")
+    void simulationFailureSummaryNamesAMessagelessFailure() {
+        SpawnSimulator.Report report = new SpawnSimulator.Report(5);
+        assertNull(report.failureSummary(), "nothing to summarise before a failure");
+
+        report.fail(3, new IllegalStateException());
+        assertEquals("IllegalStateException", report.failureSummary());
+
+        report.fail(3, new IllegalStateException("  "));
+        assertEquals("IllegalStateException", report.failureSummary());
+
+        report.fail(3, new IllegalStateException("scheduler unavailable"));
+        assertEquals("scheduler unavailable", report.failureSummary());
+    }
+
+    /** A manager whose {@code failingCall}th simulated sample is {@code failing}'s instead. */
+    private SpawnManager simulatingManager(int failingCall,
+            Supplier<CompletableFuture<SpawnManager.AllocationOutcome>> failing) {
+        AtomicInteger calls = new AtomicInteger();
+        return new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+                return calls.incrementAndGet() == failingCall
+                        ? failing.get()
+                        : super.simulateNextSafeSpawn(indexSupplier);
+            }
+        };
+    }
+
+    /** The lines the CI smoke test greps for, still printed and in their order. */
+    private static void assertKeepsSmokeLines(SpawnSimulator.Report report) {
+        assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
+                report.toRejectionLine());
+        assertTrue(report.toSummaryLine().startsWith("SIMULATE samples=5 "), report.toSummaryLine());
+        assertTrue(report.toSummaryLine().endsWith(" exhausted=0"), report.toSummaryLine());
     }
 
     @Test
