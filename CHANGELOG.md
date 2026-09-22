@@ -182,6 +182,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cells passed and that floor get the same checks for water, lava, magma, cactus and
   campfires. A drop onto or through one of them, or one that falls past the step below
   the spawn point, holds the player at world spawn as a hazard on top of the build does.
+- **A held player's bind retry can no longer undo a `/sgen reload` that bound a world.**
+  On Folia the reload and a held player's retry run on different threads, and a retry
+  that had read the old `origin.world` could clear the manager just after the reload
+  bound the new one. The log then said the world was bound while held players stayed
+  held until they acted again. Binding is now serialised, so the reload's bind stands and
+  releases everyone held.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

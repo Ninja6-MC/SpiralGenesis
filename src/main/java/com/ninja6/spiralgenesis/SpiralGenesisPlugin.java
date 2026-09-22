@@ -45,7 +45,12 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     /** The one permission node, declared in plugin.yml, that gates every admin surface. */
     public static final String ADMIN_PERMISSION = "spiralgenesis.admin";
 
-    private PluginConfig pluginConfig;
+    /**
+     * The configuration in force. Volatile because a reload replaces it on the thread that
+     * typed the command while region threads read it for the gate's timeout, the protection
+     * size and the held-player bind retry.
+     */
+    private volatile PluginConfig pluginConfig;
     private DataStorage dataStorage;
     /**
      * The bound spawn manager, or {@code null} while {@code origin.world} names no loaded
@@ -68,6 +73,21 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * unreported and both log it.
      */
     private final AtomicReference<String> unresolvedWorldReported = new AtomicReference<>();
+
+    /**
+     * Serialises every write of {@link #spawnManager} with the configuration read it was
+     * derived from.
+     *
+     * <p>The reload binds on the thread that typed the command - the main thread on Paper,
+     * the global region or the sender's region on Folia - while a held player's retry binds
+     * on whichever region thread saw them act. Without this, a retry that read the old
+     * {@code origin.world} could store its {@code null} after the reload had bound the new
+     * one, and the reload would then find nothing to resume held players with. Under the
+     * lock the last bind is always derived from the newest configuration: a retry either
+     * finishes before the reload's bind, which overwrites it, or starts after it, and then
+     * reads the configuration the reload wrote before taking the lock.
+     */
+    private final Object bindLock = new Object();
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
@@ -273,29 +293,52 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * on the first join or held player's action that needs it. The error is reported once
      * per configured name, across all threads, so that retry does not fill the log.
      *
+     * <p>Always rebinds, under {@link #bindLock}. A retry goes through
+     * {@link #bindIfUnbound} instead.
+     *
      * <p>Package-private as a test seam.
      */
     void initSpawnManager() {
-        String configured = pluginConfig.getWorldName();
-        World world = Bukkit.getWorld(configured);
-        if (world == null) {
-            if (!configured.equals(unresolvedWorldReported.getAndSet(configured))) {
-                String loaded = Bukkit.getWorlds().stream().map(World::getName)
-                        .collect(Collectors.joining(", "));
-                getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded, "
-                        + "so no spawn will be allocated. Loaded worlds: "
-                        + (loaded.isEmpty() ? "(none)" : loaded)
-                        + ". Correct origin.world and run /sgen reload.");
+        synchronized (bindLock) {
+            PluginConfig config = pluginConfig;
+            String configured = config.getWorldName();
+            World world = Bukkit.getWorld(configured);
+            if (world == null) {
+                if (!configured.equals(unresolvedWorldReported.getAndSet(configured))) {
+                    String loaded = Bukkit.getWorlds().stream().map(World::getName)
+                            .collect(Collectors.joining(", "));
+                    getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded, "
+                            + "so no spawn will be allocated. Loaded worlds: "
+                            + (loaded.isEmpty() ? "(none)" : loaded)
+                            + ". Correct origin.world and run /sgen reload.");
+                }
+                // Cleared as well as left unset: a reload that breaks the name must not leave
+                // the previous world still bound behind a config that no longer names it.
+                this.spawnManager = null;
+                return;
             }
-            // Cleared as well as left unset: a reload that breaks the name must not leave
-            // the previous world still bound behind a config that no longer names it.
-            this.spawnManager = null;
-            return;
+            unresolvedWorldReported.set(null);
+            this.spawnManager = new SpawnManager(this, world, config);
+            getLogger().info("SpawnManager bound to world '" + world.getName()
+                    + "' (origin.world: '" + configured + "').");
         }
-        unresolvedWorldReported.set(null);
-        this.spawnManager = new SpawnManager(this, world, pluginConfig);
-        getLogger().info("SpawnManager bound to world '" + world.getName()
-                + "' (origin.world: '" + configured + "').");
+    }
+
+    /**
+     * Re-resolves the world for a retry, if nothing is bound, and reports whether this call
+     * bound it.
+     *
+     * <p>The check is repeated under the lock: a retry that saw nothing bound and then waited
+     * on a reload's bind must not replace that manager with another of its own.
+     */
+    private boolean bindIfUnbound() {
+        synchronized (bindLock) {
+            if (spawnManager != null) {
+                return false;
+            }
+            initSpawnManager();
+            return spawnManager != null;
+        }
     }
 
     /**
@@ -318,11 +361,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // Reached whenever origin.world names a world the server has not loaded:
         // initSpawnManager refuses to bind anywhere else, and this re-resolve is what picks
         // the world up if it appears later.
-        boolean justBound = false;
-        if (spawnManager == null) {
-            initSpawnManager();
-            justBound = spawnManager != null;
-        }
+        boolean justBound = spawnManager == null && bindIfUnbound();
 
         AllocationUnavailable unavailable = allocationUnavailable();
         if (unavailable != null) {
@@ -916,10 +955,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * that the caller holding them will finish the job. A reload onto an unresolvable world
      * between that point and the scan breaks that assumption: nothing was allocated, nothing
      * is watching them any more, and they would go the rest of the session with no plot.
+     *
+     * <p>No online check here: {@code hold} drops a player whose entity has disconnected,
+     * by {@code isConnected()}, after the entry is in place.
      */
     private void holdIfUnavailable(Player player, String clientType) {
         AllocationUnavailable reason = allocationUnavailable();
-        if (reason == null || !player.isOnline()) {
+        if (reason == null) {
             return;
         }
         holdUnavailable(player, clientType, reason);
