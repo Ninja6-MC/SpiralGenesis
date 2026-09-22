@@ -305,7 +305,19 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
         sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
 
-        spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(res -> {
+        spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(outcome -> {
+            SpawnManager.LocationResult res;
+            switch (outcome) {
+                case SpawnManager.LocationResult found -> res = found;
+                case SpawnManager.BorderExhausted exhausted -> {
+                    // Not logged: the scan that gave up has already said so on the console,
+                    // once. The operator who asked is owed the reason, and nothing moved.
+                    reply(sender, () -> sender.sendMessage(ChatColor.RED + "Could not reassign "
+                            + target.getName() + "; they keep their current spawn. "
+                            + exhausted.message()));
+                    return;
+                }
+            }
             // Player state must be touched on the thread owning that player: the entity
             // scheduler on Folia, the main thread on Paper.
             target.getScheduler().run(plugin, task -> {

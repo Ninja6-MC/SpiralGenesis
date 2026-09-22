@@ -92,7 +92,7 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> allocateNextSafeSpawn(IntSupplier indexSupplier) {
+        public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
             index = indexSupplier.getAsInt();
             return CompletableFuture.completedFuture(result());
         }

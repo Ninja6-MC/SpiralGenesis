@@ -258,7 +258,7 @@ class WorldBindingTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
             if (unbindNext) {
                 unbindNext = false;
                 unbind.run();

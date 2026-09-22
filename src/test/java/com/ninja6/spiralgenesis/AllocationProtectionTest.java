@@ -82,7 +82,7 @@ class AllocationProtectionTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
             int index = indexSupplier.getAsInt();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16 + 8, 64, 24);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(

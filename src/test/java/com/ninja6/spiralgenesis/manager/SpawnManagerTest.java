@@ -23,16 +23,22 @@ import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.StringReader;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
@@ -201,7 +207,8 @@ class SpawnManagerTest {
 
     private SpawnManager.LocationResult allocate(SpawnManager manager, IntSupplier supplier)
             throws InterruptedException, ExecutionException, TimeoutException {
-        return manager.allocateNextSafeSpawn(supplier).get(10, TimeUnit.SECONDS);
+        return assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(supplier).get(10, TimeUnit.SECONDS));
     }
 
     private static IntSupplier sequentialIndices(AtomicInteger counter) {
@@ -1154,8 +1161,8 @@ class SpawnManagerTest {
     }
 
     @Test
-    @DisplayName("A scan that never reaches inside the border fails instead of stranding the player")
-    void scanEntirelyOutsideTheBorderFails() {
+    @DisplayName("A scan that never reaches inside the border gives up instead of stranding the player")
+    void scanEntirelyOutsideTheBorderGivesUp() {
         // The border is nowhere near the spiral, so no cell the scan can reach is inside it.
         // Advancing cannot help: the spiral only grows, so each later cell is further out.
         borderAround(100_000, 100_000, 16);
@@ -1165,14 +1172,107 @@ class SpawnManagerTest {
                 new InlineSpawnManager(plugin, world, config(0, budget), shapes);
         AtomicInteger indices = new AtomicInteger();
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, indices),
-                "the failure must name the border, not surface as a generic error");
+        SpawnManager.BorderExhausted exhausted = exhaustion(manager, indices);
+
+        assertTrue(exhausted.message().contains("world border"),
+                "the outcome must name the border: " + exhausted.message());
+        assertEquals(budget, exhausted.cellsProbed(), "every index the scan claimed is counted");
         assertEquals(budget, indices.get(),
                 "the scan must stop at max-scan-attempts rather than walking outward forever");
         assertEquals(0, manager.chunkLoads.get(),
                 "the border test must come before the chunk request, or the scan generates "
                         + "terrain outside the border that no player may stand on");
+    }
+
+    @Test
+    @DisplayName("Border exhaustion completes the future normally, never exceptionally")
+    void borderExhaustionIsAnOutcomeNotAFailure() throws Exception {
+        // An exceptional completion is what put a stack trace in the console for every join.
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+
+        CompletableFuture<SpawnManager.AllocationOutcome> scanned =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        assertFalse(scanned.isCompletedExceptionally(), "the scan that gives up");
+        assertInstanceOf(SpawnManager.BorderExhausted.class, scanned.get(10, TimeUnit.SECONDS));
+
+        CompletableFuture<SpawnManager.AllocationOutcome> refused =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        assertFalse(refused.isCompletedExceptionally(), "the refusal that follows it");
+        SpawnManager.BorderExhausted outcome = assertInstanceOf(
+                SpawnManager.BorderExhausted.class, refused.get(10, TimeUnit.SECONDS));
+        assertEquals(0, outcome.cellsProbed(), "a refusal claims no index");
+    }
+
+    @Test
+    @DisplayName("Border exhaustion is logged once, in plain text, however many joins follow")
+    void borderExhaustionIsLoggedOnce() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+
+        List<LogRecord> border = logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .toList();
+        assertEquals(1, border.size(), "one line for the condition, not one per join");
+        assertEquals(Level.SEVERE, border.get(0).getLevel());
+        assertNull(border.get(0).getThrown(), "the line carries no stack trace");
+    }
+
+    @Test
+    @DisplayName("Scans already in flight that give up against the same border add no log line")
+    void inFlightScansReportTheBorderOnce() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger other = new AtomicInteger(1000);
+        AtomicInteger first = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        // A second join arrives while the first scan is running, before anything has been
+        // recorded, so it scans too. Both give up; the one that finishes second is the one
+        // that must stay quiet.
+        IntSupplier racing = () -> {
+            if (first.get() == 0) {
+                exhaustion(manager, other);
+            }
+            return first.getAndIncrement();
+        };
+        assertInstanceOf(SpawnManager.BorderExhausted.class,
+                assertDoesNotThrow(() -> manager.allocateNextSafeSpawn(racing)
+                        .get(10, TimeUnit.SECONDS)));
+
+        assertEquals(1004, other.get(), "the second join scanned rather than being refused");
+        assertEquals(1, logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .count(), "two scans gave up against one border, and it is reported once");
+    }
+
+    @Test
+    @DisplayName("A border exhausted again after it changed is reported again")
+    void borderExhaustionIsReportedAgainForANewBorder() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+        // Moved, and still out of reach: a new condition the operator has not been told of.
+        borderAround(-100_000, 100_000, 16);
+        exhaustion(manager, indices);
+
+        assertEquals(2, logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .count());
     }
 
     @Test
@@ -1187,15 +1287,12 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, budget));
         AtomicInteger indices = new AtomicInteger();
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, indices));
+        exhaustion(manager, indices);
         assertEquals(budget, indices.get(), "the first scan pays for itself, once");
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, indices),
-                "the repeat must fail the same way rather than placing the player");
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, indices));
+        // Each repeat must give up the same way rather than placing the player.
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
         assertEquals(budget, indices.get(),
                 "a refusal must not claim an index: the spiral stood still across two retries");
     }
@@ -1208,8 +1305,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 4));
         AtomicInteger indices = new AtomicInteger();
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, indices));
+        exhaustion(manager, indices);
 
         // The refusal is held against the border's geometry, not as a latch: the operator
         // fixes the border and the next join works, with nothing to clear by hand.
@@ -1230,8 +1326,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 4));
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                allocationFailure(manager, new AtomicInteger(100)));
+        exhaustion(manager, new AtomicInteger(100));
 
         // Refusing here would answer the one diagnostic for this failure with a line claiming
         // nothing is inside the border, while the origin plainly is.
@@ -1248,10 +1343,13 @@ class SpawnManagerTest {
         borderAround(2 * CELL, 0, 20);
 
         SpawnManager manager = managerWith(config(0, 4));
+        List<LogRecord> logged = recordLogs();
 
-        assertInstanceOf(SpawnManager.BorderExhaustedException.class,
-                rootCause(SpawnSimulator.run(manager, 1)),
+        Throwable aborted = rootCause(SpawnSimulator.run(manager, 1));
+        assertInstanceOf(IllegalStateException.class, aborted,
                 "the simulation should exhaust near the origin");
+        assertTrue(aborted.getMessage().contains("world border"), aborted.getMessage());
+        assertTrue(logged.isEmpty(), "a simulated sample is the run's to report, not the manager's");
 
         // A read-only diagnostic must not be able to lock allocation out.
         int insideIndex = indexOfGrid(2, 0);
@@ -1262,6 +1360,41 @@ class SpawnManagerTest {
         assertEquals(insideIndex, res.index(), "the joining player's own cell was usable");
         assertTrue(world.getWorldBorder().isInside(res.location()),
                 "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation that gives up is not refused by its own exhaustion either")
+    void simulationDoesNotRefuseItself() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        for (int run = 1; run <= 2; run++) {
+            SpawnManager.BorderExhausted exhausted = assertInstanceOf(
+                    SpawnManager.BorderExhausted.class,
+                    manager.simulateNextSafeSpawn(sequentialIndices(indices))
+                            .get(10, TimeUnit.SECONDS));
+            assertEquals(budget, exhausted.cellsProbed());
+            assertEquals(run * budget, indices.get(),
+                    "each simulated scan walks its full budget, since none is recorded");
+        }
+    }
+
+    @Test
+    @DisplayName("Only a repair stays in its cell, and only a simulation records no exhaustion")
+    void scanPurposesDifferOnlyWhereTheyShould() {
+        // What each public entry point passes is pinned by the behaviour tests around this
+        // one; this pins what each purpose means, so a new constant has to decide both.
+        assertFalse(SpawnManager.ScanPurpose.PLAYER_ALLOCATION.staysInCell());
+        assertTrue(SpawnManager.ScanPurpose.PLAYER_ALLOCATION.recordsExhaustion());
+
+        assertFalse(SpawnManager.ScanPurpose.SIMULATION.staysInCell());
+        assertFalse(SpawnManager.ScanPurpose.SIMULATION.recordsExhaustion());
+
+        assertTrue(SpawnManager.ScanPurpose.REPAIR.staysInCell());
+        assertTrue(SpawnManager.ScanPurpose.REPAIR.recordsExhaustion());
     }
 
     /** The spiral index that lands on a given grid cell. */
@@ -1286,13 +1419,32 @@ class SpawnManagerTest {
         return cause;
     }
 
-    /** Runs an allocation that is expected to fail, and hands back the cause. */
-    private Throwable allocationFailure(SpawnManager manager, AtomicInteger indices) {
-        CompletableFuture<SpawnManager.LocationResult> pending =
+    /** Runs a player allocation that is expected to find no plot, and hands back why. */
+    private SpawnManager.BorderExhausted exhaustion(SpawnManager manager, AtomicInteger indices) {
+        CompletableFuture<SpawnManager.AllocationOutcome> pending =
                 manager.allocateNextSafeSpawn(sequentialIndices(indices));
-        ExecutionException thrown = assertThrows(ExecutionException.class,
-                () -> pending.get(10, TimeUnit.SECONDS));
-        return thrown.getCause();
+        return assertInstanceOf(SpawnManager.BorderExhausted.class,
+                assertDoesNotThrow(() -> pending.get(10, TimeUnit.SECONDS)));
+    }
+
+    /** Collects what the plugin logs from here on, at any level. */
+    private List<LogRecord> recordLogs() {
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        plugin.getLogger().addHandler(new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+        return records;
     }
 
     @Test
