@@ -188,6 +188,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   bound the new one. The log then said the world was bound while held players stayed
   held until they acted again. Binding is now serialised, so the reload's bind stands and
   releases everyone held.
+- **A spawn that storage refused to record no longer moves anyone.** A `/sgen reload`
+  that failed to read `data.yml` could land after a first allocation or `/sgen reassign`
+  had checked storage and before it wrote the new spawn. The write was refused, but the
+  player was still teleported, their respawn point set and the new plot claimed, and
+  reassign's `release` removed the old claim, all for a record that did not exist.
+  Everything after the write is now gated on the write itself. A refused first
+  allocation leaves the player where they are, logs one line and holds them until
+  storage reads again; a refused reassign changes nothing and tells the operator so. The
+  refused plot's index is recorded against nobody, so it is never shared.
+  `/sgen setspawn` and the in-cell repair are gated the same way.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

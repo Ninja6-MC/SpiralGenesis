@@ -184,7 +184,14 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         StoredSpawn previous = plugin.getDataStorage().getRecord(target.getUniqueId());
         Location oldSpawn = previous == null ? null : previous.toLocation();
 
-        plugin.getDataStorage().setSpawn(target.getUniqueId(), loc, -1, 0, 0, target.getName(), "MANUAL");
+        // Gated on the write rather than on the storage check made before this command ran:
+        // a reload that fails to read data.yml can land in between, and a refused write
+        // records nothing for the respawn point and the claim below to agree with.
+        if (!plugin.getDataStorage().setSpawn(target.getUniqueId(), loc, -1, 0, 0, target.getName(), "MANUAL")) {
+            sender.sendMessage(ChatColor.RED + "Spawn for " + target.getName()
+                    + " was not changed: " + refusedWriteNotice());
+            return;
+        }
         target.setRespawnLocation(loc, true);
         sender.sendMessage(ChatColor.GREEN + "Set spawn for " + target.getName() + " to: " +
                 loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
@@ -325,14 +332,21 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
                     return;
                 }
-                // A reload that failed to read data.yml can land during the scan. The write
-                // would be refused, so nothing after it may run either.
-                if (plugin.getDataStorage().isFailed()) {
+                // A reload that failed to read data.yml can land during the scan, or between
+                // any check made here and the write, so the write's own answer gates
+                // everything after it. A refused write records nothing: the old plot is still
+                // the player's, so neither claim is touched, and nothing is moved.
+                if (!plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(),
+                        res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN")) {
+                    plugin.getLogger().warning("Reassignment of " + target.getName() + " to plot #"
+                            + res.index() + " by " + sender.getName() + " was not recorded, because"
+                            + " data.yml could not be read when it was written. Nothing was"
+                            + " changed.");
                     reply(sender, () -> sender.sendMessage(ChatColor.RED + "Reassignment of "
-                            + target.getName() + " was abandoned: " + plugin.storageFailureNotice()));
+                            + target.getName() + " was abandoned and nothing was changed: "
+                            + refusedWriteNotice()));
                     return;
                 }
-                plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN");
 
                 // Both protection calls happen here, inside the task that owns the player -
                 // the main thread wherever a real provider exists - and not in the teleport
@@ -665,6 +679,20 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     ChatColor.RED + "Simulation failed; check the console for details."));
             return null;
         });
+    }
+
+    /**
+     * Why a record write was refused, for the operator who asked for it.
+     *
+     * <p>A write is only ever refused while storage is failed, but a reload that reads the
+     * file can clear that before this is read, and the operator is still owed an answer
+     * that says the command did nothing.
+     */
+    private String refusedWriteNotice() {
+        String notice = plugin.storageFailureNotice();
+        return notice != null ? notice
+                : "data.yml could not be read when the record was written. It has been read"
+                        + " since, so run the command again.";
     }
 
     /**

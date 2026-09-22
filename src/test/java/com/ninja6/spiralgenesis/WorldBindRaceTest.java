@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import com.ninja6.spiralgenesis.manager.SpawnManager;
 import io.papermc.paper.entity.TeleportFlag;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -21,7 +22,9 @@ import java.io.UncheckedIOException;
 import java.lang.management.ManagementFactory;
 import java.lang.management.ThreadInfo;
 import java.lang.management.ThreadMXBean;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
@@ -31,6 +34,8 @@ import java.util.logging.LogRecord;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -210,5 +215,87 @@ class WorldBindRaceTest {
         assertTrue(plugin.getDataStorage().hasSpawn(player.getUniqueId()),
                 "the reload must release the held player without them acting again");
         assertEquals(2, plugin.allocationCalls.get(), "the reload's resume allocates them once");
+    }
+
+    /**
+     * The other order: the retry is the one that waits, and it waits on the reload's bind.
+     *
+     * <p>The case above calls {@code initSpawnManager} directly, which is the reload's
+     * unconditional rebind, so it never reaches the re-check a retry makes under the lock.
+     * This one takes the retry path a player's action takes, {@code handlePlayerFirstJoin}:
+     * it sees nothing bound, then blocks on the lock the paused reload holds. Once the
+     * reload has bound, the retry must find that and leave it, not bind a second manager
+     * over the one the reload just announced.
+     */
+    @Test
+    @DisplayName("a retry that waited on a reload's bind leaves that bind in place")
+    void retryBlockedBehindReloadKeepsItsBind() {
+        WorldBindingTest.UnbindingPlugin plugin = MockBukkit.loadWith(
+                WorldBindingTest.UnbindingPlugin.class, getClass().getResourceAsStream("/plugin.yml"));
+        write(plugin, yaml -> {
+            yaml.set("allocation.action-timeout-seconds", 0);
+            yaml.set("origin.world", "survival");
+        });
+        plugin.reload();
+        assertNull(plugin.getSpawnManager(), "the fixture should leave nothing bound");
+
+        // Joined but never moved, so not held: the reload's resume has nobody to allocate,
+        // and the retry below is the only allocation.
+        PlayerMock player = joinPlayer("Arriving");
+
+        List<SpawnManager> bound = new CopyOnWriteArrayList<>();
+        Handler binds = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getMessage().startsWith("SpawnManager bound")) {
+                    bound.add(plugin.getSpawnManager());
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        plugin.getLogger().addHandler(binds);
+
+        // The operator fixes the name and reloads; the reload pauses on its world lookup,
+        // inside the bind, holding the lock.
+        write(plugin, yaml -> yaml.set("origin.world", "world"));
+        Thread reload = new Thread(plugin::reload, "reload");
+        server.pauseOn = reload;
+        reload.start();
+        await(server.paused);
+
+        // The player's action, on its own region thread. It sees nothing bound and goes to
+        // bind, which blocks on the lock the reload holds.
+        Thread retry = new Thread(() -> plugin.handlePlayerFirstJoin(player, "JAVA"), "region-retry");
+        retry.start();
+        ThreadMXBean threads = ManagementFactory.getThreadMXBean();
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TIMEOUT_SECONDS);
+        while (true) {
+            ThreadInfo info = threads.getThreadInfo(retry.getId());
+            if (info != null && info.getLockOwnerId() == reload.getId()) {
+                break;
+            }
+            if (System.nanoTime() > deadline) {
+                throw new IllegalStateException("the retry never blocked on the reload's bind");
+            }
+            Thread.onSpinWait();
+        }
+
+        server.release.countDown();
+        join(reload);
+        join(retry);
+        plugin.getLogger().removeHandler(binds);
+
+        assertEquals(1, bound.size(), "only the reload may bind; the retry bound again: " + bound);
+        assertSame(bound.get(0), plugin.getSpawnManager(),
+                "the manager the reload bound must be the one left in place");
+        assertTrue(plugin.getDataStorage().hasSpawn(player.getUniqueId()),
+                "the retry still allocates, against the reload's bind");
     }
 }

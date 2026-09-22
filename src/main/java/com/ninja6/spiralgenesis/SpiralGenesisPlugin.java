@@ -152,7 +152,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         saveDefaultConfig();
         loadConfiguration();
 
-        this.dataStorage = new YamlDataStorage(this);
+        this.dataStorage = createDataStorage();
         this.dataStorage.load();
 
         this.floodgateHook = new FloodgateHook();
@@ -193,6 +193,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
 
         getLogger().info("SpiralGenesis v" + getDescription().getVersion() + " successfully enabled!");
+    }
+
+    /**
+     * Builds the storage backend.
+     *
+     * <p>Package-private as a test seam: a refused write is decided inside
+     * {@link DataStorage#setSpawn}, after every check a caller can make, and the only way to
+     * reach that point with storage failing is from inside the storage itself.
+     */
+    DataStorage createDataStorage() {
+        return new YamlDataStorage(this);
     }
 
     @Override
@@ -422,16 +433,17 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 boolean scheduled = runForPlayer(player, () -> {
                     try {
                         if (!player.isOnline()) return;
-                        // A reload that failed to read data.yml can land while the scan runs.
-                        // The write below would be refused, so the respawn point and teleport
-                        // after it would point the player at a plot nothing records; they are
-                        // held instead, and allocated afresh once storage is readable.
-                        if (dataStorage.isFailed()) {
-                            holdIfUnavailable(player, clientType);
+                        // A reload that failed to read data.yml can land while the scan runs,
+                        // or between any check made here and the write itself, so the write's
+                        // own answer is what everything after it is gated on. A refused write
+                        // records nothing, so the respawn point, teleport and claim below
+                        // would point the player at a plot nobody holds.
+                        if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(),
+                                res.gridV(), player.getName(), clientType)) {
+                            applied.complete(null);
+                            holdRefusedAllocation(player, clientType, res.index());
                             return;
                         }
-
-                        dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
                         player.setRespawnLocation(res.location(), true);
                         player.teleportAsync(res.location()).thenAccept(success -> {
@@ -749,8 +761,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 boolean headedForPlot = repairMovesRespawnPoint(
                         player.getPotentialBedLocation(), stored);
 
-                dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
-                        record.gridV(), player.getName(), record.clientType());
+                // Gated on the write for the reason the allocation task is: storage can fail
+                // after the check above, and a refused write records nothing, so the point
+                // below would be one no record holds.
+                if (!dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
+                        record.gridV(), player.getName(), record.clientType())) {
+                    getLogger().warning("Repair of plot #" + record.index() + " for "
+                            + player.getName() + " was not recorded, because data.yml could not"
+                            + " be read; nothing was moved.");
+                    return;
+                }
                 if (headedForPlot) {
                     player.setRespawnLocation(res.location(), true);
                     // A player still on the death screen is not somewhere to be teleported
@@ -965,6 +985,31 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return;
         }
         holdUnavailable(player, clientType, reason);
+    }
+
+    /**
+     * Holds a player whose plot was found but whose record storage refused to write.
+     *
+     * <p>Held unconditionally rather than through {@link #holdIfUnavailable}: a successful
+     * reload can land between the refusal and this call, and a player dropped there would
+     * have been taken off the gate by {@code takeAllocation} with nothing left to retry
+     * them. The resume below allocates them at once if that has happened.
+     *
+     * <p>Reported here, once, in place of the hold's own line, because this one also says
+     * what was abandoned. The index the scan claimed is recorded against nobody: the failed
+     * load has already dropped the counter it came from, and the next successful load takes
+     * the counter from the file, so the index is either handed out again to whoever is
+     * allocated next or skipped, and never held by two players.
+     */
+    private void holdRefusedAllocation(Player player, String clientType, int index) {
+        getLogger().warning("Plot #" + index + " for " + player.getName() + " was not recorded,"
+                + " because data.yml could not be read when it was written. They were not"
+                + " moved and their respawn point is unchanged; they are held and will be"
+                + " allocated once /sgen reload reads it successfully.");
+        if (actionGate != null) {
+            actionGate.hold(player, clientType);
+        }
+        resumeHeldIfAvailable();
     }
 
     /**

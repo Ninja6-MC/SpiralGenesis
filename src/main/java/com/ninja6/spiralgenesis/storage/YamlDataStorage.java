@@ -478,21 +478,22 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
-    public void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
-                         String playerName, String clientType) {
+    public boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                            String playerName, String clientType) {
         StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType);
         // Checked and applied under the lock enterFailedState clears under, so the check
-        // and the write cannot straddle the clear.
+        // and the write cannot straddle the clear, and the answer returned is the one that
+        // decided the write.
         synchronized (yamlLock) {
             if (failure != null) {
-                return;
+                return false;
             }
             spawnCache.put(uuid, record);
             if (playerName != null && !playerName.isEmpty()) {
                 nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
             }
             if (yaml == null) {
-                return;
+                return true;
             }
             String path = "players." + uuid;
             yaml.set(path + ".name", record.playerName());
@@ -507,6 +508,7 @@ public class YamlDataStorage implements DataStorage {
             yaml.set(path + ".assigned-date", Instant.now().toString());
         }
         dirty.set(true);
+        return true;
     }
 
     @Override
