@@ -1050,6 +1050,44 @@ class SpawnManagerTest {
         assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
     }
 
+    /**
+     * A build over the stored point: two chests from the feet up, planks, and a stack of
+     * {@code height} openings on the planks. The lift ends on top of the stack, and the
+     * player falls {@code height} blocks through it onto the planks.
+     */
+    private void buildOpeningStack(int height, Material opening, BlockShapes.Shape shape) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(Material.OAK_PLANKS);
+        for (int i = 0; i < height; i++) {
+            shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 4 + i, 0), opening, shape);
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A three-block drop through openings, which does no fall damage, is kept")
+    void threeBlockDropThroughOpeningsIsKept(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningStack(3, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 7.0, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A four-block drop through openings, which does fall damage, is refused")
+    void fourBlockDropThroughOpeningsIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningStack(4, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
     // --- Where a player stands on a plot that has been built over --------------------
 
     private Location storedOrigin() {
