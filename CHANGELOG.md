@@ -217,11 +217,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   happens when a new player would have been allocated: under the default `FIRST_ACTION`,
   on their first uncancelled action after they join, and at once under `ON_JOIN` and for
   Bedrock players. The same holds for a player who rejoined while the scan was still
-  running, once it finishes. A write refused because `data.yml`
-  could not be read records nothing, as for a connected player. The pending placement is
-  saved with the record as an optional `placement-owed` key in `data.yml`, so it survives
-  a restart, and is removed once the player is placed; a file written before the key
-  existed loads with nobody owed a placement.
+  running, once it finishes. A write refused because `data.yml` could not be read records
+  nothing, as for a connected player. The pending placement is saved with the record as
+  an optional `placement-owed` key in `data.yml`, so it survives a restart, and is
+  removed once the player is placed; a file written before the key existed loads with
+  nobody owed a placement.
 - **Installing on a server people already play on no longer moves them.** Every player
   without a record was treated as new, so each one who had played there before the
   install was allocated a plot on their next visit: their bed or respawn anchor was
