@@ -87,9 +87,17 @@ public interface DataStorage {
     Map<UUID, StoredSpawn> getAllRecords();
 
     /**
-     * Records a new spawn assignment for a player. Ignored while storage is failed.
+     * Records a new spawn assignment for a player, unless storage is failed.
+     *
+     * <p>The result is the only safe answer to "was it recorded". A caller that checked
+     * {@link #isFailed()} first can still be refused here, by a reload that fails to read
+     * the file in between, so anything that acts on the record - a respawn point, a
+     * teleport, a claim - has to be gated on this return value and not on that check.
+     *
+     * @return true if the record was written, false if it was refused because storage is
+     *         failed, in which case nothing changed
      */
-    void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV, String playerName, String clientType);
+    boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV, String playerName, String clientType);
 
     /**
      * Removes a player's assigned spawn. Ignored while storage is failed.
