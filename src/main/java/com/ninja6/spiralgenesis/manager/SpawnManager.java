@@ -10,6 +10,8 @@ import org.bukkit.World;
 import org.bukkit.block.Biome;
 import org.bukkit.block.Block;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.BoundingBox;
+import org.bukkit.util.VoxelShape;
 
 import java.util.ArrayList;
 import java.util.EnumMap;
@@ -63,7 +65,8 @@ public class SpawnManager {
      * and each is solid by vanilla's respawn test, so one placed at the feet is exactly
      * what a respawn lift puts the player on top of. Left out, a griefer could place one on a
      * plot to damage its owner on every respawn. Underfoot they are caught by the same
-     * material check, since none of them is passable.
+     * material check, since each collides over the centre of its column and so is the
+     * floor.
      *
      * <p>Pointed dripstone is left out on purpose. A stalagmite only hurts through
      * {@code fallOn}, which adds 2.5 blocks to the fall and so stays under the 3-block safe
@@ -120,6 +123,9 @@ public class SpawnManager {
 
     /** Below this many samples the terrain shape cannot be judged, so it is not. */
     private static final int MIN_PROFILE_SAMPLES = 4;
+
+    /** What {@link #floorUnder} answers for a column with nothing to stand on within a step. */
+    private static final int NO_FLOOR = Integer.MIN_VALUE;
 
     /** Penalty for failing a hard check, large enough to dominate any terrain-shape penalty. */
     private static final int PENALTY_UNSAFE = 1000;
@@ -237,8 +243,9 @@ public class SpawnManager {
      * {@code PlayerRespawnEvent}, which is synchronous and cannot await anything.
      *
      * <p>It repeats the lethal subset of {@link #score}: whether the point is still inside
-     * the world border, whether the ground is still under the player, and whether anything
-     * that kills is at their feet, head or underfoot. The quality checks (ocean biome, pit,
+     * the world border, whether there is still something to stand on (see
+     * {@link #floorUnder}), and whether anything that kills is at their feet, head or
+     * underfoot. The quality checks (ocean biome, pit,
      * roughness) are deliberately left out - terrain shape is not what a griefer changes,
      * and re-running them would relocate players over a plot that merely scores worse than
      * it did.
@@ -290,18 +297,80 @@ public class SpawnManager {
             return false;
         }
 
-        // Dug out from under: there is nothing to stand on, and a fall of unknown depth.
-        // Fluids are passable, so water or lava that has replaced the floor fails here.
-        if (isPassable(world.getBlockAt(x, y - 1, z))) {
+        // Dug out from under: nothing to stand on within a step, and a fall of unknown
+        // depth. A slab, stair, carpet or closed trapdoor is a floor, and so is a one-block
+        // step down, which keeps a staircase dug down from the spawn point.
+        int floorY = floorUnder(x, y, z);
+        if (floorY == NO_FLOOR) {
             return false;
         }
 
-        // Flooding shows up at the feet and head. Underfoot, the floor is solid by now, so
-        // what the material check catches there is a floor that hurts: magma, cactus or a
-        // campfire.
+        // Flooding shows up at the feet and head, and at y - 1 when that is the step down
+        // the feet drop into: water or lava has no collision, so a flooded floor reads as a
+        // step and is caught here instead. Underfoot, what the material check catches is a
+        // floor that hurts: magma, cactus or a campfire.
         return !isRevalidationHazard(x, y, z)
                 && !isRevalidationHazard(x, y + 1, z)
-                && !isRevalidationHazard(x, y - 1, z);
+                && !isRevalidationHazard(x, y - 1, z)
+                && (floorY == y - 1 || !isRevalidationHazard(x, floorY, z));
+    }
+
+    /**
+     * The Y of the block a player placed at {@code y} comes to rest on, or {@link #NO_FLOOR}.
+     *
+     * <p>The block below is the floor when its collision shape covers the centre of the
+     * column (see {@link #supportsCentre}). When it does not, nothing collides at its
+     * centre, which is exactly what a step down needs, and the block below that is the
+     * floor if it passes the same test. Nothing deeper is accepted: a point over a real
+     * drop has no floor.
+     *
+     * <p>Revalidation only. Allocation keeps its own surface rules for a new plot. Both
+     * reads are in the point's own column, so this needs no chunk {@link #isSafeNow} does
+     * not already own.
+     */
+    private int floorUnder(int x, int y, int z) {
+        if (supportsCentre(world.getBlockAt(x, y - 1, z))) {
+            return y - 1;
+        }
+        if (supportsCentre(world.getBlockAt(x, y - 2, z))) {
+            return y - 2;
+        }
+        return NO_FLOOR;
+    }
+
+    /**
+     * Whether a player standing over the centre of this block lands on it.
+     *
+     * <p>True when one of its collision boxes spans {@code x = 0.5} and {@code z = 0.5}.
+     * That accepts slabs, stairs, closed trapdoors, carpet, two or more layers of snow and a
+     * closed fence gate, and rejects air, fluids, plants, a single layer of snow, and a
+     * door, an open trapdoor or an open fence gate, which leave the centre clear.
+     *
+     * <p>The boxes are block-local: {@code CraftVoxelShape.getBoundingBoxes} copies
+     * {@code VoxelShape.toAabbs()} without offsetting them, and
+     * {@code CraftBlock.getCollisionShape} asks the block state for its shape with no
+     * entity in context. Checked with javap against paper-1.20.4, paper-1.21.11 and
+     * folia-1.21.11, and in the Paper source at the 26.2 tag.
+     */
+    private boolean supportsCentre(Block block) {
+        for (BoundingBox box : collisionShape(block).getBoundingBoxes()) {
+            if (box.getMinX() <= 0.5 && box.getMaxX() >= 0.5
+                    && box.getMinZ() <= 0.5 && box.getMaxZ() >= 0.5) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The block's collision shape.
+     *
+     * <p>Package-private for the same reason as {@link #isPassable}: MockBukkit does not
+     * model collision shapes. {@code Block.isPassable()} is exactly "this shape is empty"
+     * in CraftBlock, so the two agree on what has no collision at all.
+     */
+    VoxelShape collisionShape(Block block) {
+        return block.getCollisionShape();
     }
 
     private boolean isRevalidationHazard(int x, int y, int z) {
@@ -326,6 +395,15 @@ public class SpawnManager {
      * below the world's build limit, and the position found is then held to the same
      * hazard rule as the plot: nobody is lifted onto magma or into a campfire at the top of
      * a build.
+     *
+     * <p>What the player then stands on is not decided here. At the stored point it is the
+     * floor {@link #isSafeNow} accepted, which may be a step down. Above it, the block
+     * under the position found is one vanilla calls solid, since the position below was
+     * not clear. When that block leaves the column centre clear, as a door or an open
+     * trapdoor does, the player drops through it onto the build beneath, and at the lowest
+     * onto that same accepted floor. {@link #floorUnder} is not applied to lifted positions
+     * on purpose: the drop ends on the owner's own build, never below the plot, and
+     * refusing it would send them to world spawn instead.
      *
      * <p>Loads the chunk first and runs on the thread that owns it, as {@link #revalidate}
      * does, so it is safe to call from any thread.

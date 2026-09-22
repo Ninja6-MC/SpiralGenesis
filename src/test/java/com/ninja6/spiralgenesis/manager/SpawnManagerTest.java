@@ -12,12 +12,15 @@ import org.bukkit.block.Biome;
 import org.bukkit.block.Block;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.VoxelShape;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.StringReader;
 import java.util.Locale;
@@ -28,6 +31,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -59,6 +63,8 @@ class SpawnManagerTest {
     private ServerMock server;
     private JavaPlugin plugin;
     private WorldMock world;
+    /** Vanilla collision for what a test places; see {@link BlockShapes}. */
+    private final BlockShapes shapes = new BlockShapes();
 
     @BeforeEach
     void setUp() {
@@ -85,8 +91,13 @@ class SpawnManagerTest {
         /** Counts what a real server would have generated, for the tests that care. */
         private final AtomicInteger chunkLoads = new AtomicInteger();
 
-        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
+        /** Collision for each block, since MockBukkit models none. */
+        private final BlockShapes shapes;
+
+        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config,
+                           BlockShapes shapes) {
             super(plugin, world, config);
+            this.shapes = shapes;
         }
 
         @Override
@@ -95,20 +106,22 @@ class SpawnManagerTest {
             return CompletableFuture.completedFuture(null);
         }
 
-        /** MockBukkit's {@code Block.isPassable()} throws, so judge by material instead. */
+        /** MockBukkit's {@code Block.getCollisionShape()} throws, so answer from the table. */
         @Override
-        boolean isPassable(Block block) {
-            return block.getType().isAir();
+        VoxelShape collisionShape(Block block) {
+            return shapes.shapeOf(block);
         }
 
-        /**
-         * MockBukkit does not answer {@code isBuildable()} from block state, so judge by
-         * material. Close enough to vanilla's solid test for every block these tests place.
-         */
+        /** MockBukkit's {@code Block.isPassable()} throws, so answer from the table. */
+        @Override
+        boolean isPassable(Block block) {
+            return shapes.isPassable(block);
+        }
+
+        /** MockBukkit does not answer {@code isBuildable()} from block state either. */
         @Override
         boolean admitsRespawn(Block block) {
-            Material type = block.getType();
-            return !type.isSolid() && type != Material.WATER && type != Material.LAVA;
+            return shapes.admitsRespawn(block);
         }
 
         @Override
@@ -144,8 +157,8 @@ class SpawnManagerTest {
         private final int blockedZ;
 
         BlockedHeadroomManager(JavaPlugin plugin, World world, PluginConfig config,
-                               int blockedX, int blockedZ) {
-            super(plugin, world, config);
+                               BlockShapes shapes, int blockedX, int blockedZ) {
+            super(plugin, world, config, shapes);
             this.blockedX = blockedX;
             this.blockedZ = blockedZ;
         }
@@ -183,7 +196,7 @@ class SpawnManagerTest {
     }
 
     private SpawnManager managerWith(PluginConfig config) {
-        return new InlineSpawnManager(plugin, world, config);
+        return new InlineSpawnManager(plugin, world, config, shapes);
     }
 
     private SpawnManager.LocationResult allocate(SpawnManager manager, IntSupplier supplier)
@@ -324,7 +337,7 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A column without headroom is rejected even though its surface is safe")
     void missingHeadroomIsRejected() throws Exception {
-        SpawnManager manager = new BlockedHeadroomManager(plugin, world, config(0, 8), 0, 0);
+        SpawnManager manager = new BlockedHeadroomManager(plugin, world, config(0, 8), shapes, 0, 0);
 
         Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
 
@@ -627,7 +640,9 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A plot whose ground was dug out no longer verifies")
     void hollowedPlotIsUnsafe() {
+        // Two deep: one block down is a step, and still has a floor.
         world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        world.getBlockAt(0, MOCK_SURFACE_Y - 1, 0).setType(Material.AIR);
 
         SpawnManager manager = managerWith(config(0, 8));
 
@@ -640,9 +655,9 @@ class SpawnManagerTest {
             "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
     @DisplayName("A floor that hurts is caught even when the column itself is clear")
     void hazardousGroundIsUnsafe(Material floor) {
-        // None of these is passable, so the floor check passes on a real server as well
+        // Each collides over the column centre, so it is the floor on a real server as well
         // and it is the material rule that has to fire. Water or lava replacing the floor
-        // is passable and never gets this far; hollowedPlotIsUnsafe covers that path.
+        // has no collision and reads as a step down; floodedStepIsUnsafe covers that path.
         world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
 
         SpawnManager manager = managerWith(config(0, 8));
@@ -665,7 +680,8 @@ class SpawnManagerTest {
     /*
      * What a player plausibly builds on the point they were given. Doors, trapdoors, slabs
      * and beds are here on purpose: Block.isPassable() reports them impassable although a
-     * player stands on or walks through them, which is what the old check keyed on.
+     * player stands on or walks through them, which is what the old check keyed on. The
+     * fixture gives each its vanilla collision (BlockShapes), so that is what is tested.
      */
 
     @ParameterizedTest(name = "{0}")
@@ -764,8 +780,195 @@ class SpawnManagerTest {
         assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
 
         world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        world.getBlockAt(0, MOCK_SURFACE_Y - 1, 0).setType(Material.AIR);
         assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
                 "a missing floor must still fail under a built-over point");
+    }
+
+    // --- What counts as a floor on re-check ------------------------------------------
+
+    /*
+     * The stored spawn is at MOCK_SURFACE_Y + 1, so its floor is at MOCK_SURFACE_Y, the
+     * step-down floor one below that, and the mock world is solid underneath down to y=0.
+     */
+
+    private Block atFloor() {
+        return world.getBlockAt(0, MOCK_SURFACE_Y, 0);
+    }
+
+    private Block belowFloor(int depth) {
+        return world.getBlockAt(0, MOCK_SURFACE_Y - depth, 0);
+    }
+
+    private SpawnManager.SpawnVerdict verdictOnOrigin() {
+        Location stored = originCentreSpawn();
+        return managerWith(config(0, 8)).verifyStoredSpawn(stored);
+    }
+
+    static Stream<Arguments> standableFloors() {
+        return Stream.of(
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.TOP_SLAB),
+                Arguments.of(Material.OAK_STAIRS, BlockShapes.STAIRS),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_CLOSED_BOTTOM),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_CLOSED_TOP),
+                Arguments.of(Material.WHITE_CARPET, BlockShapes.CARPET),
+                Arguments.of(Material.SNOW, BlockShapes.snow(2)),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8)),
+                Arguments.of(Material.OAK_FENCE_GATE, BlockShapes.FENCE_GATE_CLOSED));
+    }
+
+    /** Nothing collides at the centre of these, whatever they have at the edges. */
+    static Stream<Arguments> clearAtTheCentre() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY),
+                Arguments.of(Material.POPPY, BlockShapes.EMPTY),
+                Arguments.of(Material.SNOW, BlockShapes.snow(1)),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_CLOSED),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_OPEN),
+                Arguments.of(Material.OAK_FENCE_GATE, BlockShapes.FENCE_GATE_OPEN));
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("standableFloors")
+    @DisplayName("A floor that is not a full block but has something at the centre keeps the plot")
+    void partialFloorKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        // Nothing beneath it, so it is this block that has to count as the floor and not a
+        // step down to the one below.
+        shapes.place(atFloor(), type, shape);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("clearAtTheCentre")
+    @DisplayName("A floor with nothing at the centre fails when there is no step below it")
+    void floorClearAtTheCentreOverAHoleIsUnsafe(Material type, BlockShapes.Shape shape) {
+        shapes.place(atFloor(), type, shape);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("clearAtTheCentre")
+    @DisplayName("A one-block step down to a floor keeps the plot")
+    void stepDownKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        // A staircase dug down from the spawn point, or an open trapdoor over a one-deep
+        // hole: the ground under it is the mock world's own.
+        shapes.place(atFloor(), type, shape);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("standableFloors")
+    @DisplayName("A step down onto a floor that is not a full block keeps the plot")
+    void stepDownOntoAPartialFloorKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        atFloor().setType(Material.AIR);
+        shapes.place(belowFloor(1), type, shape);
+        belowFloor(2).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A hole two blocks deep fails even with ground at its bottom")
+    void twoDeepHoleIsUnsafe() {
+        atFloor().setType(Material.AIR);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("An open trapdoor over a hole two blocks deep fails")
+    void openTrapdoorOverATwoDeepHoleIsUnsafe() {
+        shapes.place(atFloor(), Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        belowFloor(1).setType(Material.AIR);
+        belowFloor(2).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A spawn over a real drop fails")
+    void realDropIsUnsafe() {
+        for (int y = MOCK_SURFACE_Y; y > 0; y--) {
+            world.getBlockAt(0, y, 0).setType(Material.AIR);
+        }
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A step down onto a floor that hurts fails")
+    void stepDownOntoAHazardIsUnsafe(Material floor) {
+        atFloor().setType(Material.AIR);
+        belowFloor(1).setType(floor);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("An open trapdoor over a floor that hurts fails")
+    void openTrapdoorOverAHazardIsUnsafe() {
+        shapes.place(atFloor(), Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        belowFloor(1).setType(Material.MAGMA_BLOCK);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"WATER", "LAVA", "POWDER_SNOW"})
+    @DisplayName("A step down the feet would drop into something that hurts fails")
+    void floodedStepIsUnsafe(Material fill) {
+        // No collision, so each reads as a step down onto the ground below it; the
+        // feet-level hazard check on the step cell is what has to fire.
+        atFloor().setType(fill);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A step-down plot outside the border still fails")
+    void stepDownOutsideTheBorderIsUnsafe() {
+        atFloor().setType(Material.AIR);
+        borderAround(CELL, 0, 20);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A step-down plot is its own standing point")
+    void stepDownPlotStandsWhereStored() throws Exception {
+        // The lift only moves a player out of what they collide with; a step leaves the
+        // feet and head clear, so the player stands at the point and drops the one block.
+        atFloor().setType(Material.AIR);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        assertEquals(stored, manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("The lift lands on an open trapdoor rather than refusing the plot")
+    void liftStopsAboveAnOpenTrapdoor() throws Exception {
+        // Vanilla calls an open trapdoor solid, so the first clear position is above it.
+        // The floor rule is not applied there: the player drops through onto the chest,
+        // part of the owner's build and above the accepted floor, which beats world spawn.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0),
+                Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
     }
 
     // --- Where a player stands on a plot that has been built over --------------------
@@ -958,7 +1161,8 @@ class SpawnManagerTest {
         borderAround(100_000, 100_000, 16);
 
         int budget = 4;
-        InlineSpawnManager manager = new InlineSpawnManager(plugin, world, config(0, budget));
+        InlineSpawnManager manager =
+                new InlineSpawnManager(plugin, world, config(0, budget), shapes);
         AtomicInteger indices = new AtomicInteger();
 
         assertInstanceOf(SpawnManager.BorderExhaustedException.class,
