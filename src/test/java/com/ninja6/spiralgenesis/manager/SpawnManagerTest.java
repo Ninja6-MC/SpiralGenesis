@@ -44,7 +44,6 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -541,7 +540,7 @@ class SpawnManagerTest {
         // asserting nothing, so the contract is pinned from this side.
         assertTrue(line.startsWith("SIMULATE samples="), line);
         for (String key : new String[]{"samples=", "completed=", "indices=", "ratio=",
-                "candidates=", "fallbacks=", "minY=", "maxY="}) {
+                "candidates=", "fallbacks=", "minY=", "maxY=", "exhausted="}) {
             assertTrue(line.contains(" " + key) || line.startsWith(key),
                     "summary line lost the '" + key + "' field that CI parses: " + line);
         }
@@ -1345,10 +1344,8 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 4));
         List<LogRecord> logged = recordLogs();
 
-        Throwable aborted = rootCause(SpawnSimulator.run(manager, 1));
-        assertInstanceOf(IllegalStateException.class, aborted,
-                "the simulation should exhaust near the origin");
-        assertTrue(aborted.getMessage().contains("world border"), aborted.getMessage());
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+        assertEquals(1, report.borderExhausted(), "the simulation should exhaust near the origin");
         assertTrue(logged.isEmpty(), "a simulated sample is the run's to report, not the manager's");
 
         // A read-only diagnostic must not be able to lock allocation out.
@@ -1360,6 +1357,51 @@ class SpawnManagerTest {
         assertEquals(insideIndex, res.index(), "the joining player's own cell was usable");
         assertTrue(world.getWorldBorder().isInside(res.location()),
                 "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation that runs into the border keeps and reports the samples before it")
+    void simulationReportsAMidRunExhaustion() throws Exception {
+        // The border covers the origin cell's centre and nothing else, so the first sample
+        // is placed and every later one walks its whole budget outside the border.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 3).get(10, TimeUnit.SECONDS);
+
+        assertEquals(3, report.samples());
+        assertEquals(1, report.completed(), "the sample placed before the exhaustion is kept");
+        assertEquals(1, report.cellsProbed(), "exhausted scans do not count as placement cost");
+        assertEquals(2, report.borderExhausted(), "the run keeps sampling after an exhaustion");
+        assertEquals(2, report.firstExhaustedSample());
+        assertEquals(1, report.firstExhaustedIndex(), "the second sample scanned on from index 1");
+        assertNull(report.failure(), "an exhaustion is an outcome, not a failure");
+        assertTrue(report.toSummaryLine().contains(" exhausted=2"), report.toSummaryLine());
+    }
+
+    @Test
+    @DisplayName("A sample that fails unexpectedly ends the run without discarding its report")
+    void simulationKeepsTheReportWhenASampleFails() throws Exception {
+        IllegalStateException unavailable = new IllegalStateException("scheduler unavailable");
+        AtomicInteger calls = new AtomicInteger();
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+                return calls.incrementAndGet() == 3
+                        ? CompletableFuture.failedFuture(new CompletionException(unavailable))
+                        : super.simulateNextSafeSpawn(indexSupplier);
+            }
+        };
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the failure are kept");
+        assertEquals(3, report.failedSample());
+        assertEquals(unavailable, report.failure(), "the cause is reported unwrapped");
+        assertEquals(3, calls.get(), "the run stops at the failed sample");
+        assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
+                "the smoke test still sees the run finish");
     }
 
     @Test
@@ -1406,17 +1448,6 @@ class SpawnManagerTest {
             }
         }
         throw new AssertionError("no spiral index maps to (" + gridU + ", " + gridV + ")");
-    }
-
-    /** Unwraps the completion wrappers a chained future adds, and hands back the cause. */
-    private static Throwable rootCause(CompletableFuture<?> pending) {
-        ExecutionException thrown = assertThrows(ExecutionException.class,
-                () -> pending.get(10, TimeUnit.SECONDS));
-        Throwable cause = thrown.getCause();
-        while (cause instanceof CompletionException && cause.getCause() != null) {
-            cause = cause.getCause();
-        }
-        return cause;
     }
 
     /** Runs a player allocation that is expected to find no plot, and hands back why. */

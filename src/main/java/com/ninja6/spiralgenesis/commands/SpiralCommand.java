@@ -627,6 +627,12 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             // sender may well be the console anyway.
             plugin.getLogger().info(report.toSummaryLine());
             plugin.getLogger().info(report.toRejectionLine());
+            if (report.failure() != null) {
+                // The run stopped at this sample; everything above covers the ones before it.
+                plugin.getLogger().log(Level.SEVERE, "Spawn simulation stopped at sample "
+                        + report.failedSample() + " of " + report.samples()
+                        + "; the report covers the samples before it", report.failure());
+            }
 
             reply(sender, () -> {
                 sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Simulation ===");
@@ -642,6 +648,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                         + report.minSurfaceY() + " to " + report.maxSurfaceY());
                 sender.sendMessage(ChatColor.YELLOW + "Rejections: " + ChatColor.WHITE
                         + (report.rejections().isEmpty() ? "none" : report.rejections().toString()));
+                sender.sendMessage(ChatColor.YELLOW + "Border exhausted: " + ChatColor.WHITE
+                        + (report.borderExhausted() == 0 ? "none" : String.valueOf(report.borderExhausted())
+                                + ChatColor.GRAY + " (first at sample " + report.firstExhaustedSample()
+                                + ", scanning from spiral index " + report.firstExhaustedIndex()
+                                + "; no plot there fit inside the world border)"));
+                if (report.failure() != null) {
+                    sender.sendMessage(ChatColor.RED + "Stopped at sample " + report.failedSample()
+                            + " of " + report.samples() + ": " + report.failure().getMessage()
+                            + ". Check the console for details.");
+                }
             });
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Spawn simulation failed", ex);
