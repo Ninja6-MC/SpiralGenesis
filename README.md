@@ -208,10 +208,13 @@ runtime runs unchanged.
 recorded plot are allocated one; everyone else keeps the spawn they already have until you
 `/sgen reassign` them (they must be online for that).
 
-**Players land in the wrong world.** If `origin.world` doesn't match a loaded world, the
-plugin logs a warning and falls back to the server's first world rather than refusing to
-allocate — so allocation looks healthy while everyone is placed somewhere unintended. Check
-the startup log for `Could not find target world`.
+**Nobody gets a plot and the log names `origin.world`.** The plugin binds only to the
+world `origin.world` names and never substitutes another. If that world is not loaded it
+logs `Configured world '...' (origin.world) is not loaded` at SEVERE, lists the worlds
+that are, and allocates nothing. New players are held where they joined and allocated as
+soon as the world is bound: correct `origin.world` and run `/sgen reload`. A world that a
+world manager loads after SpiralGenesis starts needs no reload; it is picked up the next
+time a player without a plot passes the gate or a held player acts.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.
