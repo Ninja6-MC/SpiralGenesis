@@ -153,7 +153,12 @@ public interface DataStorage {
      * <p>Set once, by the first load that finds no value, and kept from then on. For a file
      * written before the value existed it is the earliest assignment the file records, the
      * nearest the plugin can get to its own install from what it wrote, since an older
-     * version allocated the first player to join on their first action.
+     * version allocated the first player to join on their first action. Every write of a
+     * record rewrites its assignment date, so this can be later than the real install,
+     * which leans toward leaving players alone.
+     *
+     * <p>Null is never a reason to allocate: callers treat it as storage that cannot be
+     * read, and hold.
      */
     Instant getInstalledAt();
 

@@ -824,8 +824,11 @@ decides which players are left alone as having played before it was installed (s
 It is written once, on the first start that finds it missing, and kept from then on. A fresh
 install takes the current time. A file written by an earlier version takes the earliest
 `assigned-date` it holds, since that version allocated the first player to join on their
-first action; with no assignment in it, the current time. It is an ISO-8601 instant and can
-be edited, for example moved back to allocate players who joined in between.
+first action; with no assignment in it, the current time. Every write of a record (a
+repair, `/sgen reassign`, `/sgen setspawn`) rewrites its `assigned-date`, so the earliest
+one can be later than the real install, which leans toward leaving players alone. It is an
+ISO-8601 instant, quoted or not, and can be edited, for example moved back to allocate
+players who joined in between.
 
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.

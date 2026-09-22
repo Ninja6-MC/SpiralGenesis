@@ -235,7 +235,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before, so a player who first joined after the install and left before being placed is
   still allocated. A fresh install records the current time. A file written by an earlier
   version records its earliest `assigned-date`, since that version allocated the first
-  player to join on their first action, or the current time if it assigns nobody. A player
+  player to join on their first action, or the current time if it assigns nobody. Every
+  record write rewrites its `assigned-date`, so that can be later than the real install,
+  which leans toward leaving players alone. A player
   with a record is never skipped, so one owed a placement is still placed.
 
 ## [1.0.0-alpha.1] - 2026-08-27

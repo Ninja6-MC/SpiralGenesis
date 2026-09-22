@@ -25,6 +25,7 @@ import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
@@ -203,8 +204,11 @@ public class YamlDataStorage implements DataStorage {
             LoadOutcome outcome = loaded.getKeys(false).isEmpty()
                     ? LoadOutcome.NO_FILE : LoadOutcome.LOADED;
             Instant earliestAssigned = populate(loaded);
-            failure = null;
+            // Settled before the failure is cleared, so storage never reads as recovered
+            // while the install time is still unknown: an allocation in that window could
+            // not tell a player from before the install apart from a new one.
             boolean installRecorded = settleInstalledAt(loaded, earliestAssigned);
+            failure = null;
             startFlushTask();
             if (installRecorded) {
                 // Written now rather than on the next flush: it is set once, and a crash
@@ -221,17 +225,25 @@ public class YamlDataStorage implements DataStorage {
      * <p>A file with nothing recorded is a fresh install, so the time is now. A file with
      * records but no install time was written by a version that predates it, and takes the
      * earliest assignment it records: that version allocated the first player to join on
-     * their first action, so nobody it left without a plot first joined much before it. With
-     * no assignment to go by it is now, which leaves every player who joined before this
+     * their first action. It is an upper bound rather than the install itself, because every
+     * write of a record - a repair, a reassign, a setspawn - rewrites its assignment date, so
+     * it can be later than the real install; that leans toward skipping. With no assignment
+     * to go by it is now, which leaves every player who joined before this
      * start where they are - the mistake that can be put right with a command, where
      * allocating a settled player cannot be undone.
+     *
+     * <p>The value is read whether it is quoted or not. SnakeYAML resolves an unquoted
+     * ISO-8601 value as a timestamp and hands back a {@link Date}, which is exactly what an
+     * operator editing the key by hand writes. It is written back as a string, which the
+     * dumper quotes because it would otherwise resolve as a timestamp, so it reads back
+     * the same either way.
      *
      * @param earliestAssigned the earliest {@code assigned-date} in the file, or null
      * @return whether a time was recorded, so the file has to be written
      */
     private boolean settleInstalledAt(YamlConfiguration loaded, Instant earliestAssigned) {
-        String stored = loaded.getString(INSTALLED_AT_KEY);
-        Instant parsed = parseInstant(stored);
+        Object stored = loaded.get(INSTALLED_AT_KEY);
+        Instant parsed = toInstant(stored);
         if (parsed != null) {
             synchronized (yamlLock) {
                 installedAt = parsed;
@@ -252,6 +264,17 @@ public class YamlDataStorage implements DataStorage {
             loaded.set(INSTALLED_AT_KEY, recorded.toString());
         }
         return true;
+    }
+
+    /**
+     * A YAML value as an instant: a timestamp SnakeYAML has already resolved, or a string
+     * holding an ISO-8601 instant. Null for anything else, including null.
+     */
+    private static Instant toInstant(Object value) {
+        if (value instanceof Date date) {
+            return date.toInstant();
+        }
+        return value instanceof String text ? parseInstant(text) : null;
     }
 
     /** An ISO-8601 instant, or null for anything else, including null. */
@@ -313,7 +336,7 @@ public class YamlDataStorage implements DataStorage {
                     nameIndex.put(record.playerName().toLowerCase(Locale.ROOT), uuid);
                 }
                 highestAssigned = Math.max(highestAssigned, record.index());
-                Instant assigned = parseInstant(sec.getString("assigned-date"));
+                Instant assigned = toInstant(sec.get("assigned-date"));
                 if (assigned != null
                         && (earliestAssigned == null || assigned.isBefore(earliestAssigned))) {
                     earliestAssigned = assigned;

@@ -548,9 +548,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the last-played time then stays at the 0 it is constructed with, while the first-played
      * time reads as the current join.
      *
-     * <p>False while storage is failed, since the install time is unreadable then; every
-     * caller that could allocate holds the player for that first, and decides once a reload
-     * reads the file.
+     * <p>False while the install time is unknown, which is while storage is failed. That is
+     * never taken as leave to allocate: {@link #allocationUnavailable} reports an unknown
+     * install time as unreadable storage, so every caller that could allocate holds the
+     * player first and decides once a reload reads the file.
      */
     public boolean isPreInstallPlayer(Player player) {
         if (!player.hasPlayedBefore()) {
@@ -1201,7 +1202,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the world is the caller's business.
      */
     AllocationUnavailable allocationUnavailable() {
-        if (dataStorage != null && dataStorage.isFailed()) {
+        // An unknown install time is storage that cannot be read yet, never a reason to
+        // allocate: without it a player from before the install looks like a new one.
+        if (dataStorage != null
+                && (dataStorage.isFailed() || dataStorage.getInstalledAt() == null)) {
             return AllocationUnavailable.STORAGE_FAILED;
         }
         if (spawnManager == null) {
