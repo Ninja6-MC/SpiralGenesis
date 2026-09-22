@@ -195,7 +195,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reassign's `release` removed the old claim, all for a record that did not exist.
   Everything after the write is now gated on the write itself. A refused first
   allocation leaves the player where they are, logs one line and holds them until
-  storage reads again; a refused reassign changes nothing and tells the operator so. The
+  storage reads again, and the line says they left instead if they disconnected before
+  they could be held; a refused reassign changes nothing and tells the operator so. The
   refused plot's index is recorded against nobody, so it is never shared.
   `/sgen setspawn` and the in-cell repair are gated the same way.
 

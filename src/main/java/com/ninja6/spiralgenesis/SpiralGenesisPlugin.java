@@ -1002,12 +1002,23 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * allocated next or skipped, and never held by two players.
      */
     private void holdRefusedAllocation(Player player, String clientType, int index) {
-        getLogger().warning("Plot #" + index + " for " + player.getName() + " was not recorded,"
-                + " because data.yml could not be read when it was written. They were not"
-                + " moved and their respawn point is unchanged; they are held and will be"
-                + " allocated once /sgen reload reads it successfully.");
+        boolean held = false;
         if (actionGate != null) {
             actionGate.hold(player, clientType);
+            // Read back rather than taken from hold's answer, which is also false for a
+            // player this session already holds. A player who disconnected is dropped by
+            // hold, or by the quit that follows it, so only a connected one is held.
+            held = player.isConnected() && actionGate.isHeld(player.getUniqueId());
+        }
+        String refused = "Plot #" + index + " for " + player.getName() + " was not recorded,"
+                + " because data.yml could not be read when it was written. They were not"
+                + " moved and their respawn point is unchanged; ";
+        if (held) {
+            getLogger().warning(refused + "they are held and will be allocated once"
+                    + " /sgen reload reads it successfully.");
+        } else {
+            getLogger().warning(refused + "they left before they could be held, and will be"
+                    + " allocated when they next join.");
         }
         resumeHeldIfAvailable();
     }
