@@ -97,7 +97,7 @@ class StorageFailureTest {
         final AtomicInteger searches = new AtomicInteger();
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
             allocations.incrementAndGet();
             int index = indexSupplier.getAsInt();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16, 64, 0);

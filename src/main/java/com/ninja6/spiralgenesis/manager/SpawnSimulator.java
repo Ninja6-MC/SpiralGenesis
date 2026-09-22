@@ -41,9 +41,24 @@ public final class SpawnSimulator {
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
         for (int i = 0; i < samples; i++) {
             chain = chain.thenCompose(ignored ->
-                    manager.simulateNextSafeSpawn(indices::getAndIncrement).thenAccept(report::record));
+                    manager.simulateNextSafeSpawn(indices::getAndIncrement)
+                            .thenAccept(outcome -> report.record(placed(outcome))));
         }
         return chain.thenApply(ignored -> report);
+    }
+
+    /**
+     * The sample's plot, or the end of the run when a sample found none.
+     *
+     * <p>A sample that gave up against the border still aborts the whole run, with the
+     * manager's message as the reason, which is what the run has always done with one.
+     */
+    private static SpawnManager.LocationResult placed(SpawnManager.AllocationOutcome outcome) {
+        return switch (outcome) {
+            case SpawnManager.LocationResult found -> found;
+            case SpawnManager.BorderExhausted exhausted ->
+                    throw new IllegalStateException(exhausted.message());
+        };
     }
 
     /** Aggregate outcome of a simulation run. */

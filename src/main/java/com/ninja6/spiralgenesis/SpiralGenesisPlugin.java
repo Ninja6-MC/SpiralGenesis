@@ -359,7 +359,23 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // there escapes before exceptionally() below is ever attached. That would leave the
         // guard held for the lifetime of the process, and a player permanently unallocatable.
         try {
-            allocateSpawn(dataStorage::reserveNextIndex).thenAccept(res -> {
+            allocateSpawn(dataStorage::reserveNextIndex).thenAccept(outcome -> {
+                SpawnManager.LocationResult res;
+                switch (outcome) {
+                    case SpawnManager.LocationResult found -> res = found;
+                    case SpawnManager.BorderExhausted exhausted -> {
+                        // An outcome, not an error: the scan that gave up has already put it
+                        // on the console once, in plain text, and every later join is refused
+                        // for the same reason until the border changes. Repeating it here
+                        // for each of them, with a trace, would bury everything else. The
+                        // player stays where they are, which is inside the border.
+                        getLogger().fine("No plot for " + player.getName() + ": "
+                                + exhausted.message());
+                        applied.complete(null);
+                        holdIfUnavailable(player, clientType);
+                        return;
+                    }
+                }
                 // Player state must be touched on the thread owning that player. The entity
                 // scheduler is that thread on Folia and the main thread on Paper; it also drops
                 // the task automatically if the player disconnects before it runs.
@@ -492,7 +508,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the region schedulers, and this method builds its own SpawnManager, so those seams
      * cannot be reached from outside.
      */
-    CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+    CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
         // Read once. The caller's guard is no longer proof that the field is still set: a
         // reload onto an unresolvable world unbinds it, and it can land between that guard
         // and this line. Failing the future rather than dereferencing null keeps the

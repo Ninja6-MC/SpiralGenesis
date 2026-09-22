@@ -162,6 +162,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write player records are refused. A `/sgen reload` that reads the repaired file clears
   the state and allocates everyone held; one that still cannot read it reports again
   without copying the same file twice. A missing or empty file is still a fresh install.
+- **A join refused because the world border is exhausted no longer logs an error with a
+  stack trace.** Once a scan had given up against the border, every later join was
+  refused as intended but reported at SEVERE with a trace, burying the rest of the console
+  under the same condition. The scan that gives up now reports it once, in plain text, and
+  scans already in flight that give up against the same border add nothing; later joins
+  are refused quietly until the border changes, and a changed border that is exhausted
+  again is reported again. `/sgen reassign` that finds no plot tells the operator why in
+  chat, without a trace in the console. Unexpected allocation errors are still logged in
+  full.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

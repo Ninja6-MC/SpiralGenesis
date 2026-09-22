@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntSupplier;
 import java.util.logging.Level;
 
@@ -40,10 +41,11 @@ public class SpawnManager {
     /**
      * The border geometry a scan has already given up against, or {@code null} if none has.
      *
-     * <p>Volatile because allocations resolve on whichever region thread owned the last
-     * candidate, and the next one may start on another.
+     * <p>Atomic because allocations resolve on whichever region thread owned the last
+     * candidate, and the next one may start on another. Swapped rather than set, so that of
+     * several scans in flight that exhaust against the same border, exactly one reports it.
      */
-    private volatile BorderGeometry exhaustedAgainst;
+    private final AtomicReference<BorderGeometry> exhaustedAgainst = new AtomicReference<>();
 
     private static final Set<Material> HAZARD_MATERIALS = EnumSet.of(
             Material.WATER, Material.LAVA, Material.ICE, Material.PACKED_ICE,
@@ -146,17 +148,17 @@ public class SpawnManager {
      * allocations can never converge on the same cell. Probes are spread one-per-tick: this
      * keeps chunk generation off any single tick's budget and bounds the callback stack.
      *
-     * <p>Fails with {@link BorderExhaustedException} when the whole scan stayed outside the
-     * world border, which is the one case where there is no point to fall back to. Once that
-     * has happened, later calls are refused on the spot, without claiming an index, until
-     * the border changes.
+     * <p>Resolves to {@link BorderExhausted} when the whole scan stayed outside the world
+     * border, which is the one case where there is no point to fall back to. Once that has
+     * happened, later calls resolve to it on the spot, without claiming an index, until the
+     * border changes. It is an outcome rather than a failure: the future completes
+     * exceptionally only for an error nobody expected.
      *
      * @param indexSupplier atomic source of candidate spiral indices
-     * @return CompletableFuture resolving to safe LocationResult
+     * @return CompletableFuture resolving to a {@link LocationResult} or a
+     *         {@link BorderExhausted}
      */
-    public CompletableFuture<LocationResult> allocateNextSafeSpawn(IntSupplier indexSupplier) {
-        CompletableFuture<LocationResult> result = new CompletableFuture<>();
-
+    public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
         // Refused before a single index is claimed. A scan that has already walked its whole
         // budget outside this exact border will do it again for the same reason, and every
         // repeat would advance the spiral by another max-scan-attempts indices that no
@@ -170,18 +172,21 @@ public class SpawnManager {
         // the first exhaustion is recorded each finish their own scan, so a join surge costs
         // one scan per joiner in flight and one only. Serialising them would buy nothing but
         // a lock on the join path.
-        BorderGeometry gaveUpAgainst = exhaustedAgainst;
+        //
+        // Not logged: the scan that gave up already reported it, once, and repeating it for
+        // every join would bury the rest of the console under one line about the border.
+        BorderGeometry gaveUpAgainst = exhaustedAgainst.get();
         if (gaveUpAgainst != null && gaveUpAgainst.equals(BorderGeometry.of(world))) {
-            result.completeExceptionally(new BorderExhaustedException(
+            return CompletableFuture.completedFuture(new BorderExhausted(
                     "Spawn allocation refused: an earlier scan found nothing inside the world "
                             + "border of world '" + world.getName() + "' and the border has not "
                             + "changed since. Widen the border or move its centre and the next "
                             + "join scans again on its own; if you change origin.x, origin.z or "
-                            + "cell-size instead, run /sgen reload."));
-            return result;
+                            + "cell-size instead, run /sgen reload.", 0));
         }
 
-        nextCell(new Scan(indexSupplier, false, true, result));
+        CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
+        nextCell(new Scan(indexSupplier, ScanPurpose.PLAYER_ALLOCATION, result));
         return result;
     }
 
@@ -201,12 +206,16 @@ public class SpawnManager {
      * indices that are inside the border: a read-only diagnostic cannot be allowed to lock
      * allocation out.
      *
+     * <p>A simulation that exhausts is not logged here either: it is the caller's sample,
+     * and the caller decides how to report it.
+     *
      * @param indexSupplier throwaway source of indices, never the live reservation
-     * @return CompletableFuture resolving to safe LocationResult
+     * @return CompletableFuture resolving to a {@link LocationResult} or a
+     *         {@link BorderExhausted}
      */
-    public CompletableFuture<LocationResult> simulateNextSafeSpawn(IntSupplier indexSupplier) {
-        CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        nextCell(new Scan(indexSupplier, false, false, result));
+    public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
+        nextCell(new Scan(indexSupplier, ScanPurpose.SIMULATION, result));
         return result;
     }
 
@@ -227,12 +236,16 @@ public class SpawnManager {
      *         sampled candidates all failed
      */
     public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
-        CompletableFuture<LocationResult> result = new CompletableFuture<>();
-        // Live, not diagnostic: it repairs a real player's plot. The distinction never comes
-        // up in practice, because a cell-only scan resolves to null before the exhaustion
-        // branch is reached.
-        nextCell(new Scan(() -> index, true, true, result));
-        return result;
+        CompletableFuture<AllocationOutcome> search = new CompletableFuture<>();
+        nextCell(new Scan(() -> index, ScanPurpose.REPAIR, search));
+        // A repair never leaves its cell, so it resolves to null in finishCell before the
+        // exhaustion branch is reached; a BorderExhausted here is a defect, not an outcome.
+        return search.thenApply(outcome -> switch (outcome) {
+            case null -> null;
+            case LocationResult found -> found;
+            case BorderExhausted exhausted -> throw new IllegalStateException(
+                    "An in-cell repair reached the exhaustion branch: " + exhausted.message());
+        });
     }
 
     /**
@@ -471,29 +484,33 @@ public class SpawnManager {
     }
 
     /**
-     * Raised when a scan spent its whole budget without finding one point inside the border.
+     * How an allocation scan ended, when nothing unexpected went wrong.
+     *
+     * <p>Sealed so a caller can switch over it exhaustively and the compiler names every
+     * caller that has to decide what to do with a new outcome. Errors nobody expected - a
+     * chunk that failed to load, a scheduler that refused work - are not outcomes and still
+     * fail the future.
+     */
+    public sealed interface AllocationOutcome permits LocationResult, BorderExhausted {
+
+        /** Spiral indices the scan claimed, all of them for nothing when it found no plot. */
+        int cellsProbed();
+    }
+
+    /**
+     * The scan spent its whole budget without finding one point inside the world border, or
+     * was refused because an earlier scan already had.
      *
      * <p>Distinct from an ordinary allocation failure because it is neither transient nor a
      * defect: the spiral has grown past the border, and no retry helps until an operator
-     * widens the border or moves the origin.
+     * widens the border or moves the origin. That is also why it is a value and not an
+     * exception: the caller expects it and branches on it, and a stack trace under a line
+     * about a misconfigured border is noise, not evidence.
      *
-     * <p>Carries no stack trace. It is raised from exactly one place, its message says
-     * everything an operator can act on, and the caller logs it per join: frames of
-     * scheduler internals under a line about a misconfigured border are noise, not evidence.
+     * @param message     what happened and what an operator can do about it, in plain text
+     * @param cellsProbed spiral indices the scan claimed; 0 for a refusal, which claims none
      */
-    public static final class BorderExhaustedException extends IllegalStateException {
-
-        private static final long serialVersionUID = 1L;
-
-        BorderExhaustedException(String message) {
-            super(message);
-        }
-
-        @Override
-        public synchronized Throwable fillInStackTrace() {
-            return this;
-        }
-    }
+    public record BorderExhausted(String message, int cellsProbed) implements AllocationOutcome {}
 
     /**
      * What a stored point can still be used for, as far as a synchronous caller can tell.
@@ -696,7 +713,7 @@ public class SpawnManager {
             scan.result.complete(scan.resultFor(scan.bestInCell, false));
             return;
         }
-        if (scan.cellOnly) {
+        if (scan.purpose.staysInCell()) {
             // Note this is max-candidates points, not the whole cell: 12 of the 961 that
             // fit a 500-block cell by default. The caller reports it as such.
             scan.result.complete(null);
@@ -710,9 +727,9 @@ public class SpawnManager {
         // Exhausted the budget without seeing one point inside the world border. The spiral
         // only grows, so advancing walks further out and every later cell is further
         // outside than this one; there is nothing left to settle on and nowhere useful to
-        // advance to. Failing is the only outcome that neither strands the player outside
-        // the border nor spins: the caller logs it and leaves them standing where they are,
-        // which is inside the border by definition.
+        // advance to. Giving up is the only outcome that neither strands the player outside
+        // the border nor spins: the caller leaves them standing where they are, which is
+        // inside the border by definition.
         if (scan.bestOverall == null) {
             String message = "Spawn allocation failed: every candidate across " + scan.attempt
                     + " cells fell outside the world border of world '" + world.getName()
@@ -720,17 +737,22 @@ public class SpawnManager {
                     + "origin.z so the spiral keeps growing inside it. This scan claimed "
                     + scan.attempt + " spiral indices, the last of them " + scan.index
                     + ", and none of them holds a plot.";
-            if (scan.liveSpiral) {
-                // Recorded before the failure is published, so the next join is refused
+            if (scan.purpose.recordsExhaustion()) {
+                // Recorded before the outcome is published, so the next join is refused
                 // without claiming an index rather than repeating this scan and burning
                 // another max-scan-attempts of them. Never recorded for a diagnostic run,
                 // whose cells say nothing about where the live spiral has reached.
-                exhaustedAgainst = BorderGeometry.of(world);
+                BorderGeometry border = BorderGeometry.of(world);
                 message += " Further allocations are refused without claiming an index until "
                         + "the border changes.";
+                // Reported once per border, here, and nowhere else: not by the refusals that
+                // follow, and not by the other scans that were already in flight and give
+                // up against the same border after this one.
+                if (!border.equals(exhaustedAgainst.getAndSet(border))) {
+                    plugin.getLogger().severe(message);
+                }
             }
-            plugin.getLogger().severe(message);
-            scan.result.completeExceptionally(new BorderExhaustedException(message));
+            scan.result.complete(new BorderExhausted(message, scan.attempt));
             return;
         }
 
@@ -982,6 +1004,43 @@ public class SpawnManager {
     }
 
     /**
+     * Who a scan is for, which decides the two ways scans differ.
+     *
+     * <p>Named for the caller rather than for the two flags it implies, so every place a
+     * scan is built says whose it is, and the flags cannot be swapped at a call site because
+     * no call site passes them. Package-private so a test can pin the table below.
+     */
+    enum ScanPurpose {
+
+        /** A player's plot: walks the live spiral and may record exhaustion. */
+        PLAYER_ALLOCATION,
+
+        /**
+         * {@code /sgen simulate}: walks the spiral but never records exhaustion, because its
+         * index range is not the live spiral's. See {@link #simulateNextSafeSpawn}.
+         */
+        SIMULATION,
+
+        /**
+         * An in-cell repair of a plot a player already holds: never leaves that cell. Live,
+         * not diagnostic, since it is a real player's plot; the distinction never comes up in
+         * practice, because a scan that stays in its cell resolves to null before the
+         * exhaustion branch is reached.
+         */
+        REPAIR;
+
+        /** Pins the scan to the single cell it starts in; see {@link #findSafeSpawnInCell}. */
+        boolean staysInCell() {
+            return this == REPAIR;
+        }
+
+        /** Whether giving up against the border refuses the next player allocation. */
+        boolean recordsExhaustion() {
+            return this != SIMULATION;
+        }
+    }
+
+    /**
      * Mutable state for one allocation.
      *
      * <p>Fields are plain rather than volatile: exactly one probe is ever in flight, and
@@ -990,11 +1049,8 @@ public class SpawnManager {
      */
     private static final class Scan {
         private final IntSupplier indexSupplier;
-        /** Pins the scan to the single cell it starts in; see {@link #findSafeSpawnInCell}. */
-        private final boolean cellOnly;
-        /** False for a diagnostic run, whose index range is not the live spiral's. */
-        private final boolean liveSpiral;
-        private final CompletableFuture<LocationResult> result;
+        private final ScanPurpose purpose;
+        private final CompletableFuture<AllocationOutcome> result;
 
         private int attempt;
         private int index;
@@ -1008,11 +1064,10 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(IntSupplier indexSupplier, boolean cellOnly, boolean liveSpiral,
-                     CompletableFuture<LocationResult> result) {
+        private Scan(IntSupplier indexSupplier, ScanPurpose purpose,
+                     CompletableFuture<AllocationOutcome> result) {
             this.indexSupplier = indexSupplier;
-            this.cellOnly = cellOnly;
-            this.liveSpiral = liveSpiral;
+            this.purpose = purpose;
             this.result = result;
         }
 
@@ -1043,5 +1098,6 @@ public class SpawnManager {
      */
     public record LocationResult(Location location, int index, int gridU, int gridV,
                                  int surfaceY, int cellsProbed, int candidatesProbed,
-                                 boolean fallback, Map<RejectionReason, Integer> rejections) {}
+                                 boolean fallback, Map<RejectionReason, Integer> rejections)
+            implements AllocationOutcome {}
 }
