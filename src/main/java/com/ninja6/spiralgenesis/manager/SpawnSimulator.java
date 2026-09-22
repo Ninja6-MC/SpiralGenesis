@@ -4,6 +4,7 @@ import java.util.EnumMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /**
@@ -39,26 +40,55 @@ public final class SpawnSimulator {
         AtomicInteger indices = new AtomicInteger();
 
         CompletableFuture<Void> chain = CompletableFuture.completedFuture(null);
-        for (int i = 0; i < samples; i++) {
-            chain = chain.thenCompose(ignored ->
-                    manager.simulateNextSafeSpawn(indices::getAndIncrement)
-                            .thenAccept(outcome -> report.record(placed(outcome))));
+        for (int i = 1; i <= samples; i++) {
+            int sample = i;
+            chain = chain.thenCompose(ignored -> report.failure() != null
+                    ? CompletableFuture.completedFuture(null)
+                    : sample(manager, indices, report, sample));
         }
         return chain.thenApply(ignored -> report);
     }
 
     /**
-     * The sample's plot, or the end of the run when a sample found none.
+     * Runs one sample and records whatever it came to, so that no single sample can take
+     * the report down with it.
      *
-     * <p>A sample that gave up against the border still aborts the whole run, with the
-     * manager's message as the reason, which is what the run has always done with one.
+     * <p>A sample that gives up against the border is an outcome, not an error: it is
+     * counted and the run carries on, because a border that misses the origin can still
+     * fit cells further out, and how many samples fit is what the operator is asking.
+     * Anything else that fails a sample ends the run there, since a scheduler that has
+     * gone away fails every sample after it the same way, and the report is delivered
+     * with the failure attached rather than instead of it.
      */
-    private static SpawnManager.LocationResult placed(SpawnManager.AllocationOutcome outcome) {
-        return switch (outcome) {
-            case SpawnManager.LocationResult found -> found;
-            case SpawnManager.BorderExhausted exhausted ->
-                    throw new IllegalStateException(exhausted.message());
-        };
+    private static CompletableFuture<Void> sample(SpawnManager manager, AtomicInteger indices,
+                                                  Report report, int sample) {
+        // Samples run one at a time, so nothing else draws from the counter in between.
+        int firstIndex = indices.get();
+        CompletableFuture<SpawnManager.AllocationOutcome> pending;
+        try {
+            pending = manager.simulateNextSafeSpawn(indices::getAndIncrement);
+        } catch (RuntimeException e) {
+            pending = CompletableFuture.failedFuture(e);
+        }
+        return pending.handle((outcome, error) -> {
+            if (error != null) {
+                report.fail(sample, unwrap(error));
+                return null;
+            }
+            switch (outcome) {
+                case SpawnManager.LocationResult found -> report.record(found);
+                case SpawnManager.BorderExhausted ignored -> report.recordExhausted(sample, firstIndex);
+            }
+            return null;
+        });
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        Throwable cause = error;
+        while (cause instanceof CompletionException && cause.getCause() != null) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 
     /** Aggregate outcome of a simulation run. */
@@ -72,6 +102,11 @@ public final class SpawnSimulator {
         private int fallbacks;
         private int minSurfaceY = Integer.MAX_VALUE;
         private int maxSurfaceY = Integer.MIN_VALUE;
+        private int exhausted;
+        private int firstExhaustedSample;
+        private int firstExhaustedIndex = -1;
+        private Throwable failure;
+        private int failedSample;
 
         Report(int samples) {
             this.samples = samples;
@@ -87,6 +122,26 @@ public final class SpawnSimulator {
             minSurfaceY = Math.min(minSurfaceY, result.surfaceY());
             maxSurfaceY = Math.max(maxSurfaceY, result.surfaceY());
             result.rejections().forEach((reason, count) -> rejections.merge(reason, count, Integer::sum));
+        }
+
+        /**
+         * Counts a sample whose scan found no plot inside the world border.
+         *
+         * <p>Its indices stay out of {@link #cellsProbed()}: that figure is what placed
+         * spawns cost, and a scan walking its whole budget outside the border would inflate
+         * the ratio CI guards with something that is not a terrain rule.
+         */
+        void recordExhausted(int sample, int firstIndex) {
+            if (exhausted == 0) {
+                firstExhaustedSample = sample;
+                firstExhaustedIndex = firstIndex;
+            }
+            exhausted++;
+        }
+
+        void fail(int sample, Throwable cause) {
+            failure = cause;
+            failedSample = sample;
         }
 
         public int samples() {
@@ -121,6 +176,34 @@ public final class SpawnSimulator {
             return Map.copyOf(rejections);
         }
 
+        /** Samples whose scan found no plot inside the world border. */
+        public int borderExhausted() {
+            return exhausted;
+        }
+
+        /** 1-based number of the first sample that exhausted, or 0 if none did. */
+        public int firstExhaustedSample() {
+            return firstExhaustedSample;
+        }
+
+        /**
+         * Spiral index the first exhausted sample started scanning from, or -1 if none did:
+         * where, counting from the origin, the spiral stopped fitting inside the border.
+         */
+        public int firstExhaustedIndex() {
+            return firstExhaustedIndex;
+        }
+
+        /** What ended the run early, or {@code null} if every sample ran. */
+        public Throwable failure() {
+            return failure;
+        }
+
+        /** 1-based number of the sample that failed, or 0 if none did. */
+        public int failedSample() {
+            return failedSample;
+        }
+
         /**
          * Spiral indices consumed per allocation. 1.0 is perfect; a high value means the
          * safety rules are discarding whole cells and pushing players outward.
@@ -142,9 +225,9 @@ public final class SpawnSimulator {
             // would slip through the guard silently.
             return String.format(Locale.ROOT,
                     "SIMULATE samples=%d completed=%d indices=%d ratio=%.2f candidates=%d "
-                            + "fallbacks=%d minY=%d maxY=%d",
+                            + "fallbacks=%d minY=%d maxY=%d exhausted=%d",
                     samples, completed, cellsProbed, indicesPerSpawn(), candidatesProbed,
-                    fallbacks, minSurfaceY(), maxSurfaceY());
+                    fallbacks, minSurfaceY(), maxSurfaceY(), exhausted);
         }
 
         /** Companion line breaking the rejections down by rule. */

@@ -171,6 +171,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   again is reported again. `/sgen reassign` that finds no plot tells the operator why in
   chat, without a trace in the console. Unexpected allocation errors are still logged in
   full.
+- **`/sgen simulate` no longer discards its report when a sample fails.** One sample
+  that found no plot inside the world border, or failed for any other reason, aborted the
+  whole run with "Simulation failed" and none of the samples already taken. A sample that
+  exhausts against the border is now counted and the run carries on: the report shows how
+  many samples exhausted, the first one that did and the spiral index it scanned from, and
+  the console summary line gains `exhausted=`. Any other failure ends the run at that
+  sample and the report for the samples before it is still delivered, with the failure
+  reported alongside it and logged in full.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
