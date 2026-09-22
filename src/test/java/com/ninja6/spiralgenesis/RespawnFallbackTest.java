@@ -97,6 +97,14 @@ class RespawnFallbackTest {
         Location point;
         boolean forced;
         final java.util.List<Location> teleports = new ArrayList<>();
+        /**
+         * Set while code runs on a thread that does not own the region holding the
+         * respawn point, as {@code PlayerSetSpawnEvent} does during a Folia respawn.
+         * {@code getRespawnLocation} then throws: on folia-1.21.11 it goes through
+         * {@code ServerPlayer.findRespawnAndUseSpawnBlock}, which reads the blocks where
+         * the point stands. {@code getPotentialBedLocation} reads no block and stays safe.
+         */
+        boolean foreignRegion;
         /** On the death screen: set by a death, cleared once a respawn places them. */
         boolean dead;
         /** Tasks for the player's own thread, run by {@link #place} as the server would. */
@@ -175,6 +183,10 @@ class RespawnFallbackTest {
 
         @Override
         public Location getRespawnLocation() {
+            if (foreignRegion) {
+                throw new IllegalStateException(
+                        "Resolving the respawn point off the thread of the region holding it");
+            }
             if (point == null) {
                 return null;
             }
@@ -339,7 +351,13 @@ class RespawnFallbackTest {
     private PlayerSetSpawnEvent respawnPointFails(RespawnPlayer player) {
         PlayerSetSpawnEvent event = new PlayerSetSpawnEvent(player,
                 PlayerSetSpawnEvent.Cause.PLAYER_RESPAWN, null, false, false, null);
-        server.getPluginManager().callEvent(event);
+        // Folia fires this on a region that need not own the point's blocks.
+        player.foreignRegion = true;
+        try {
+            server.getPluginManager().callEvent(event);
+        } finally {
+            player.foreignRegion = false;
+        }
         if (!event.isCancelled()) {
             player.setRespawnLocation(event.getLocation(), event.isForced());
         }
