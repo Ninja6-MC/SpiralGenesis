@@ -147,7 +147,8 @@ class WorldBindingTest {
      * documents the same defect.
      */
     private PlayerMock join(String name) {
-        PlayerMock player = new PlayerMock(server, name) {
+        // SessionPlayerMock because a hold reads isConnected(), which PlayerMock throws from.
+        PlayerMock player = new SessionPlayerMock(server, name) {
             @Override
             public CompletableFuture<Boolean> teleportAsync(Location location,
                                                             PlayerTeleportEvent.TeleportCause cause,
@@ -293,14 +294,81 @@ class WorldBindingTest {
         assertFalse(plugin.getDataStorage().hasSpawn(player.getUniqueId()),
                 "nothing may be allocated once no world is bound");
 
-        // The operator fixes the name, and the player acts again.
+        // The operator fixes the name. The player is held, so the reload itself resumes them.
         configureWorld(plugin, "world");
-        move(player);
 
         assertEquals(2, plugin.allocationCalls.get(),
                 "a player dropped from the gate without being allocated must be put back");
         assertTrue(plugin.getDataStorage().hasSpawn(player.getUniqueId()),
                 "the retry must allocate them");
+
+        move(player);
+        assertEquals(2, plugin.allocationCalls.get(), "an allocated player is no longer held");
+    }
+
+    @Test
+    @DisplayName("with no world bound a player stays held across actions until a reload binds one")
+    void unboundHoldPersistsUntilBound() {
+        UnbindingPlugin plugin = loadVariant(UnbindingPlugin.class);
+        configureWorld(plugin, "survival");
+        PlayerMock player = join("Patient");
+
+        move(player);
+        move(player);
+        move(player);
+
+        assertEquals(3, plugin.allocationCalls.get(),
+                "every action must retry; a hold that lasts one action is the defect");
+        assertFalse(plugin.getDataStorage().hasSpawn(player.getUniqueId()));
+
+        // Nothing moves them from here: the reload that binds the world is what releases them.
+        configureWorld(plugin, "world");
+
+        assertEquals(4, plugin.allocationCalls.get(), "the bind must resume the held player");
+        assertTrue(plugin.getDataStorage().hasSpawn(player.getUniqueId()),
+                "a held player must be allocated without having to act again");
+    }
+
+    @Test
+    @DisplayName("repeated retries of a held player log SEVERE once and the hold once")
+    void heldRetriesDoNotFloodTheLog() {
+        UnbindingPlugin plugin = loadVariant(UnbindingPlugin.class);
+        configureWorld(plugin, "survival");
+        PlayerMock player = join("Noisy");
+
+        for (int i = 0; i < 5; i++) {
+            move(player);
+        }
+
+        List<String> severe = messagesAt(Level.SEVERE);
+        assertEquals(1, severe.size(), "only the origin.world report: " + severe);
+        List<String> holds = messagesAt(Level.WARNING).stream()
+                .filter(m -> m.contains("Cannot allocate a spawn for Noisy"))
+                .toList();
+        assertEquals(1, holds.size(), "the hold is reported once per hold: " + holds);
+        assertTrue(holds.get(0).contains("once origin.world names a loaded world"),
+                "the message must say what releases them: " + holds.get(0));
+    }
+
+    @Test
+    @DisplayName("a world loaded after enable is picked up by a held player's next action")
+    void heldPlayerPicksUpLateWorld() {
+        UnbindingPlugin plugin = loadVariant(UnbindingPlugin.class);
+        configureWorld(plugin, "survival");
+        PlayerMock waiting = join("Early");
+        PlayerMock other = join("Other");
+        move(waiting);
+        move(other);
+        assertFalse(plugin.getDataStorage().hasSpawn(waiting.getUniqueId()));
+
+        // What a world manager does from its own onEnable, after this plugin's. No reload.
+        server.addSimpleWorld("survival");
+        move(waiting);
+
+        assertNotNull(plugin.getSpawnManager(), "the retry must bind the world that appeared");
+        assertTrue(plugin.getDataStorage().hasSpawn(waiting.getUniqueId()));
+        assertTrue(plugin.getDataStorage().hasSpawn(other.getUniqueId()),
+                "every player held on the same bind must be resumed, not only the one who acted");
     }
 
     @Test

@@ -4,10 +4,12 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import com.ninja6.spiralgenesis.SessionPlayerMock;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
+import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
@@ -23,9 +25,11 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -428,6 +432,190 @@ class PlayerActionGateListenerTest {
 
         assertEquals(List.of(), reasserted);
         assertFalse(gate.isUnreached(player.getUniqueId()));
+    }
+
+    // --- Holding a player while allocation is unavailable -----------------------------
+
+    /**
+     * Joins a player whose connection is per entity and whose online state is per UUID, as
+     * on the server. A plain PlayerMock throws from {@code isConnected()}, which a hold reads.
+     */
+    private SessionPlayerMock connect(String name) {
+        SessionPlayerMock player = new SessionPlayerMock(server, name);
+        server.addPlayer(player);
+        return player;
+    }
+
+    /** Joins a new entity for a UUID that has joined before. */
+    private SessionPlayerMock rejoin(SessionPlayerMock previous) {
+        SessionPlayerMock player = new SessionPlayerMock(server, previous.getName(),
+                previous.getUniqueId());
+        server.addPlayer(player);
+        return player;
+    }
+
+    /** Every entity the gate would resume now. */
+    private List<Player> visitHeld() {
+        List<Player> visited = new ArrayList<>();
+        gate.forEachHeld((held, type) -> visited.add(held));
+        return visited;
+    }
+
+    @Test
+    @DisplayName("a held player is retried on every action and stays held")
+    void heldPlayerStaysHeldAcrossActions() {
+        SessionPlayerMock player = connect("Waiting");
+        gate.markPending(player, "JAVA");
+        simulateMove(player, false);
+
+        // What the plugin does when that release finds allocation unavailable.
+        assertTrue(gate.hold(player, "JAVA"), "the first hold starts the hold");
+        simulateMove(player, false);
+        simulateMove(player, false);
+        simulateMove(player, false);
+
+        assertEquals(List.of("Waiting", "Waiting", "Waiting", "Waiting"), released,
+                "every action must retry, not only the first after the hold");
+        assertTrue(gate.isHeld(player.getUniqueId()), "an action must not end the hold");
+        assertFalse(gate.isPending(player.getUniqueId()), "a held player is past the gate");
+    }
+
+    @Test
+    @DisplayName("holding an already held player reports that it was already held")
+    void holdIsReportedOnce() {
+        SessionPlayerMock player = connect("Repeat");
+
+        assertTrue(gate.hold(player, "JAVA"));
+        assertFalse(gate.hold(player, "JAVA"), "a repeated hold is not a new one");
+    }
+
+    @Test
+    @DisplayName("a hold never reads or arms the timeout")
+    void holdArmsNoTimeout() {
+        AtomicInteger timeoutReads = new AtomicInteger();
+        PlayerActionGateListener counting = new PlayerActionGateListener(plugin,
+                (player, type) -> { }, player -> { },
+                () -> {
+                    timeoutReads.incrementAndGet();
+                    return 0;
+                }, () -> "");
+        SessionPlayerMock player = connect("NoBackstop");
+
+        counting.hold(player, "JAVA");
+        counting.hold(player, "JAVA");
+
+        assertEquals(0, timeoutReads.get(),
+                "allocating anyway is what a hold exists to prevent");
+    }
+
+    @Test
+    @DisplayName("forget and quit both end a hold")
+    void forgetAndQuitEndTheHold() {
+        SessionPlayerMock allocated = connect("Allocated");
+        SessionPlayerMock leaving = connect("Leaving");
+        gate.hold(allocated, "JAVA");
+        gate.hold(leaving, "JAVA");
+
+        gate.forget(allocated.getUniqueId());
+        leaving.disconnect();
+        simulateMove(allocated, false);
+
+        assertFalse(gate.isHeld(allocated.getUniqueId()));
+        assertFalse(gate.isHeld(leaving.getUniqueId()));
+        assertEquals(List.of(), released);
+    }
+
+    @Test
+    @DisplayName("a hold that lands after the player quit leaves nothing behind")
+    void holdAfterQuitIsDropped() {
+        SessionPlayerMock player = connect("GoneAlready");
+        // The entity disconnects and the quit event reaches the gate before the hold
+        // arrives: the order a console 'sgen allocate' or a completing future can produce
+        // on Folia.
+        player.disconnect();
+
+        assertFalse(gate.hold(player, "JAVA"), "a hold for a departed entity starts nothing");
+        assertFalse(gate.isHeld(player.getUniqueId()), "no entry may pin the departed player");
+        assertEquals(List.of(), visitHeld());
+    }
+
+    @Test
+    @DisplayName("a hold that lands while the quit event is still firing leaves nothing behind")
+    void holdDuringQuitIsDropped() {
+        SessionPlayerMock player = connect("Leaving");
+        // The window the server leaves: the entity has disconnected and the quit event has
+        // been handled, but the player is not yet out of the UUID lookup.
+        player.dropConnection();
+        assertTrue(player.isOnline(), "precondition: isOnline still answers by UUID");
+
+        assertFalse(gate.hold(player, "JAVA"));
+        assertFalse(gate.isHeld(player.getUniqueId()));
+    }
+
+    @Test
+    @DisplayName("a rejoin replaces a hold left over from the previous session")
+    void rejoinReplacesStaleHold() {
+        SessionPlayerMock previous = connect("Returning");
+        // The stale entry: held, then disconnected without the gate seeing the quit.
+        gate.hold(previous, "JAVA");
+        previous.dropConnection();
+        SessionPlayerMock rejoined = rejoin(previous);
+        assertTrue(previous.isOnline(),
+                "precondition: the old entity reads online once its UUID is back");
+
+        assertTrue(gate.hold(rejoined, "JAVA"), "the new session's hold must be reported");
+
+        List<Player> visited = visitHeld();
+        assertEquals(1, visited.size());
+        assertSame(rejoined, visited.get(0),
+                "a resume must be scheduled on the entity that is connected now");
+    }
+
+    @Test
+    @DisplayName("a late hold for the previous session does not evict the new session's")
+    void staleHoldAfterNewSessionIsIgnored() {
+        SessionPlayerMock previous = connect("Rejoiner");
+        previous.disconnect();
+        SessionPlayerMock rejoined = rejoin(previous);
+        assertTrue(gate.hold(rejoined, "JAVA"));
+
+        // A failed allocation from the first session completing only now.
+        assertFalse(gate.hold(previous, "JAVA"), "a departed entity starts no hold");
+
+        assertTrue(gate.isHeld(rejoined.getUniqueId()), "the new session must stay held");
+        List<Player> visited = visitHeld();
+        assertEquals(1, visited.size());
+        assertSame(rejoined, visited.get(0), "the entry must still be the connected entity");
+        assertFalse(gate.hold(rejoined, "JAVA"),
+                "the new session's hold is not restarted, so it is not reported twice");
+    }
+
+    @Test
+    @DisplayName("a held entity that has disconnected is dropped rather than resumed")
+    void disconnectedHeldPlayerIsNotVisited() {
+        SessionPlayerMock player = connect("Vanished");
+        gate.hold(player, "JAVA");
+        player.dropConnection();
+
+        assertEquals(List.of(), visitHeld());
+        assertFalse(gate.isHeld(player.getUniqueId()));
+    }
+
+    @Test
+    @DisplayName("every held player is visited when allocation becomes available")
+    void heldPlayersAreVisited() {
+        SessionPlayerMock first = connect("HeldOne");
+        SessionPlayerMock second = connect("HeldTwo");
+        gate.hold(first, "JAVA");
+        gate.hold(second, "BEDROCK");
+
+        List<String> visited = new ArrayList<>();
+        gate.forEachHeld((player, type) -> visited.add(player.getName() + "/" + type));
+        visited.sort(null);
+
+        assertEquals(List.of("HeldOne/JAVA", "HeldTwo/BEDROCK"), visited);
+        assertTrue(gate.isHeld(first.getUniqueId()),
+                "visiting does not end the hold; allocating does");
     }
 
     @Test

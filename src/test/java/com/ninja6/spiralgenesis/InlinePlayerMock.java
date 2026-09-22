@@ -1,7 +1,6 @@
 package com.ninja6.spiralgenesis;
 
 import be.seeseemelk.mockbukkit.ServerMock;
-import be.seeseemelk.mockbukkit.entity.PlayerMock;
 import io.papermc.paper.entity.TeleportFlag;
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
@@ -23,7 +22,7 @@ import java.util.function.Consumer;
  * resulting NullPointerException gets swallowed by the plugin's own error handling and the
  * test passes on a path that never finished.
  */
-public class InlinePlayerMock extends PlayerMock {
+public class InlinePlayerMock extends SessionPlayerMock {
 
     /**
      * Whether teleports succeed. Set false to reproduce a login plugin holding an

@@ -141,6 +141,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   still fails, so a spawn over a real drop is still repaired. The floor that is used,
   and the block stepped into, get the same checks as before for water, lava, magma,
   cactus and campfires. Allocation of new plots is unchanged.
+- **A player who cannot be allocated because no world is bound stays held until one is.**
+  The log said such a player would be retried once `origin.world` named a loaded world,
+  but the hold lasted one action: their next step retried while the world was still
+  missing, and afterwards nothing retried them for the rest of the session. They now stay
+  held across every action and are allocated as soon as a world is bound, by
+  `/sgen reload` or by a world that loads late, without having to act again. The hold is
+  logged once per player at WARNING instead of at SEVERE on every retry, and the missing
+  world is still reported at SEVERE once per configured name, now also when two threads
+  retry the bind together.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

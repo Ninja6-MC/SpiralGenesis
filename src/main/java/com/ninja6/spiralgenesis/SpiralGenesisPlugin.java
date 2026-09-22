@@ -59,9 +59,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     /**
      * Configured world name the unresolved-world error has already been reported for.
      *
-     * <p>Volatile for the same reason, and written from the same threads.
+     * <p>Written from the same threads, and swapped atomically rather than read and then
+     * set: two region threads retrying the bind together would otherwise both see the name
+     * unreported and both log it.
      */
-    private volatile String unresolvedWorldReported;
+    private final AtomicReference<String> unresolvedWorldReported = new AtomicReference<>();
     private FloodgateHook floodgateHook;
     private AuthMeHook authMeHook;
     private PlayerActionGateListener actionGate;
@@ -236,8 +238,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // suppression exists to keep the per-join retry quiet, and an administrator who has
         // just edited the file and reloaded is owed the answer whether or not the name they
         // tried is the same one that failed last time.
-        this.unresolvedWorldReported = null;
+        this.unresolvedWorldReported.set(null);
         initSpawnManager();
+        resumeHeldIfAvailable();
     }
 
     private void loadConfiguration() {
@@ -261,8 +264,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * <p>Absent is not fatal: {@link #handlePlayerFirstJoin} calls this again whenever the
      * manager is missing, so a world that only exists after enable - world managers create
      * theirs from their own {@code onEnable}, in load order nobody controls - is picked up
-     * on the first join that needs it. The error is reported once per configured name so
-     * that retry does not fill the log.
+     * on the first join or held player's action that needs it. The error is reported once
+     * per configured name, across all threads, so that retry does not fill the log.
      *
      * <p>Package-private as a test seam.
      */
@@ -270,8 +273,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         String configured = pluginConfig.getWorldName();
         World world = Bukkit.getWorld(configured);
         if (world == null) {
-            if (!configured.equals(unresolvedWorldReported)) {
-                unresolvedWorldReported = configured;
+            if (!configured.equals(unresolvedWorldReported.getAndSet(configured))) {
                 String loaded = Bukkit.getWorlds().stream().map(World::getName)
                         .collect(Collectors.joining(", "));
                 getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded, "
@@ -284,7 +286,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             this.spawnManager = null;
             return;
         }
-        unresolvedWorldReported = null;
+        unresolvedWorldReported.set(null);
         this.spawnManager = new SpawnManager(this, world, pluginConfig);
         getLogger().info("SpawnManager bound to world '" + world.getName()
                 + "' (origin.world: '" + configured + "').");
@@ -307,22 +309,29 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return;
         }
 
+        // Reached whenever origin.world names a world the server has not loaded:
+        // initSpawnManager refuses to bind anywhere else, and this re-resolve is what picks
+        // the world up if it appears later.
+        boolean justBound = false;
         if (spawnManager == null) {
             initSpawnManager();
+            justBound = spawnManager != null;
         }
 
-        if (spawnManager == null) {
-            // Reached whenever origin.world names a world the server has not loaded:
-            // initSpawnManager refuses to bind anywhere else, and the re-resolve above is
-            // what picks the world up if it appears later.
-            //
-            // Returns before takeAllocation, so the player keeps their place in the gate.
-            getLogger().severe("Cannot allocate spawn for " + player.getName()
-                    + ": no world is bound. See the origin.world error above.");
+        AllocationUnavailable unavailable = allocationUnavailable();
+        if (unavailable != null) {
+            // Returns before takeAllocation, so the player is held rather than dropped.
+            holdUnavailable(player, clientType, unavailable);
             return;
         }
 
-        if (!takeAllocation(uuid)) {
+        boolean owned = takeAllocation(uuid);
+        if (justBound) {
+            // After takeAllocation, which drops this player from the hold, so the players
+            // resumed are the others who were waiting on the same bind.
+            resumeHeldIfAvailable();
+        }
+        if (!owned) {
             return; // An allocation for this player is already in flight.
         }
 
@@ -419,7 +428,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }).exceptionally(ex -> {
                 getLogger().log(Level.SEVERE, "Error while asynchronously allocating spiral spawn for " + player.getName(), ex);
                 applied.complete(null);
-                regateIfUnbound(player, clientType);
+                holdIfUnavailable(player, clientType);
                 return null;
             });
         } catch (Exception e) {
@@ -430,7 +439,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             getLogger().log(Level.SEVERE, "Spawn allocation for " + player.getName()
                     + " failed before it could start.", e);
             applied.complete(null);
-            regateIfUnbound(player, clientType);
+            holdIfUnavailable(player, clientType);
         } catch (Throwable t) {
             applied.complete(null);
             throw t;
@@ -821,23 +830,76 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
-     * Puts a player back in the gate when an allocation failed with no world bound.
+     * Why allocation cannot run right now, or {@code null} if it can.
      *
-     * <p>{@code takeAllocation} has already dropped them, on the assumption that the caller
-     * holding them will finish the job. A reload onto an unresolvable world between that
-     * point and the scan breaks that assumption: nothing was allocated, nothing is watching
-     * them any more, and they would go the rest of the session with no plot. Returning them
-     * to the gate makes their next action retry it, which is what fixing the configuration
-     * needs to be enough.
+     * <p>The single check for the "allocation unavailable" state, so every cause of it holds
+     * players the same way. It reads the current state and changes nothing; re-resolving
+     * the world is the caller's business.
      */
-    private void regateIfUnbound(Player player, String clientType) {
-        if (spawnManager != null || actionGate == null || !player.isOnline()) {
+    AllocationUnavailable allocationUnavailable() {
+        if (spawnManager == null) {
+            return AllocationUnavailable.WORLD_UNBOUND;
+        }
+        return null;
+    }
+
+    /**
+     * Holds a player until allocation is available, reporting it once per hold.
+     *
+     * <p>A standing hold, not a single retry. The player stays in the gate across every
+     * action they take, each of which retries the bind quietly, and is allocated by
+     * {@link #resumeHeldIfAvailable} as soon as the reason clears, whether an action or a
+     * reload clears it. The gate's timeout is not re-armed: allocating anyway is the one
+     * thing that cannot be done while the reason holds.
+     *
+     * <p>Reported at warning, once per player per hold. The cause itself is reported at
+     * severe where it is detected, once, and repeating it per player would bury it.
+     */
+    private void holdUnavailable(Player player, String clientType, AllocationUnavailable reason) {
+        if (actionGate == null) {
             return;
         }
-        actionGate.markPending(player, clientType);
-        getLogger().warning("No world is bound, so " + player.getName()
-                + " was not allocated; they are held by the gate and retried on their next "
-                + "action once origin.world names a loaded world.");
+        if (actionGate.hold(player, clientType)) {
+            getLogger().warning(reason.holdMessage(player.getName()));
+        }
+        // The reason can clear between the check that sent this player here and the hold
+        // above, after whatever cleared it had already resumed everyone then held. Checking
+        // once more stops them being left waiting for an action they may never take.
+        resumeHeldIfAvailable();
+    }
+
+    /**
+     * Holds a player whose allocation failed after it had started, if allocation has since
+     * become unavailable.
+     *
+     * <p>{@code takeAllocation} has already dropped them from the gate, on the assumption
+     * that the caller holding them will finish the job. A reload onto an unresolvable world
+     * between that point and the scan breaks that assumption: nothing was allocated, nothing
+     * is watching them any more, and they would go the rest of the session with no plot.
+     */
+    private void holdIfUnavailable(Player player, String clientType) {
+        AllocationUnavailable reason = allocationUnavailable();
+        if (reason == null || !player.isOnline()) {
+            return;
+        }
+        holdUnavailable(player, clientType, reason);
+    }
+
+    /**
+     * Allocates every held player, if allocation is available.
+     *
+     * <p>Each one runs on the thread that owns them, as every other allocation does, and
+     * through the same idempotent entry point an action takes, so a player an action is
+     * already allocating is not allocated twice. They do not have to act again: every path
+     * into a hold has already passed whatever the gate waits for, so the only thing they
+     * were still waiting on is the reason that has just cleared.
+     */
+    private void resumeHeldIfAvailable() {
+        if (actionGate == null || allocationUnavailable() != null) {
+            return;
+        }
+        actionGate.forEachHeld((player, clientType) ->
+                runForPlayer(player, () -> handlePlayerFirstJoin(player, clientType), null));
     }
 
     /**
