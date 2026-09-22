@@ -54,7 +54,14 @@ public class PlayerSpawnListener implements Listener {
         // would arm a timeout per join and, for anyone who joins and then stands still,
         // fire the backstop warning about a limbo that is not holding them and a login
         // plugin that may not exist.
-        if (plugin.getDataStorage().hasSpawn(player.getUniqueId())) {
+        //
+        // The exception is a player whose plot was recorded after they disconnected, who has
+        // never been placed on it. They take the same route an unassigned player does, so
+        // they are placed at the moment a new player would be allocated - after the login
+        // plugin has let go of them - and handlePlayerFirstJoin places them instead of
+        // allocating, because the record is already there.
+        if (plugin.getDataStorage().hasSpawn(player.getUniqueId())
+                && !plugin.isPlacementOwed(player.getUniqueId())) {
             return;
         }
 

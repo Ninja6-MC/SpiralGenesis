@@ -123,8 +123,10 @@ public class PlayerActionGateListener implements Listener {
         }
     }
 
-    /** Whether this player is still waiting on the gate. Package-private for tests. */
-    boolean isPending(UUID uuid) {
+    /**
+     * Whether this player is still waiting on the gate, so their release will call back in.
+     */
+    public boolean isPending(UUID uuid) {
         return pending.containsKey(uuid);
     }
 
