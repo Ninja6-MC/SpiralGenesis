@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -128,6 +130,9 @@ class RefusedWriteTest {
         final RecordingProvider provider = new RecordingProvider();
         StubSpawnManager stub;
 
+        /** Where the in-cell repair search puts a plot, without a chunk. */
+        Location repairTo;
+
         @Override
         DataStorage createDataStorage() {
             storage = new FailingStorage(this);
@@ -153,6 +158,12 @@ class RefusedWriteTest {
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16 + 0.5, 64, 0.5);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     where, index, 0, 0, 63, 1, 1, false, Map.of()));
+        }
+
+        @Override
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
+            return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
+                    repairTo, index, 0, 0, 63, 1, 1, false, Map.of()));
         }
 
         @Override
@@ -189,6 +200,17 @@ class RefusedWriteTest {
             }
         });
         return plugin;
+    }
+
+    /** The plugin's gate. It has no getter, and a test is no reason to add one. */
+    private static PlayerActionGateListener gate(SpiralGenesisPlugin plugin) {
+        try {
+            Field field = SpiralGenesisPlugin.class.getDeclaredField("actionGate");
+            field.setAccessible(true);
+            return (PlayerActionGateListener) field.get(plugin);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private Path dataFile(SpiralGenesisPlugin plugin) {
@@ -371,5 +393,114 @@ class RefusedWriteTest {
         plugin.reload();
         assertEquals(3, plugin.getDataStorage().getRecord(bob.getUniqueId()).index(),
                 "Bob still holds the plot he had");
+    }
+
+    @Test
+    @DisplayName("a first allocation refused for a player who has left says they left, not that they are held")
+    void refusedAllocationOfDepartedPlayerIsNotReportedHeld() {
+        RefusingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        failOnNextWrite(plugin);
+        Runnable fail = plugin.storage.beforeNextWrite;
+        // Gone by the time the refusal is handled: the entity has disconnected, but the
+        // task already running for them has passed its online check.
+        plugin.storage.beforeNextWrite = () -> {
+            fail.run();
+            leaver.dropConnection();
+        };
+        move(leaver);
+
+        assertFalse(plugin.getDataStorage().hasSpawn(leaver.getUniqueId()));
+        assertFalse(gate(plugin).isHeld(leaver.getUniqueId()),
+                "a disconnected player cannot be held");
+        List<LogRecord> said = loggedContaining("Plot #0 for Leaver was not recorded");
+        assertEquals(1, said.size(), "the refusal is logged once: " + said);
+        assertTrue(said.get(0).getMessage().contains("they left before they could be held"),
+                "the line must say they left: " + said.get(0).getMessage());
+        assertFalse(said.get(0).getMessage().contains("they are held"),
+                "the line must not report a hold that did not happen: "
+                        + said.get(0).getMessage());
+    }
+
+    @Test
+    @DisplayName("a first allocation refused for a connected player reports the hold")
+    void refusedAllocationOfConnectedPlayerIsReportedHeld() {
+        RefusingPlugin plugin = load();
+        InlinePlayerMock newcomer = join("Newcomer");
+        failOnNextWrite(plugin);
+        move(newcomer);
+
+        assertTrue(gate(plugin).isHeld(newcomer.getUniqueId()));
+        List<LogRecord> said = loggedContaining("Plot #0 for Newcomer was not recorded");
+        assertEquals(1, said.size(), "the refusal is logged once: " + said);
+        assertTrue(said.get(0).getMessage().contains("they are held"),
+                "the line must report the hold: " + said.get(0).getMessage());
+    }
+
+    @Test
+    @DisplayName("a setspawn whose write is refused changes nothing and says so")
+    void refusedSetSpawnChangesNothing() {
+        RefusingPlugin plugin = load();
+        InlinePlayerMock bob = join("Bob");
+        Location plot = new Location(world, 10.5, 64, 10.5);
+        plugin.getDataStorage().setSpawn(bob.getUniqueId(), plot, 3, 0, 0, "Bob", "JAVA");
+        bob.setRespawnLocation(plot, true);
+        plugin.getDataStorage().save();
+        String healthy = readData(plugin);
+        Location standing = bob.getLocation();
+        drain();
+
+        failOnNextWrite(plugin);
+        server.executeConsole("sgen", "setspawn", "Bob", "900", "64", "900").assertSucceeded();
+        List<String> reply = drain();
+
+        assertTrue(reply.stream().anyMatch(m -> m.contains("Spawn for Bob was not changed")),
+                "the operator must be told nothing happened: " + reply);
+        assertTrue(reply.stream().noneMatch(m -> m.contains("Set spawn for Bob")),
+                "a refused write must not read as a success: " + reply);
+        assertEquals(plot, bob.respawnPoint, "the respawn point must stay on the old plot");
+        assertEquals(standing, bob.getLocation(), "a refused write must not teleport");
+        assertTrue(plugin.provider.reservations.isEmpty(), "the new point must not be claimed");
+        assertTrue(loggedContaining("manually set spawn for Bob").isEmpty(),
+                "nothing may be logged as set: " + logged);
+
+        writeData(plugin, healthy);
+        plugin.reload();
+        StoredSpawn kept = plugin.getDataStorage().getRecord(bob.getUniqueId());
+        assertEquals(3, kept.index(), "Bob still holds the plot he had");
+        assertEquals(plot, kept.toLocation(), "the recorded spawn is unchanged");
+    }
+
+    @Test
+    @DisplayName("an in-cell repair whose write is refused moves nothing and logs it")
+    void refusedRepairMovesNothing() {
+        RefusingPlugin plugin = load();
+        InlinePlayerMock bob = join("Bob");
+        Location plot = new Location(world, 10.5, 64, 10.5);
+        plugin.getDataStorage().setSpawn(bob.getUniqueId(), plot, 3, 0, 0, "Bob", "JAVA");
+        bob.setRespawnLocation(plot, true);
+        plugin.getDataStorage().save();
+        String healthy = readData(plugin);
+        Location standing = bob.getLocation();
+        plugin.repairTo = new Location(world, 44.5, 66, 44.5);
+
+        failOnNextWrite(plugin);
+        plugin.repairSpawn(bob, plugin.getDataStorage().getRecord(bob.getUniqueId()), false);
+
+        assertEquals(plot, bob.respawnPoint, "the respawn point must stay on the old plot");
+        assertEquals(standing, bob.getLocation(), "a refused write must not teleport");
+        assertTrue(plugin.provider.reservations.isEmpty(), "the repaired point must not be claimed");
+        assertTrue(plugin.provider.releases.isEmpty(), "the old claim must not be released");
+        List<LogRecord> said = loggedContaining("Repair of plot #3 for Bob was not recorded");
+        assertEquals(1, said.size(), "the refusal is logged once: " + said);
+        assertEquals(Level.WARNING, said.get(0).getLevel());
+        assertNull(said.get(0).getThrown(), "an expected refusal is plain text, not a trace");
+        assertTrue(loggedContaining("Repaired plot #3").isEmpty(),
+                "nothing may report success");
+
+        writeData(plugin, healthy);
+        plugin.reload();
+        assertEquals(plot, plugin.getDataStorage().getRecord(bob.getUniqueId()).toLocation(),
+                "the recorded spawn is unchanged");
     }
 }
