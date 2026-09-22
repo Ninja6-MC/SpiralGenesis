@@ -605,11 +605,22 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(),
                 player.getName(), clientType)) {
             owedPlacement.remove(uuid);
+            Player current = Bukkit.getPlayer(uuid);
+            boolean back = current != null && current.isConnected();
+            if (back && actionGate != null && actionGate.isPending(uuid)) {
+                // Rejoined, and the gate is still waiting on them. Holding them here would
+                // take them off the gate, and a reload's resume would then allocate them
+                // before they have acted. Their release reaches allocation anyway, finds no
+                // record, and allocates or holds them then.
+                getLogger().warning("Plot #" + res.index() + " for " + player.getName()
+                        + " was not recorded, because data.yml could not be read when it was"
+                        + " written. They have rejoined and will be allocated after their"
+                        + " first uncancelled action.");
+                return;
+            }
             // A player who has already rejoined is held as the entity now connected, so a
             // reload that recovers storage allocates them.
-            Player current = Bukkit.getPlayer(uuid);
-            holdRefusedAllocation(current != null && current.isConnected() ? current : player,
-                    clientType, res.index());
+            holdRefusedAllocation(back ? current : player, clientType, res.index());
             return;
         }
         getLogger().info(player.getName() + " disconnected before plot #" + res.index()
@@ -658,6 +669,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
         runForPlayer(player, () -> {
             if (!player.isConnected() || dataStorage.isFailed()) {
+                return;
+            }
+            // Checked here, on the player's own thread, and not only by the caller: on Folia
+            // a rejoined session can be found before its join event has put it in the gate.
+            // A player the gate is waiting on keeps the mark, and is placed when the gate
+            // releases them, since release drops them from pending before calling in.
+            if (actionGate != null && actionGate.isPending(uuid)) {
                 return;
             }
             StoredSpawn record = dataStorage.getRecord(uuid);

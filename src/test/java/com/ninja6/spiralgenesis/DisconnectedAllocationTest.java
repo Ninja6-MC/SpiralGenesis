@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
+import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Location;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -17,6 +18,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -84,6 +86,9 @@ class DisconnectedAllocationTest {
         /** Run once, just before the next retired callback, then cleared. */
         volatile Runnable beforeRetire;
 
+        /** Run once, just before the next task that is run, then cleared. */
+        volatile Runnable beforeRun;
+
         @Override
         boolean runForPlayer(Player player, Runnable action, Runnable retired) {
             Schedule mode = next;
@@ -102,6 +107,11 @@ class DisconnectedAllocationTest {
                     return false;
                 }
                 default -> {
+                    Runnable hook = beforeRun;
+                    beforeRun = null;
+                    if (hook != null) {
+                        hook.run();
+                    }
                     action.run();
                     return true;
                 }
@@ -141,6 +151,17 @@ class DisconnectedAllocationTest {
             }
         });
         return plugin;
+    }
+
+    /** The plugin's gate. It has no getter, and a test is no reason to add one. */
+    private static PlayerActionGateListener gate(SpiralGenesisPlugin plugin) {
+        try {
+            Field field = SpiralGenesisPlugin.class.getDeclaredField("actionGate");
+            field.setAccessible(true);
+            return (PlayerActionGateListener) field.get(plugin);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private InlinePlayerMock join(String name) {
@@ -317,6 +338,104 @@ class DisconnectedAllocationTest {
         assertNotNull(record);
         assertPlacedOnReturn(plugin, returning[0], record);
         assertNull(leaver.respawnPoint, "the entity that left is never touched");
+    }
+
+    @Test
+    @DisplayName("a player who rejoined during the scan and is still gated is placed only on release")
+    void rejoinDuringScanWaitsForTheGate() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        InlinePlayerMock[] returning = new InlinePlayerMock[1];
+        plugin.beforeRetire = () -> {
+            leaver.disconnect();
+            returning[0] = rejoin(leaver);
+            assertTrue(gate(plugin).isPending(uuid), "the rejoin is waiting on the gate");
+        };
+        plugin.next = Schedule.RETIRE;
+        leaver.dropConnection();
+        move(leaver);
+
+        assertTrue(plugin.getDataStorage().hasSpawn(uuid), "the plot is recorded");
+        assertTrue(plugin.isPlacementOwed(uuid), "the placement waits for the gate");
+        assertNull(returning[0].respawnPoint, "no respawn point before the gate lets go");
+        assertTrue(plugin.provider.reservations.isEmpty(), "no claim before the gate lets go");
+
+        move(returning[0]);
+        assertPlacedOnReturn(plugin, returning[0], plugin.getDataStorage().getRecord(uuid));
+    }
+
+    @Test
+    @DisplayName("a rejoin found before its join event reached the gate is still placed only on release")
+    void rejoinFoundBeforeTheGateWaitsForIt() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        InlinePlayerMock[] returning = new InlinePlayerMock[1];
+        // The Folia ordering: the departed entity's thread finds the new session connected
+        // but not yet pending, and the join event puts it in the gate before the placement
+        // task runs on the new session's thread.
+        plugin.beforeRetire = () -> {
+            leaver.disconnect();
+            returning[0] = rejoin(leaver);
+            gate(plugin).forget(uuid);
+            plugin.beforeRun = () -> gate(plugin).markPending(returning[0], "JAVA");
+        };
+        plugin.next = Schedule.RETIRE;
+        leaver.dropConnection();
+        move(leaver);
+
+        assertNull(plugin.beforeRun, "the placement task should have been scheduled");
+        assertTrue(gate(plugin).isPending(uuid));
+        assertTrue(plugin.isPlacementOwed(uuid), "a gated player keeps the mark");
+        assertNull(returning[0].respawnPoint, "no respawn point before the gate lets go");
+        assertTrue(plugin.provider.reservations.isEmpty(), "no claim before the gate lets go");
+
+        move(returning[0]);
+        assertPlacedOnReturn(plugin, returning[0], plugin.getDataStorage().getRecord(uuid));
+    }
+
+    @Test
+    @DisplayName("a write refused while the rejoined player is gated leaves them to the gate")
+    void refusedWriteWithGatedRejoinIsNotHeld() {
+        DisconnectingPlugin plugin = load();
+        plugin.getDataStorage().save();
+        String healthy = readData(plugin);
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        InlinePlayerMock[] returning = new InlinePlayerMock[1];
+        plugin.beforeRetire = () -> {
+            leaver.disconnect();
+            returning[0] = rejoin(leaver);
+        };
+        plugin.storage.beforeNextWrite = () -> {
+            writeData(plugin, UNPARSEABLE);
+            plugin.getDataStorage().load();
+            assertTrue(plugin.getDataStorage().isFailed(), "the fixture should have failed storage");
+        };
+        plugin.next = Schedule.RETIRE;
+        leaver.dropConnection();
+        move(leaver);
+
+        assertFalse(plugin.getDataStorage().hasSpawn(uuid), "a refused write records nothing");
+        assertFalse(plugin.isPlacementOwed(uuid));
+        assertFalse(gate(plugin).isHeld(uuid), "a gated player is not held");
+        assertTrue(gate(plugin).isPending(uuid), "the gate is still waiting on them");
+        assertEquals(1, loggedContaining("will be allocated after their first uncancelled action")
+                .size());
+
+        // A recovering reload resumes held players only, so it allocates nobody yet.
+        writeData(plugin, healthy);
+        plugin.reload();
+        assertFalse(plugin.getDataStorage().hasSpawn(uuid), "nothing before they have acted");
+        assertNull(returning[0].respawnPoint);
+
+        move(returning[0]);
+        StoredSpawn record = plugin.getDataStorage().getRecord(uuid);
+        assertNotNull(record, "their first action allocates them");
+        assertEquals(0, record.index(), "the refused index is handed out again, not burned");
+        assertEquals(record.toLocation(), returning[0].respawnPoint);
+        assertEquals(1, plugin.provider.reservations.size());
     }
 
     @Test
