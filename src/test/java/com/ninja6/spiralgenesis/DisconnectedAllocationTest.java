@@ -4,9 +4,12 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
+import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
+import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -23,9 +26,13 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 
@@ -89,6 +96,31 @@ class DisconnectedAllocationTest {
 
         /** Run once, just before the next task that is run, then cleared. */
         volatile Runnable beforeRun;
+
+        /** Set to leave the next scan unfinished until {@link #finishScan} is called. */
+        volatile boolean deferNextScan;
+
+        private CompletableFuture<SpawnManager.AllocationOutcome> unfinished;
+        private int unfinishedIndex;
+
+        @Override
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+            if (!deferNextScan) {
+                return super.allocateSpawn(indexSupplier);
+            }
+            deferNextScan = false;
+            unfinishedIndex = indexSupplier.getAsInt();
+            unfinished = new CompletableFuture<>();
+            return unfinished;
+        }
+
+        /** Finishes the deferred scan, at the point its index says, as the others do. */
+        void finishScan() {
+            Location where = new Location(Bukkit.getWorlds().get(0), unfinishedIndex * 16 + 0.5,
+                    64, 0.5);
+            unfinished.complete(new SpawnManager.LocationResult(
+                    where, unfinishedIndex, 0, 0, 63, 1, 1, false, Map.of()));
+        }
 
         @Override
         boolean runForPlayer(Player player, Runnable action, Runnable retired) {
@@ -527,6 +559,144 @@ class DisconnectedAllocationTest {
         plugin.getDataStorage().save();
         assertFalse(readData(plugin).contains("placement-owed"),
                 "nothing adds the key to a record that was never owed");
+    }
+
+    @Test
+    @DisplayName("a rejoin whose read raced the previous session's write does not allocate again")
+    void rejoinRacingTheRecordDoesNotAllocateAgain() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        plugin.deferNextScan = true;
+        move(leaver);
+        assertEquals(1, plugin.getDataStorage().getCurrentIndex(), "the scan has its index");
+
+        leaver.disconnect();
+        InlinePlayerMock returning = rejoin(leaver);
+        // The Folia ordering: the new session reads no record, and before it takes the guard
+        // the old session's scan finishes on another region, finds its entity retired,
+        // records the plot, places the new session on it and releases the guard.
+        plugin.next = Schedule.REFUSE;
+        plugin.storage.afterNextHasSpawn = plugin::finishScan;
+        move(returning);
+
+        StoredSpawn record = plugin.getDataStorage().getRecord(uuid);
+        assertPlacedOnReturn(plugin, returning, record);
+        assertTrue(loggedContaining("Assigned & teleported Leaver").isEmpty(),
+                "no second allocation may be made");
+    }
+
+    @Test
+    @DisplayName("a placement whose clear is refused moves nobody")
+    void refusedClearMovesNobody() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        leaver.dropConnection();
+        plugin.next = Schedule.RETIRE;
+        move(leaver);
+        leaver.disconnect();
+        plugin.getDataStorage().save();
+        String marked = readData(plugin);
+
+        InlinePlayerMock returning = rejoin(leaver);
+        Location standing = returning.getLocation();
+        plugin.storage.beforeNextClear = () -> {
+            writeData(plugin, UNPARSEABLE);
+            plugin.getDataStorage().load();
+            assertTrue(plugin.getDataStorage().isFailed(), "the fixture should have failed storage");
+        };
+        move(returning);
+
+        assertNull(returning.respawnPoint, "a refused clear must not set a respawn point");
+        assertEquals(standing, returning.getLocation(), "a refused clear must not teleport");
+        assertTrue(plugin.provider.reservations.isEmpty(), "a refused clear must not claim");
+        assertEquals(1, loggedContaining("Plot #0 for Leaver was not placed").size());
+
+        // The mark is still in the file, so the placement is made once storage reads again.
+        writeData(plugin, marked);
+        plugin.getDataStorage().load();
+        assertTrue(plugin.isPlacementOwed(uuid), "the mark survives the refused clear");
+    }
+
+    private List<String> drain() {
+        ConsoleCommandSenderMock console = server.getConsoleSender();
+        List<String> lines = new ArrayList<>();
+        String line;
+        while ((line = console.nextMessage()) != null) {
+            lines.add(line);
+        }
+        return lines;
+    }
+
+    /** Records a plot for Leaver while away, and brings them back without placing them. */
+    private InlinePlayerMock owedAndBack(DisconnectingPlugin plugin) {
+        InlinePlayerMock leaver = join("Leaver");
+        leaver.dropConnection();
+        plugin.next = Schedule.RETIRE;
+        move(leaver);
+        leaver.disconnect();
+        InlinePlayerMock returning = rejoin(leaver);
+        assertTrue(plugin.isPlacementOwed(returning.getUniqueId()));
+        return returning;
+    }
+
+    @Test
+    @DisplayName("a reassign replaces the record and clears the mark")
+    void reassignClearsTheMark() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock returning = owedAndBack(plugin);
+        plugin.getSpawnManager();
+        plugin.stub.next = new Location(world, 900.5, 64, 900.5);
+        drain();
+        server.executeConsole("sgen", "reassign", "Leaver").assertSucceeded();
+        drain();
+
+        assertEquals(plugin.stub.next,
+                plugin.getDataStorage().getRecord(returning.getUniqueId()).toLocation());
+        assertFalse(plugin.isPlacementOwed(returning.getUniqueId()));
+        plugin.getDataStorage().save();
+        assertFalse(readData(plugin).contains("placement-owed"), readData(plugin));
+    }
+
+    @Test
+    @DisplayName("a setspawn replaces the record and clears the mark")
+    void setSpawnClearsTheMark() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock returning = owedAndBack(plugin);
+        drain();
+        server.executeConsole("sgen", "setspawn", "Leaver", "900", "64", "900").assertSucceeded();
+        drain();
+
+        assertEquals(900, plugin.getDataStorage().getRecord(returning.getUniqueId())
+                .toLocation().getBlockX());
+        assertFalse(plugin.isPlacementOwed(returning.getUniqueId()));
+        plugin.getDataStorage().save();
+        assertFalse(readData(plugin).contains("placement-owed"), readData(plugin));
+    }
+
+    @Test
+    @DisplayName("an in-cell repair keeps the mark, and never restores one already cleared")
+    void repairKeepsTheMarkWithoutRestoringIt() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock returning = owedAndBack(plugin);
+        UUID uuid = returning.getUniqueId();
+        StoredSpawn marked = plugin.getDataStorage().getRecord(uuid);
+
+        plugin.repairTo = new Location(world, 4.5, 66, 4.5);
+        plugin.repairSpawn(returning, marked, false);
+        assertEquals(plugin.repairTo, plugin.getDataStorage().getRecord(uuid).toLocation(),
+                "the repair moved the point");
+        assertTrue(plugin.isPlacementOwed(uuid), "a repair is no placement, so the mark stays");
+
+        // Placed while a repair started from the marked record is still searching.
+        move(returning);
+        assertFalse(plugin.isPlacementOwed(uuid));
+        plugin.repairTo = new Location(world, 8.5, 66, 8.5);
+        plugin.repairSpawn(returning, marked, false);
+        assertEquals(plugin.repairTo, plugin.getDataStorage().getRecord(uuid).toLocation());
+        assertFalse(plugin.isPlacementOwed(uuid),
+                "a repair must not restore a mark cleared since its search started");
     }
 
     @Test

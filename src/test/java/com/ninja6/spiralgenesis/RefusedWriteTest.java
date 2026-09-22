@@ -90,8 +90,39 @@ class RefusedWriteTest {
         /** Run once, at the start of the next write, then cleared. */
         volatile Runnable beforeNextWrite;
 
+        /** Run once, at the start of the next placement clear, then cleared. */
+        volatile Runnable beforeNextClear;
+
+        /**
+         * Run once, after the next {@code hasSpawn} has read its answer and before that
+         * answer is returned, then cleared. Stands in for another thread acting between a
+         * caller's read and whatever it does next.
+         */
+        volatile Runnable afterNextHasSpawn;
+
         FailingStorage(JavaPlugin plugin) {
             super(plugin);
+        }
+
+        @Override
+        public boolean hasSpawn(UUID uuid) {
+            boolean answer = super.hasSpawn(uuid);
+            Runnable hook = afterNextHasSpawn;
+            afterNextHasSpawn = null;
+            if (hook != null) {
+                hook.run();
+            }
+            return answer;
+        }
+
+        @Override
+        public boolean clearPlacementOwed(UUID uuid) {
+            Runnable hook = beforeNextClear;
+            beforeNextClear = null;
+            if (hook != null) {
+                hook.run();
+            }
+            return super.clearPlacementOwed(uuid);
         }
 
         @Override
@@ -108,9 +139,9 @@ class RefusedWriteTest {
     }
 
     /** A spawn manager for reassign that hands back a fixed point without a chunk. */
-    private static final class StubSpawnManager extends SpawnManager {
+    static final class StubSpawnManager extends SpawnManager {
 
-        private Location next;
+        Location next;
 
         private StubSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);

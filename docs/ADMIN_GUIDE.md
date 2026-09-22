@@ -798,9 +798,10 @@ players:
 
 A record can also carry `placement-owed: true`. It is written when a player disconnects
 while their plot is being found: the plot is recorded against them, and the key says they
-have not been placed on it yet. They are placed when they next join, and the key is then
-removed. It is absent from every other record, and a record without it is not owed
-anything.
+have not been placed on it yet. They are placed when a new player would be allocated:
+under the default `FIRST_ACTION`, on their first uncancelled action after they next join,
+and at once on joining under `ON_JOIN` and for Bedrock players. The key is then removed.
+It is absent from every other record, and a record without it is not owed anything.
 
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.

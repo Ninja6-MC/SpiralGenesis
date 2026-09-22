@@ -393,6 +393,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (!owned) {
             return; // An allocation for this player is already in flight.
         }
+        // Read again now the guard is held. An allocation for this player's previous session
+        // can record its plot and release the guard on another region thread after the read
+        // at the top of this method, and allocating on that stale answer would reserve a
+        // second index and write over the first plot after it had been placed and claimed.
+        // The record is written before that guard is released, so it is visible here.
+        if (dataStorage.hasSpawn(uuid)) {
+            allocating.remove(uuid);
+            placeIfOwed(player);
+            return;
+        }
 
         getLogger().info("Allocating new spiral plot for " + clientType + " player " + player.getName() + " (" + uuid + ")...");
 
@@ -590,21 +600,20 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(),
                 player.getName(), clientType, true)) {
             Player current = Bukkit.getPlayer(uuid);
-            boolean back = current != null && current.isConnected();
-            if (back && actionGate != null && actionGate.isPending(uuid)) {
-                // Rejoined, and the gate is still waiting on them. Holding them here would
-                // take them off the gate, and a reload's resume would then allocate them
-                // before they have acted. Their release reaches allocation anyway, finds no
-                // record, and allocates or holds them then.
-                getLogger().warning("Plot #" + res.index() + " for " + player.getName()
-                        + " was not recorded, because data.yml could not be read when it was"
-                        + " written. They have rejoined and will be allocated after their"
-                        + " first uncancelled action.");
+            if (current == null || !current.isConnected()) {
+                holdRefusedAllocation(player, clientType, res.index());
                 return;
             }
-            // A player who has already rejoined is held as the entity now connected, so a
-            // reload that recovers storage allocates them.
-            holdRefusedAllocation(back ? current : player, clientType, res.index());
+            // Rejoined. Decided on the new session's own thread, as the placement task is,
+            // because on Folia it can be found here before its join event has put it in
+            // the gate. If it is not retired first, the retired callback reports the
+            // departure the same way.
+            boolean scheduled = runForPlayer(current,
+                    () -> refuseForRejoined(current, clientType, res.index()),
+                    () -> holdRefusedAllocation(current, clientType, res.index()));
+            if (!scheduled) {
+                holdRefusedAllocation(current, clientType, res.index());
+            }
             return;
         }
         getLogger().info(player.getName() + " disconnected before plot #" + res.index()
@@ -621,6 +630,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 && (actionGate == null || !actionGate.isPending(uuid))) {
             placeIfOwed(current);
         }
+    }
+
+    /**
+     * Reports a refused write for a player who has rejoined, on their own thread.
+     *
+     * <p>A session the gate is still waiting on is left to it. Holding it would take it off
+     * the gate, and a reload's resume would then allocate the player before they have
+     * acted. Their release reaches allocation anyway, finds no record, and allocates or
+     * holds them then. Any other session is held as the entity now connected, so a reload
+     * that recovers storage allocates them.
+     */
+    private void refuseForRejoined(Player current, String clientType, int index) {
+        if (actionGate != null && actionGate.isPending(current.getUniqueId())) {
+            getLogger().warning("Plot #" + index + " for " + current.getName()
+                    + " was not recorded, because data.yml could not be read when it was"
+                    + " written. They have rejoined and will be allocated after their"
+                    + " first uncancelled action.");
+            return;
+        }
+        holdRefusedAllocation(current, clientType, index);
     }
 
     /**
@@ -916,10 +945,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // after the check above, and a refused write records nothing, so the point
                 // below would be one no record holds.
                 // The mark is carried over: a repair moves the point within the same plot,
-                // which is no placement of the player.
+                // which is no placement of the player. Read now rather than from the record
+                // the search started with, which is from before the search: a placement
+                // since then has cleared it, on this same thread, and must stay cleared.
+                StoredSpawn latest = dataStorage.getRecord(uuid);
+                boolean owed = latest != null && latest.placementOwed();
                 if (!dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
-                        record.gridV(), player.getName(), record.clientType(),
-                        record.placementOwed())) {
+                        record.gridV(), player.getName(), record.clientType(), owed)) {
                     getLogger().warning("Repair of plot #" + record.index() + " for "
                             + player.getName() + " was not recorded, because data.yml could not"
                             + " be read; nothing was moved.");
