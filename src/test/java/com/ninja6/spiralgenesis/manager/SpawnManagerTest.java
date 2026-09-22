@@ -978,6 +978,78 @@ class SpawnManagerTest {
         assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
     }
 
+    /**
+     * A build over the stored point: two chests from the feet up, then {@code floor}, an
+     * air gap, and {@code opening} over it. The lift ends on top of the opening and the
+     * player falls through it onto {@code floor}, or into {@code gap} when that is set.
+     */
+    private void buildOpeningOver(Material floor, Material gap, Material opening,
+                                  BlockShapes.Shape openingShape) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(floor);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 4, 0).setType(gap);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 5, 0), opening, openingShape);
+    }
+
+    static Stream<Arguments> openings() {
+        return Stream.of(
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_OPEN));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening onto the build lands where it falls")
+    void dropThroughAnOpeningOntoTheBuildIsKept(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningOver(Material.OAK_PLANKS, Material.AIR, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 6.0, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening onto magma finds no standing point")
+    void dropThroughAnOpeningOntoMagmaIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningOver(Material.MAGMA_BLOCK, Material.AIR, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening into lava finds no standing point")
+    void dropThroughAnOpeningIntoLavaIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        // Lava is liquid, so the lift climbs past it as it does past the chests.
+        buildOpeningOver(Material.OAK_PLANKS, Material.LAVA, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening out of the build finds no standing point")
+    void dropThroughAnOpeningOutOfTheBuildIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        // The column under the opening is dug out below the step the plot allows: the fall
+        // leaves the build and its depth is unknown.
+        for (int y = MOCK_SURFACE_Y - 1; y <= MOCK_SURFACE_Y + 1; y++) {
+            world.getBlockAt(0, y, 0).setType(Material.AIR);
+        }
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0), opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
     // --- Where a player stands on a plot that has been built over --------------------
 
     private Location storedOrigin() {
