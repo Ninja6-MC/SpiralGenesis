@@ -217,8 +217,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   allocated - without another index being reserved. A player who rejoined while the scan
   was still running is placed as soon as it finishes. A write refused because `data.yml`
   could not be read records nothing, as for a connected player. The pending placement is
-  held in memory only; after a restart the player reaches their plot on their first death
-  instead.
+  saved with the record as an optional `placement-owed` key in `data.yml`, so it survives
+  a restart, and is removed once the player is placed; a file written before the key
+  existed loads with nobody owed a placement.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

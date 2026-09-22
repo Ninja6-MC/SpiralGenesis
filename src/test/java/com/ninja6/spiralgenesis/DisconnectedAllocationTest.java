@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
+import com.ninja6.spiralgenesis.storage.YamlDataStorage;
 import org.bukkit.Location;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
@@ -436,6 +437,96 @@ class DisconnectedAllocationTest {
         assertEquals(0, record.index(), "the refused index is handed out again, not burned");
         assertEquals(record.toLocation(), returning[0].respawnPoint);
         assertEquals(1, plugin.provider.reservations.size());
+    }
+
+    /** A data.yml holding one plot for this player, as an older or a marked file has it. */
+    private static String plotFile(UUID uuid, String extra) {
+        return "current-spiral-index: 1\n"
+                + "players:\n"
+                + "  " + uuid + ":\n"
+                + "    name: Leaver\n"
+                + "    client: JAVA\n"
+                + "    assigned-index: 0\n"
+                + "    grid-u: 0\n"
+                + "    grid-v: 0\n"
+                + "    x: 0.5\n"
+                + "    y: 64.0\n"
+                + "    z: 0.5\n"
+                + "    world: world\n"
+                + extra;
+    }
+
+    @Test
+    @DisplayName("the placement mark is saved with the record, survives a reload, and is cleared once placed")
+    void markSurvivesReloadAndIsClearedOnPlacement() {
+        DisconnectingPlugin plugin = load();
+        InlinePlayerMock leaver = join("Leaver");
+        UUID uuid = leaver.getUniqueId();
+        leaver.dropConnection();
+        plugin.next = Schedule.RETIRE;
+        move(leaver);
+        leaver.disconnect();
+
+        plugin.getDataStorage().save();
+        assertTrue(readData(plugin).contains("placement-owed: true"),
+                "the mark is written with the record: " + readData(plugin));
+        // What a restart reads: the file alone, into storage that has never seen the write.
+        YamlDataStorage fresh = new YamlDataStorage(plugin);
+        fresh.load();
+        assertTrue(fresh.getRecord(uuid).placementOwed(), "the mark is read back from the file");
+
+        plugin.reload();
+        assertTrue(plugin.isPlacementOwed(uuid), "the mark survives a reload");
+
+        InlinePlayerMock returning = rejoin(leaver);
+        move(returning);
+        assertPlacedOnReturn(plugin, returning, plugin.getDataStorage().getRecord(uuid));
+        plugin.getDataStorage().save();
+        assertFalse(readData(plugin).contains("placement-owed"),
+                "the mark is removed from the file once placed: " + readData(plugin));
+        plugin.reload();
+        assertFalse(plugin.isPlacementOwed(uuid), "and stays cleared across a reload");
+    }
+
+    @Test
+    @DisplayName("a marked record read from the file places its player when they next join")
+    void markedFilePlacesOnJoin() {
+        DisconnectingPlugin plugin = load();
+        UUID uuid = UUID.randomUUID();
+        writeData(plugin, plotFile(uuid, "    placement-owed: true\n"));
+        // Loaded the way startup loads it: reload would save the in-memory state over it.
+        plugin.getDataStorage().load();
+        assertTrue(plugin.isPlacementOwed(uuid));
+
+        InlinePlayerMock returning = new InlinePlayerMock(server, "Leaver", uuid);
+        server.addPlayer(returning);
+        move(returning);
+        assertPlacedOnReturn(plugin, returning, plugin.getDataStorage().getRecord(uuid));
+    }
+
+    @Test
+    @DisplayName("a record from a file without the key is not owed a placement")
+    void legacyRecordIsNotOwed() {
+        DisconnectingPlugin plugin = load();
+        UUID uuid = UUID.randomUUID();
+        writeData(plugin, plotFile(uuid, ""));
+        // Loaded the way startup loads it: reload would save the in-memory state over it.
+        plugin.getDataStorage().load();
+
+        assertTrue(plugin.getDataStorage().hasSpawn(uuid));
+        assertFalse(plugin.isPlacementOwed(uuid), "a missing key reads as not owed");
+
+        InlinePlayerMock settler = new InlinePlayerMock(server, "Leaver", uuid);
+        server.addPlayer(settler);
+        Location elsewhere = new Location(world, 300.5, 70, -40.5);
+        settler.teleport(elsewhere);
+        move(settler);
+        assertEquals(elsewhere, settler.getLocation(), "an ordinary return moves nobody");
+        assertNull(settler.respawnPoint);
+        assertTrue(plugin.provider.reservations.isEmpty());
+        plugin.getDataStorage().save();
+        assertFalse(readData(plugin).contains("placement-owed"),
+                "nothing adds the key to a record that was never owed");
     }
 
     @Test

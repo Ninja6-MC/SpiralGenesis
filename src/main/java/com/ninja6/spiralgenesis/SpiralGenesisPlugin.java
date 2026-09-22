@@ -147,18 +147,6 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     private final Set<UUID> repairing = ConcurrentHashMap.newKeySet();
 
-    /**
-     * Players whose plot was recorded after they disconnected, and who have not been placed
-     * on it since.
-     *
-     * <p>Session-scoped, like the teleport retry, and for the reason given on
-     * {@link #reassertSpawnTeleport}: nothing on disk tells a player never moved to their
-     * plot from one who walked away from it. A restart in between loses the mark, and the
-     * player is then placed by their first death instead, since they have no respawn point
-     * and the death handler sets the plot as one.
-     */
-    private final Set<UUID> owedPlacement = ConcurrentHashMap.newKeySet();
-
     @Override
     public void onEnable() {
         saveDefaultConfig();
@@ -465,9 +453,6 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                             holdRefusedAllocation(player, clientType, res.index());
                             return;
                         }
-                        // Placed now, so nothing is owed on a later join, whatever an earlier
-                        // allocation for a record since removed left behind.
-                        owedPlacement.remove(uuid);
                         sendToPlot(player, res.location(), res.index(), false);
                     } finally {
                         // Inside the task, so the guard outlives the write that makes
@@ -594,17 +579,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * here touches the player's state. {@link DataStorage#setSpawn} is safe from any thread,
      * as it already is for the region threads first allocations run on.
      *
-     * <p>A refused write is handled as it is for a connected player: nothing is recorded or
-     * marked, and the refusal is reported once.
+     * <p>The mark is written with the record, in the same storage write, so a rejoin that
+     * sees the record also sees the mark, and both survive a restart. A refused write is
+     * handled as it is for a connected player: nothing is recorded or marked, and the
+     * refusal is reported once.
      */
     private void recordForAbsentPlayer(Player player, String clientType,
                                        SpawnManager.LocationResult res) {
         UUID uuid = player.getUniqueId();
-        // Marked before the write, so a rejoin that sees the record also sees the mark.
-        owedPlacement.add(uuid);
         if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(),
-                player.getName(), clientType)) {
-            owedPlacement.remove(uuid);
+                player.getName(), clientType, true)) {
             Player current = Bukkit.getPlayer(uuid);
             boolean back = current != null && current.isConnected();
             if (back && actionGate != null && actionGate.isPending(uuid)) {
@@ -646,9 +630,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * <p>The join handler routes such a player as it would an unassigned one, so they are
      * placed at the point a new player would have been allocated: at once for Bedrock and
      * under {@code ON_JOIN}, on their first uncancelled action otherwise.
+     *
+     * <p>Read from the record, where the mark is stored, so it is as current as storage:
+     * loaded from {@code data.yml} at startup and on every reload, and false while storage
+     * is failed, since no record is readable then.
      */
     public boolean isPlacementOwed(UUID uuid) {
-        return owedPlacement.contains(uuid);
+        StoredSpawn record = dataStorage.getRecord(uuid);
+        return record != null && record.placementOwed();
     }
 
     /**
@@ -656,15 +645,18 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * respawn point there, sends them there and requests its claim, exactly as a first
      * allocation does.
      *
-     * <p>Once only. The mark is taken on the player's own thread, after the record has been
-     * read back, so two callers cannot both place them, and a record that cannot be
-     * resolved yet - its world not loaded, or storage failed - leaves the mark for the next
-     * call. A player already standing on their plot is never marked, so this does nothing
-     * for an ordinary returning player.
+     * <p>Once only. The mark is read and cleared on the player's own thread, where every
+     * placement of this player runs, so two callers cannot both place them, and a record
+     * that cannot be resolved yet - its world not loaded, or storage failed - leaves the
+     * mark for the next call. The clear is a storage write, and like any other it is made
+     * before the player is moved and gates the move: a refused clear places nobody, so the
+     * file never goes on claiming a placement that has already been made. A player already
+     * standing on their plot is never marked, so this does nothing for an ordinary
+     * returning player.
      */
     private void placeIfOwed(Player player) {
         UUID uuid = player.getUniqueId();
-        if (!owedPlacement.contains(uuid)) {
+        if (!isPlacementOwed(uuid)) {
             return;
         }
         runForPlayer(player, () -> {
@@ -680,7 +672,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }
             StoredSpawn record = dataStorage.getRecord(uuid);
             Location plot = record == null ? null : record.toLocation();
-            if (plot == null || !owedPlacement.remove(uuid)) {
+            if (plot == null || !record.placementOwed()) {
+                return;
+            }
+            if (!dataStorage.clearPlacementOwed(uuid)) {
+                getLogger().warning("Plot #" + record.index() + " for " + player.getName()
+                        + " was not placed, because data.yml could not be read when the"
+                        + " placement was recorded. They were not moved; they will be placed"
+                        + " once /sgen reload reads it and they rejoin.");
                 return;
             }
             sendToPlot(player, plot, record.index(), true);
@@ -916,8 +915,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // Gated on the write for the reason the allocation task is: storage can fail
                 // after the check above, and a refused write records nothing, so the point
                 // below would be one no record holds.
+                // The mark is carried over: a repair moves the point within the same plot,
+                // which is no placement of the player.
                 if (!dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
-                        record.gridV(), player.getName(), record.clientType())) {
+                        record.gridV(), player.getName(), record.clientType(),
+                        record.placementOwed())) {
                     getLogger().warning("Repair of plot #" + record.index() + " for "
                             + player.getName() + " was not recorded, because data.yml could not"
                             + " be read; nothing was moved.");

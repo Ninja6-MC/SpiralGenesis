@@ -47,6 +47,9 @@ public class YamlDataStorage implements DataStorage {
     /** How often the background flush task checks for pending changes. */
     private static final long FLUSH_INTERVAL_SECONDS = 5L;
 
+    /** Per-player key, written only while set, marking a placement still owed. */
+    private static final String PLACEMENT_OWED_KEY = "placement-owed";
+
     /**
      * Suffix for the copy of an unreadable file. UTC and colon-free, because a colon is not
      * a legal file-name character on Windows.
@@ -224,7 +227,10 @@ public class YamlDataStorage implements DataStorage {
                         sec.getInt("grid-u"),
                         sec.getInt("grid-v"),
                         sec.getString("name", ""),
-                        sec.getString("client", "UNKNOWN")
+                        sec.getString("client", "UNKNOWN"),
+                        // Absent from every file written before the key existed, and from
+                        // every record not owed a placement.
+                        sec.getBoolean(PLACEMENT_OWED_KEY, false)
                 );
 
                 spawnCache.put(uuid, record);
@@ -522,8 +528,9 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
-                            String playerName, String clientType) {
-        StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType);
+                            String playerName, String clientType, boolean placementOwed) {
+        StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType,
+                placementOwed);
         // Checked and applied under the lock enterFailedState clears under, so the check
         // and the write cannot straddle the clear, and the answer returned is the one that
         // decided the write.
@@ -551,6 +558,30 @@ public class YamlDataStorage implements DataStorage {
             yaml.set(path + ".z", record.z());
             yaml.set(path + ".world", record.worldName());
             yaml.set(path + ".assigned-date", Instant.now().toString());
+            // Removed rather than written false, so a record that was never owed anything
+            // looks exactly as it did before the key existed.
+            yaml.set(path + "." + PLACEMENT_OWED_KEY, placementOwed ? Boolean.TRUE : null);
+        }
+        dirty.set(true);
+        return true;
+    }
+
+    @Override
+    public boolean clearPlacementOwed(UUID uuid) {
+        // Under the lock and against the failure, as setSpawn is, for the same reason.
+        synchronized (yamlLock) {
+            if (failure != null) {
+                return false;
+            }
+            StoredSpawn record = spawnCache.get(uuid);
+            if (record == null || !record.placementOwed()) {
+                return true;
+            }
+            spawnCache.put(uuid, record.withPlacementOwed(false));
+            if (yaml == null) {
+                return true;
+            }
+            yaml.set("players." + uuid + "." + PLACEMENT_OWED_KEY, null);
         }
         dirty.set(true);
         return true;

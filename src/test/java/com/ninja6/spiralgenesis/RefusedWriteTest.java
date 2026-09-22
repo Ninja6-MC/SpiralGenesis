@@ -96,13 +96,14 @@ class RefusedWriteTest {
 
         @Override
         public boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
-                                String playerName, String clientType) {
+                                String playerName, String clientType, boolean placementOwed) {
             Runnable hook = beforeNextWrite;
             beforeNextWrite = null;
             if (hook != null) {
                 hook.run();
             }
-            return super.setSpawn(uuid, location, index, gridU, gridV, playerName, clientType);
+            return super.setSpawn(uuid, location, index, gridU, gridV, playerName, clientType,
+                    placementOwed);
         }
     }
 
