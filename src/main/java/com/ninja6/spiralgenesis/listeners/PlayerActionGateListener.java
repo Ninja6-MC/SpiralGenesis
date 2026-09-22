@@ -155,12 +155,19 @@ public class PlayerActionGateListener implements Listener {
      *
      * <p>Callers can reach this off the player's own thread - {@code sgen allocate} from the
      * console, or a failed allocation completing wherever its future completed - so it can
-     * land after {@link #onQuit} has already cleared the player. Two things keep that from
-     * leaving a stale entry. An entry holding a different {@code Player} instance for the
-     * same UUID belongs to an earlier session and is replaced, so a rejoin is held, reported
-     * and resumed as the entity that is actually online. And the player is checked after
-     * the put rather than before it: a quit that ran first is seen here, and one that runs
-     * after the put removes the entry itself.
+     * land after {@link #onQuit} has already cleared the player, or after the same player
+     * has rejoined as a new entity. Sessions are told apart with {@code isConnected()}, not
+     * {@code isOnline()}: the server answers {@code isOnline()} by looking the UUID up, so it
+     * still reads true while the quit event is firing and reads true again for the old
+     * entity once the player rejoins, where {@code isConnected()} belongs to the entity and
+     * turns false before the quit event fires.
+     *
+     * <p>Three rules follow. An existing entry whose entity is still connected is kept, so a
+     * late hold for an earlier session cannot evict the current one. An existing entry
+     * whose entity has disconnected belongs to an earlier session and is replaced, so a
+     * rejoin is held, reported and resumed as the entity that is actually connected. And the
+     * player is checked after the put rather than before it: a quit that ran first is seen
+     * here, and one that runs after the put removes the entry itself.
      *
      * @return true if this call started a hold for this session of the player
      */
@@ -169,13 +176,14 @@ public class PlayerActionGateListener implements Listener {
         pending.remove(uuid);
         boolean[] started = {false};
         held.compute(uuid, (key, previous) -> {
-            if (previous != null && previous.player() == player) {
+            if (previous != null
+                    && (previous.player() == player || previous.player().isConnected())) {
                 return previous;
             }
             started[0] = true;
             return new Held(player, clientType);
         });
-        if (!player.isOnline()) {
+        if (!player.isConnected()) {
             dropIfSame(uuid, player);
             return false;
         }
@@ -199,13 +207,15 @@ public class PlayerActionGateListener implements Listener {
      * path an action takes, which drops them from the hold on the way through, so a player
      * whose allocation still cannot start stays held rather than being lost.
      *
-     * <p>An entry whose player has gone offline is dropped instead of visited. Scheduling on
+     * <p>An entry whose entity has disconnected is dropped instead of visited. Scheduling on
      * a retired entity never runs, so visiting it would do nothing but keep it held.
+     * {@code isConnected()} rather than {@code isOnline()}, for the reason {@link #hold}
+     * gives: an old entity reads online again as soon as its player rejoins.
      */
     public void forEachHeld(BiConsumer<Player, String> action) {
         for (Held entry : held.values()) {
             Player player = entry.player();
-            if (!player.isOnline()) {
+            if (!player.isConnected()) {
                 dropIfSame(player.getUniqueId(), player);
                 continue;
             }

@@ -110,7 +110,8 @@ class AllocationOwnershipTest {
      * leave these tests passing on a path that never finished.
      */
     private PlayerMock join(String name) {
-        PlayerMock player = new PlayerMock(server, name) {
+        // SessionPlayerMock because a hold reads isConnected(), which PlayerMock throws from.
+        PlayerMock player = new SessionPlayerMock(server, name) {
             @Override
             public CompletableFuture<Boolean> teleportAsync(Location location,
                                                             PlayerTeleportEvent.TeleportCause cause,

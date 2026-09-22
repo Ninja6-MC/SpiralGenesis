@@ -147,7 +147,8 @@ class WorldBindingTest {
      * documents the same defect.
      */
     private PlayerMock join(String name) {
-        PlayerMock player = new PlayerMock(server, name) {
+        // SessionPlayerMock because a hold reads isConnected(), which PlayerMock throws from.
+        PlayerMock player = new SessionPlayerMock(server, name) {
             @Override
             public CompletableFuture<Boolean> teleportAsync(Location location,
                                                             PlayerTeleportEvent.TeleportCause cause,
