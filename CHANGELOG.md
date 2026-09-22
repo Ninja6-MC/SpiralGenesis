@@ -150,6 +150,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged once per player at WARNING instead of at SEVERE on every retry, and the missing
   world is still reported at SEVERE once per configured name, now also when two threads
   retry the bind together.
+- **An unreadable `data.yml` no longer restarts the spiral from index 0.** A file that
+  did not parse loaded as an empty one, indistinguishable from a fresh install, so the
+  counter reset and every returning player was allocated a new plot in cells other
+  players already held; the next save then wrote that empty state over the original.
+  Such a file is now reported once at SEVERE and copied aside as
+  `data.yml.broken-<timestamp>`, and storage is marked failed: nothing is saved by the
+  flush, `/sgen reload` or shutdown, nobody is allocated, and no respawn point is changed.
+  Joining players wait in the same hold as when no world is bound, operators with
+  `spiralgenesis.admin` are told in chat when they join, and the commands that read or
+  write player records are refused. A `/sgen reload` that reads the repaired file clears
+  the state and allocates everyone held; one that still cannot read it reports again
+  without copying the same file twice. A missing or empty file is still a fresh install.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

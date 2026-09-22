@@ -17,17 +17,21 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
+import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -216,5 +220,246 @@ class YamlDataStorageTest {
         } finally {
             logger.removeHandler(capture);
         }
+    }
+
+    /** Not YAML at all: an unclosed flow mapping, as a hand edit or a torn restore leaves. */
+    private static final String UNPARSEABLE = "current-spiral-index: 12\nplayers: {\n  broken: [\n";
+
+    /** Writes {@code content} as data.yml, bypassing the storage entirely. */
+    private void writeDataFile(String content) throws IOException {
+        Files.createDirectories(dataFile.getParent());
+        Files.writeString(dataFile, content, StandardCharsets.UTF_8);
+    }
+
+    /** The copies of an unreadable file set aside so far, by name. */
+    private List<String> brokenCopies() throws IOException {
+        try (Stream<Path> files = Files.list(dataFile.getParent())) {
+            return files.map(p -> p.getFileName().toString())
+                    .filter(name -> name.startsWith("data.yml.broken-"))
+                    .sorted()
+                    .toList();
+        }
+    }
+
+    /** Runs {@code body} and returns everything the plugin logged at SEVERE meanwhile. */
+    private List<LogRecord> severeDuring(ThrowingRunnable body) throws Exception {
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                if (record.getLevel() == Level.SEVERE) {
+                    records.add(record);
+                }
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        plugin.getLogger().addHandler(capture);
+        try {
+            body.run();
+        } finally {
+            plugin.getLogger().removeHandler(capture);
+        }
+        return records;
+    }
+
+    @FunctionalInterface
+    private interface ThrowingRunnable {
+        void run() throws Exception;
+    }
+
+    /** A storage that loaded a record, and then found the file unreadable on its next load. */
+    private YamlDataStorage failedAfterRecords(UUID uuid) throws IOException {
+        YamlDataStorage storage = loaded();
+        record(storage, uuid, "Alice", 4);
+        storage.save();
+        writeDataFile(UNPARSEABLE);
+        assertEquals(DataStorage.LoadOutcome.UNREADABLE, storage.load());
+        return storage;
+    }
+
+    @Test
+    @DisplayName("no file loads as a fresh install and creates an empty one")
+    void missingFileIsNoFile() {
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+
+        assertEquals(DataStorage.LoadOutcome.NO_FILE, storage.load());
+        assertTrue(Files.exists(dataFile));
+        assertFalse(storage.isFailed());
+        assertEquals(0, storage.getCurrentIndex());
+    }
+
+    @Test
+    @DisplayName("an empty but parseable file is a fresh install, not a failure")
+    void emptyFileIsNoFile() throws IOException {
+        writeDataFile("");
+
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+
+        assertEquals(DataStorage.LoadOutcome.NO_FILE, storage.load());
+        assertFalse(storage.isFailed());
+        assertEquals(List.of(), brokenCopies(), "nothing is copied aside for a fresh install");
+    }
+
+    @Test
+    @DisplayName("a file with records loads them")
+    void recordsAreLoaded() throws IOException {
+        UUID uuid = UUID.randomUUID();
+        YamlDataStorage first = loaded();
+        record(first, uuid, "Alice", 4);
+        first.save();
+
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+
+        assertEquals(DataStorage.LoadOutcome.LOADED, storage.load());
+        assertTrue(storage.hasSpawn(uuid));
+        assertEquals(5, storage.getCurrentIndex());
+    }
+
+    @Test
+    @DisplayName("an unparseable file fails storage, logs one SEVERE and is copied aside")
+    void unparseableFileFailsStorage() throws Exception {
+        writeDataFile(UNPARSEABLE);
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+
+        DataStorage.LoadOutcome[] outcome = new DataStorage.LoadOutcome[1];
+        List<LogRecord> severe = severeDuring(() -> outcome[0] = storage.load());
+
+        assertEquals(DataStorage.LoadOutcome.UNREADABLE, outcome[0],
+                "an unreadable file must not be taken for an empty one");
+        assertTrue(storage.isFailed());
+        assertEquals(1, severe.size(), "exactly one SEVERE: " + severe);
+        assertNotNull(severe.get(0).getThrown(), "the parse error is attached");
+
+        List<String> copies = brokenCopies();
+        assertEquals(1, copies.size(), "one copy set aside: " + copies);
+        assertEquals(copies.get(0), storage.getFailure().brokenCopy(),
+                "the failure names the copy it made");
+        assertTrue(severe.get(0).getMessage().contains(copies.get(0)),
+                "the SEVERE names the copy: " + severe.get(0).getMessage());
+        assertEquals(UNPARSEABLE, Files.readString(dataFile.resolveSibling(copies.get(0)),
+                StandardCharsets.UTF_8), "the copy is the file that failed, byte for byte");
+    }
+
+    @Test
+    @DisplayName("while failed, no record is readable and every write is refused")
+    void failedStorageRefusesWrites() throws IOException {
+        UUID uuid = UUID.randomUUID();
+        YamlDataStorage storage = failedAfterRecords(uuid);
+
+        assertFalse(storage.hasSpawn(uuid), "records from before the failure are dropped");
+        assertEquals(Map.of(), storage.getAllRecords());
+
+        UUID other = UUID.randomUUID();
+        record(storage, other, "Bob", 9);
+        storage.removeSpawn(uuid);
+        assertFalse(storage.hasSpawn(other), "a spawn recorded while failed is ignored");
+        assertThrows(IllegalStateException.class, storage::reserveNextIndex,
+                "the counter that could not be read is never advanced");
+    }
+
+    @Test
+    @DisplayName("while failed, save writes nothing and leaves no scratch file")
+    void failedSaveWritesNothing() throws IOException {
+        YamlDataStorage storage = failedAfterRecords(UUID.randomUUID());
+
+        storage.save();
+
+        assertEquals(UNPARSEABLE, Files.readString(dataFile, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(tempFile), "not even the scratch file is written");
+    }
+
+    @Test
+    @DisplayName("while failed, the flush task writes nothing even when marked dirty")
+    void failedFlushWritesNothing() throws Exception {
+        YamlDataStorage storage = failedAfterRecords(UUID.randomUUID());
+        // Forced, because every mutator is refused and nothing else can mark it. A change
+        // pending from before the failure is the case this stands for.
+        Field dirtyField = YamlDataStorage.class.getDeclaredField("dirty");
+        dirtyField.setAccessible(true);
+        ((AtomicBoolean) dirtyField.get(storage)).set(true);
+
+        storage.flushIfDirty();
+
+        assertEquals(UNPARSEABLE, Files.readString(dataFile, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(tempFile));
+    }
+
+    @Test
+    @DisplayName("while failed, shutdown writes nothing")
+    void failedShutdownWritesNothing() throws Exception {
+        YamlDataStorage storage = failedAfterRecords(UUID.randomUUID());
+        // MockBukkit schedules the flush task but cannot cancel it, and its exception would
+        // leave shutdown before the part under test. Dropping the handle skips the cancel.
+        Field taskField = YamlDataStorage.class.getDeclaredField("flushTask");
+        taskField.setAccessible(true);
+        taskField.set(storage, null);
+
+        storage.shutdown();
+
+        assertEquals(UNPARSEABLE, Files.readString(dataFile, StandardCharsets.UTF_8));
+        assertFalse(Files.exists(tempFile));
+    }
+
+    @Test
+    @DisplayName("a load that reads a repaired file clears the failure and saves again")
+    void repairedFileRecovers() throws IOException {
+        UUID uuid = UUID.randomUUID();
+        YamlDataStorage storage = failedAfterRecords(uuid);
+        String copy = storage.getFailure().brokenCopy();
+
+        // The operator restores the good file from the copy they took, or from a backup.
+        writeDataFile("current-spiral-index: 7\nplayers:\n  " + uuid + ":\n    name: Alice\n"
+                + "    assigned-index: 4\n    world: world\n");
+
+        assertEquals(DataStorage.LoadOutcome.LOADED, storage.load());
+        assertFalse(storage.isFailed());
+        assertTrue(storage.hasSpawn(uuid));
+        assertEquals(7, storage.reserveNextIndex(), "the counter resumes from the file");
+
+        UUID other = UUID.randomUUID();
+        record(storage, other, "Bob", 7);
+        storage.save();
+        YamlConfiguration written = YamlConfiguration.loadConfiguration(dataFile.toFile());
+        assertEquals("Bob", written.getString("players." + other + ".name"),
+                "saving works again once the failure is cleared");
+        assertTrue(Files.exists(dataFile.resolveSibling(copy)), "the copy is left in place");
+    }
+
+    @Test
+    @DisplayName("a failed retry on the same file reports again but makes no second copy")
+    void failedRetryDoesNotCopyAgain() throws Exception {
+        writeDataFile(UNPARSEABLE);
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+        storage.load();
+        String first = storage.getFailure().brokenCopy();
+
+        List<LogRecord> severe = severeDuring(storage::load);
+
+        assertEquals(1, severe.size(), "the retry reports again: " + severe);
+        assertTrue(storage.isFailed());
+        assertEquals(List.of(first), brokenCopies(), "the same file is not copied twice");
+        assertEquals(first, storage.getFailure().brokenCopy(),
+                "the retry names the copy already made");
+    }
+
+    @Test
+    @DisplayName("a different unreadable file is copied aside as well")
+    void differentBrokenFileIsCopied() throws IOException {
+        writeDataFile(UNPARSEABLE);
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+        storage.load();
+
+        writeDataFile(UNPARSEABLE + "  another: [\n");
+        storage.load();
+
+        assertEquals(2, brokenCopies().size(),
+                "an edit that is still broken is a different file, and is kept too");
     }
 }

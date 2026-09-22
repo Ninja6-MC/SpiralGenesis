@@ -15,6 +15,7 @@ import com.ninja6.spiralgenesis.protection.ProtectionProviders;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.DataStorage;
+import com.ninja6.spiralgenesis.storage.StorageFailure;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
 import org.bukkit.Bukkit;
@@ -40,6 +41,9 @@ import java.util.stream.Collectors;
  * Main plugin lifecycle entrypoint for SpiralGenesis.
  */
 public class SpiralGenesisPlugin extends JavaPlugin {
+
+    /** The one permission node, declared in plugin.yml, that gates every admin surface. */
+    public static final String ADMIN_PERMISSION = "spiralgenesis.admin";
 
     private PluginConfig pluginConfig;
     private DataStorage dataStorage;
@@ -226,7 +230,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         loadConfiguration();
         if (dataStorage != null) {
             // Flush first: load() replaces in-memory state from disk, so any pending
-            // change that has not been written yet would otherwise be discarded.
+            // change that has not been written yet would otherwise be discarded. While
+            // storage is failed the save writes nothing, so this is also the retry that
+            // reads the file an operator has just repaired, and not an overwrite of it.
             dataStorage.save();
             dataStorage.load();
         }
@@ -360,6 +366,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 boolean scheduled = runForPlayer(player, () -> {
                     try {
                         if (!player.isOnline()) return;
+                        // A reload that failed to read data.yml can land while the scan runs.
+                        // The write below would be refused, so the respawn point and teleport
+                        // after it would point the player at a plot nothing records; they are
+                        // held instead, and allocated afresh once storage is readable.
+                        if (dataStorage.isFailed()) {
+                            holdIfUnavailable(player, clientType);
+                            return;
+                        }
 
                         dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(), player.getName(), clientType);
 
@@ -523,7 +537,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     public void repairSpawn(Player player, StoredSpawn record, boolean confirmFirst) {
         SpawnManager manager = spawnManager;
         Location stored = record.toLocation();
-        if (manager == null || stored == null) {
+        // No repair while storage is failed: it ends in a storage write and a respawn-point
+        // change, and neither may happen against records that could not be read.
+        if (manager == null || stored == null || dataStorage.isFailed()) {
             return;
         }
 
@@ -640,7 +656,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
         ScheduledTask scheduled = player.getScheduler().run(this, task -> {
             try {
-                if (!player.isOnline()) {
+                // Storage can fail during the search, on a reload; the repair is dropped
+                // rather than applied to records that are no longer there.
+                if (!player.isOnline() || dataStorage.isFailed()) {
                     return;
                 }
                 if (res == null) {
@@ -793,7 +811,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return;
         }
         player.getScheduler().run(this, task -> {
-            if (!player.isOnline()) {
+            // Read again here: the record came from storage that a failed reload can have
+            // dropped since, and no respawn point is set from records that are gone.
+            if (!player.isOnline() || dataStorage.isFailed()) {
                 return;
             }
             player.setRespawnLocation(target, true);
@@ -837,6 +857,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the world is the caller's business.
      */
     AllocationUnavailable allocationUnavailable() {
+        if (dataStorage != null && dataStorage.isFailed()) {
+            return AllocationUnavailable.STORAGE_FAILED;
+        }
         if (spawnManager == null) {
             return AllocationUnavailable.WORLD_UNBOUND;
         }
@@ -917,6 +940,20 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public void allocateNow(Player player, String clientType) {
         handlePlayerFirstJoin(player, clientType);
+    }
+
+    /**
+     * What an operator is told about failed storage, in chat or in reply to a command, or
+     * {@code null} if storage is readable. One wording for every place that says it.
+     */
+    public String storageFailureNotice() {
+        StorageFailure failure = dataStorage == null ? null : dataStorage.getFailure();
+        if (failure == null) {
+            return null;
+        }
+        return "SpiralGenesis could not read data.yml (" + failure.error() + "), so no spawn"
+                + " is being allocated or changed and nothing is being saved. "
+                + failure.copyNote() + " Repair or restore data.yml, then run /sgen reload.";
     }
 
     public PluginConfig getPluginConfig() {

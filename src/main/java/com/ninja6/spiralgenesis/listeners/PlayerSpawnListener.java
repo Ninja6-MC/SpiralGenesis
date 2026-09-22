@@ -5,6 +5,7 @@ import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.config.AllocationTrigger;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
+import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -38,6 +39,16 @@ public class PlayerSpawnListener implements Listener {
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onPlayerJoin(PlayerJoinEvent event) {
         Player player = event.getPlayer();
+
+        // An operator joining a server whose storage failed is told in chat, because the
+        // SEVERE that reported it scrolled past at startup and nothing else on a working
+        // server looks wrong until a new player fails to get a plot. Everyone then carries
+        // on below: with no records readable nobody has a spawn, so each player goes through
+        // the one "allocation unavailable" hold and is resumed when a reload recovers.
+        String storageNotice = plugin.storageFailureNotice();
+        if (storageNotice != null && player.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
+            player.sendMessage(ChatColor.RED + storageNotice);
+        }
 
         // Returning players are the common case and have nothing to allocate. Gating them
         // would arm a timeout per join and, for anyone who joins and then stands still,
