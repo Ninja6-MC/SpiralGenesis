@@ -124,6 +124,12 @@ public interface DataStorage {
      * mapped onto the same grid cell. Indices consumed by a rejected (for example ocean)
      * candidate are simply never reused.
      *
+     * <p>That holds across a load too, including one that recovers from a failure with a
+     * file older than the reservation: the scan that holds an index may still write it
+     * afterwards, so a load never restores the counter below it. The one index a load
+     * hands out again is one whose {@link #setSpawn} was refused, since nothing can still
+     * write it.
+     *
      * @return the claimed index
      * @throws IllegalStateException while storage is failed, since the counter it would
      *                               advance is the one that could not be read
