@@ -364,6 +364,49 @@ class YamlDataStorageTest {
                 "the counter that could not be read is never advanced");
     }
 
+    /**
+     * Pins the order inside the failure, which no end-state check can see: a record written
+     * between the clear and the failure being published survives the whole failed state.
+     *
+     * <p>The test holds the lock the records are cleared under, so the loader stops at the
+     * clear. By then the failure must already be visible, and a write attempted there - on
+     * this thread, which holds the lock, as a region thread's setSpawn would be at that
+     * moment - must be refused rather than accepted into records about to be abandoned.
+     */
+    @Test
+    @DisplayName("writes are refused from the moment the failure starts dropping records")
+    void mutatorsRefuseOnceFailureBegins() throws Exception {
+        YamlDataStorage storage = loaded();
+        writeDataFile(UNPARSEABLE);
+
+        Field lockField = YamlDataStorage.class.getDeclaredField("yamlLock");
+        lockField.setAccessible(true);
+        Object yamlLock = lockField.get(storage);
+
+        UUID late = UUID.randomUUID();
+        Thread loader = new Thread(storage::load, "loader");
+        synchronized (yamlLock) {
+            loader.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (loader.getState() != Thread.State.BLOCKED) {
+                assertTrue(loader.isAlive() && System.nanoTime() < deadline,
+                        "the loader should stop at the clear, which needs this lock");
+                Thread.onSpinWait();
+            }
+            assertTrue(storage.isFailed(),
+                    "the failure must be published before any record is dropped");
+
+            record(storage, late, "Late", 9);
+            assertFalse(storage.hasSpawn(late), "a write landing at the clear must be refused");
+            assertThrows(IllegalStateException.class, storage::reserveNextIndex);
+        }
+        loader.join(TimeUnit.SECONDS.toMillis(10));
+
+        assertFalse(loader.isAlive());
+        assertFalse(storage.hasSpawn(late), "nothing written during the failure survives it");
+        assertNotNull(storage.getFailure().brokenCopy(), "the copy is named once it exists");
+    }
+
     @Test
     @DisplayName("while failed, save writes nothing and leaves no scratch file")
     void failedSaveWritesNothing() throws IOException {

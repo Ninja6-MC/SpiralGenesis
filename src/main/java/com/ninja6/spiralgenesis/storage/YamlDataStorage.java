@@ -92,7 +92,9 @@ public class YamlDataStorage implements DataStorage {
 
     /**
      * Why the last load failed, or {@code null} if it succeeded. Written only under
-     * {@link #writeLock}; volatile for the readers that do not take it.
+     * {@link #writeLock}; volatile because the mutators and every reader of
+     * {@link #getFailure()} do not take that lock. Set before the records are dropped, so
+     * it is never null while they are being cleared.
      */
     private volatile StorageFailure failure;
 
@@ -226,13 +228,20 @@ public class YamlDataStorage implements DataStorage {
      * @param bytes the file's contents, or {@code null} if it could not be read at all
      */
     private void enterFailedState(byte[] bytes, Exception cause) {
+        String error = firstLine(cause);
+        // Published before a single record is dropped, and the clear is made under the lock
+        // the mutators check it under. A setSpawn on another region thread either finished
+        // before the clear, and is cleared with the rest, or sees the failure and does
+        // nothing; none can land after the clear and survive the failed state. The copy is
+        // named once it exists.
+        failure = new StorageFailure(error, null);
         synchronized (yamlLock) {
             this.yaml = null;
+            spawnCache.clear();
+            nameIndex.clear();
+            currentIndex.set(0);
+            dirty.set(false);
         }
-        spawnCache.clear();
-        nameIndex.clear();
-        currentIndex.set(0);
-        dirty.set(false);
 
         String copy = null;
         String copyError = null;
@@ -253,7 +262,6 @@ public class YamlDataStorage implements DataStorage {
             copyError = "the file could not be read";
         }
 
-        String error = firstLine(cause);
         failure = new StorageFailure(error, copy);
         plugin.getLogger().log(Level.SEVERE, "data.yml could not be read, so storage is"
                 + " unavailable: no spawn will be allocated or changed and nothing will be"
@@ -472,16 +480,17 @@ public class YamlDataStorage implements DataStorage {
     @Override
     public void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
                          String playerName, String clientType) {
-        if (failure != null) {
-            return;
-        }
         StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType);
-        spawnCache.put(uuid, record);
-        if (playerName != null && !playerName.isEmpty()) {
-            nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
-        }
-
+        // Checked and applied under the lock enterFailedState clears under, so the check
+        // and the write cannot straddle the clear.
         synchronized (yamlLock) {
+            if (failure != null) {
+                return;
+            }
+            spawnCache.put(uuid, record);
+            if (playerName != null && !playerName.isEmpty()) {
+                nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
+            }
             if (yaml == null) {
                 return;
             }
@@ -502,15 +511,14 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public void removeSpawn(UUID uuid) {
-        if (failure != null) {
-            return;
-        }
-        StoredSpawn removed = spawnCache.remove(uuid);
-        if (removed != null && removed.playerName() != null) {
-            nameIndex.remove(removed.playerName().toLowerCase(Locale.ROOT), uuid);
-        }
-
         synchronized (yamlLock) {
+            if (failure != null) {
+                return;
+            }
+            StoredSpawn removed = spawnCache.remove(uuid);
+            if (removed != null && removed.playerName() != null) {
+                nameIndex.remove(removed.playerName().toLowerCase(Locale.ROOT), uuid);
+            }
             if (yaml == null) {
                 return;
             }
@@ -534,6 +542,9 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public int reserveNextIndex() {
+        // Lock-free, unlike the record mutators. A reservation racing the failure can still
+        // advance the zeroed counter, but nothing reads that counter until a successful load
+        // replaces it, and the record the reservation was for is refused by setSpawn.
         StorageFailure failed = failure;
         if (failed != null) {
             throw new IllegalStateException("data.yml could not be read: " + failed.error());
