@@ -140,6 +140,14 @@ public class SpawnManager {
     /** What {@link #floorUnder} answers for a column with nothing to stand on within a step. */
     private static final int NO_FLOOR = Integer.MIN_VALUE;
 
+    /**
+     * The longest drop, in blocks, a lifted player may take onto the floor below: vanilla's
+     * no-damage fall. Fall damage is {@code ceil(fallDistance - 3)} with the default
+     * {@code safe_fall_distance} of 3, so a fall of exactly 3 blocks does no damage and any
+     * longer one does. See {@link #dropLandsSafely}.
+     */
+    private static final double MAX_SAFE_DROP = 3.0;
+
     /** Penalty for failing a hard check, large enough to dominate any terrain-shape penalty. */
     private static final int PENALTY_UNSAFE = 1000;
 
@@ -392,13 +400,23 @@ public class SpawnManager {
      * folia-1.21.11, and in the Paper source at the 26.2 tag.
      */
     private boolean supportsCentre(Block block) {
+        return centreTop(block) >= 0;
+    }
+
+    /**
+     * The height, above the bottom of the block, of the top of its collision over the
+     * column centre, or {@code -1} when nothing there collides (see
+     * {@link #supportsCentre}). A player landing on the block comes to rest at this height.
+     */
+    private double centreTop(Block block) {
+        double top = -1;
         for (BoundingBox box : collisionShape(block).getBoundingBoxes()) {
             if (box.getMinX() <= 0.5 && box.getMaxX() >= 0.5
                     && box.getMinZ() <= 0.5 && box.getMaxZ() >= 0.5) {
-                return true;
+                top = Math.max(top, box.getMaxY());
             }
         }
-        return false;
+        return top;
     }
 
     /**
@@ -452,7 +470,8 @@ public class SpawnManager {
      *
      * @return a future resolving to the position to stand at, or {@code null} when the
      *         column has no clear position below the build limit, the first one found is
-     *         hazardous, or the drop from it passes or ends on a hazard or finds no floor
+     *         hazardous, or the drop from it passes or ends on a hazard, finds no floor,
+     *         or is longer than a fall that does no damage
      */
     public CompletableFuture<Location> standingPoint(Location stored) {
         CompletableFuture<Location> result = new CompletableFuture<>();
@@ -490,11 +509,12 @@ public class SpawnManager {
                     || isRevalidationHazard(x, y + 1, z)) {
                 return null;
             }
-            if (y > from && !dropLandsSafely(x, y, z, from)) {
+            double feet = stored.getY() + (y - from);
+            if (y > from && !dropLandsSafely(x, y, z, from, feet)) {
                 return null;
             }
             Location standing = stored.clone();
-            standing.setY(stored.getY() + (y - from));
+            standing.setY(feet);
             return standing;
         }
         return null;
@@ -515,15 +535,22 @@ public class SpawnManager {
      * stored point, a step down from it. Falling past that is falling out of the build,
      * which is a drop of unknown depth, and is refused like a plot with no floor. Every
      * read is in the point's own column, so the chunk the caller already owns covers it.
+     *
+     * <p>Nor may the drop be longer than {@link #MAX_SAFE_DROP}, measured as vanilla
+     * measures a fall: from the feet at the lifted position, {@code feet}, down to the top
+     * of the floor's collision over the column centre (see {@link #centreTop}), which is
+     * where the player comes to rest. A fall of exactly that height does no damage; a
+     * longer one is refused like a hazard, and the player is held at world spawn.
      */
-    private boolean dropLandsSafely(int x, int y, int z, int from) {
+    private boolean dropLandsSafely(int x, int y, int z, int from, double feet) {
         int lowest = from - 2;
         for (int cell = y - 1; cell >= lowest; cell--) {
             if (isRevalidationHazard(x, cell, z)) {
                 return false;
             }
-            if (supportsCentre(world.getBlockAt(x, cell, z))) {
-                return true;
+            double top = centreTop(world.getBlockAt(x, cell, z));
+            if (top >= 0) {
+                return feet - (cell + top) <= MAX_SAFE_DROP;
             }
         }
         return false;

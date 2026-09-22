@@ -180,8 +180,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   centre clear, the player falls through it onto the build below, and only the cells at
   the lifted position were checked. The fall is now followed to the first floor, and the
   cells passed and that floor get the same checks for water, lava, magma, cactus and
-  campfires. A drop onto or through one of them, or one that falls past the step below
-  the spawn point, holds the player at world spawn as a hazard on top of the build does.
+  campfires. A drop onto or through one of them, one that falls past the step below the
+  spawn point, or one longer than 3 blocks, the most a fall takes without damage, holds
+  the player at world spawn as a hazard on top of the build does.
 - **A held player's bind retry can no longer undo a `/sgen reload` that bound a world.**
   On Folia the reload and a held player's retry run on different threads, and a retry
   that had read the old `origin.world` could clear the manager just after the reload
