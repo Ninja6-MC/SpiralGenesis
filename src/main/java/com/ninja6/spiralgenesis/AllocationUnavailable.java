@@ -10,6 +10,14 @@ package com.ninja6.spiralgenesis;
  */
 enum AllocationUnavailable {
 
+    /**
+     * {@code data.yml} could not be read, so there is no spiral counter to advance and no
+     * record of who already has a plot. Checked ahead of the world: a player allocated once
+     * a world binds would still be allocated against records nobody could read.
+     */
+    STORAGE_FAILED("data.yml could not be read (see the storage error above)",
+            "once /sgen reload reads it successfully"),
+
     /** {@code origin.world} names no loaded world, so there is nowhere to allocate into. */
     WORLD_UNBOUND("no world is bound (see the origin.world error above)",
             "once origin.world names a loaded world");

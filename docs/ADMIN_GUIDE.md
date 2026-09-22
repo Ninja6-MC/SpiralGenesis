@@ -799,6 +799,31 @@ players:
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.
 
+### When `data.yml` cannot be read
+
+A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.
+A file that exists and does not parse is never treated that way, because starting from
+index 0 would hand every returning player a new plot, in cells other players already own.
+Instead the plugin stays enabled and storage is marked failed:
+
+* One SEVERE line reports the parse error, and the file is copied aside as
+  `data.yml.broken-<timestamp>` (UTC, for example `data.yml.broken-20260922T051132Z`)
+  before anything else can touch it.
+* Nothing is saved. Not the periodic flush, not `/sgen reload`, not shutdown, so the file
+  on disk stays exactly as it was.
+* Nobody is allocated and no respawn point is changed. A joining player waits in the same
+  hold as when no world is bound, logged once as `Cannot allocate a spawn for <player>:
+  data.yml could not be read`, and is allocated without having to act again once storage
+  recovers. This includes returning players, since no record of their plot can be read.
+* Operators with `spiralgenesis.admin` are told in chat when they join, with the name of
+  the copy. `/sgen setspawn`, `allocate`, `reassign`, `protect`, `tp` and `info` are refused
+  with the same message; `setcenter`, `simulate` and `reload` still work.
+
+To recover, repair `data.yml` or restore it from a backup, then run `/sgen reload`. A
+reload that reads it clears the failure and allocates every held player. A reload that
+still cannot read it says so to whoever ran it and logs the error again, but does not copy
+the same file a second time.
+
 ---
 
 ## 8. Tuning with `/sgen simulate`

@@ -10,13 +10,41 @@ import java.util.UUID;
  */
 public interface DataStorage {
 
-    /**
-     * Initializes or loads storage backend.
-     */
-    void load();
+    /** What {@link #load()} found. */
+    enum LoadOutcome {
+        /** Records were read. */
+        LOADED,
+        /** Nothing is recorded yet: no file, or a file that parses to nothing. */
+        NO_FILE,
+        /**
+         * The file exists and could not be read. Storage is failed until a later load
+         * succeeds; see {@link #getFailure()}.
+         */
+        UNREADABLE
+    }
 
     /**
-     * Flushes in-memory data to disk immediately on the calling thread.
+     * Initializes or loads storage backend.
+     *
+     * <p>An unreadable file is never treated as an empty one. It leaves storage failed:
+     * no records, nothing written back, and every write refused, until a later call reads
+     * the file successfully.
+     */
+    LoadOutcome load();
+
+    /**
+     * Why storage is failed, or {@code null} if the last load succeeded.
+     */
+    StorageFailure getFailure();
+
+    /** Whether the last load failed, so nothing may be read from or written to storage. */
+    default boolean isFailed() {
+        return getFailure() != null;
+    }
+
+    /**
+     * Flushes in-memory data to disk immediately on the calling thread. Writes nothing
+     * while storage is failed.
      */
     void save();
 
@@ -59,12 +87,12 @@ public interface DataStorage {
     Map<UUID, StoredSpawn> getAllRecords();
 
     /**
-     * Records a new spawn assignment for a player.
+     * Records a new spawn assignment for a player. Ignored while storage is failed.
      */
     void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV, String playerName, String clientType);
 
     /**
-     * Removes a player's assigned spawn.
+     * Removes a player's assigned spawn. Ignored while storage is failed.
      */
     void removeSpawn(UUID uuid);
 
@@ -89,6 +117,8 @@ public interface DataStorage {
      * candidate are simply never reused.
      *
      * @return the claimed index
+     * @throws IllegalStateException while storage is failed, since the counter it would
+     *                               advance is the one that could not be read
      */
     int reserveNextIndex();
 }

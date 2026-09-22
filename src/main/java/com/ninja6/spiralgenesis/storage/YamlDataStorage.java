@@ -2,20 +2,28 @@ package com.ninja6.spiralgenesis.storage;
 
 import org.bukkit.Location;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
 import java.io.IOException;
+import java.io.StringReader;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.file.FileAlreadyExistsException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
@@ -36,6 +44,13 @@ public class YamlDataStorage implements DataStorage {
 
     /** How often the background flush task checks for pending changes. */
     private static final long FLUSH_INTERVAL_SECONDS = 5L;
+
+    /**
+     * Suffix for the copy of an unreadable file. UTC and colon-free, because a colon is not
+     * a legal file-name character on Windows.
+     */
+    private static final DateTimeFormatter BROKEN_STAMP =
+            DateTimeFormatter.ofPattern("uuuuMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC);
 
     private final JavaPlugin plugin;
     private final Path dataFile;
@@ -75,6 +90,19 @@ public class YamlDataStorage implements DataStorage {
 
     private ScheduledTask flushTask;
 
+    /**
+     * Why the last load failed, or {@code null} if it succeeded. Written only under
+     * {@link #writeLock}; volatile because the mutators and every reader of
+     * {@link #getFailure()} do not take that lock. Set before the records are dropped, so
+     * it is never null while they are being cleared.
+     */
+    private volatile StorageFailure failure;
+
+    /** Digest of the last unreadable file copied aside, guarded by {@link #writeLock}. */
+    private byte[] brokenDigest;
+    /** File name that copy was written to, guarded by {@link #writeLock}. */
+    private String brokenCopy;
+
     public YamlDataStorage(JavaPlugin plugin) {
         this.plugin = plugin;
         this.dataFile = plugin.getDataFolder().toPath().resolve("data.yml");
@@ -82,27 +110,58 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
-    public void load() {
-        try {
-            Files.createDirectories(dataFile.getParent());
-            if (!Files.exists(dataFile)) {
-                Files.createFile(dataFile);
-            }
-            // A scratch file left by a crash is never a recovery candidate: the rename that
-            // publishes it is the last step, so anything still under the temp name was
-            // incomplete when the process died, and data.yml still holds the last complete
-            // snapshot. Removing it keeps a stale half-file from being mistaken for a backup.
-            // Under the write lock, because a save already in flight (the async flush, when
-            // reload runs save then load) may be writing that same path right now.
-            synchronized (writeLock) {
+    public LoadOutcome load() {
+        // Under the write lock from end to end. A save already in flight (the async flush,
+        // when reload runs save then load) may be writing the scratch file this deletes, and
+        // once this decides the file is unreadable no save may slip in behind the decision
+        // and publish an empty snapshot over it.
+        synchronized (writeLock) {
+            boolean existed;
+            try {
+                Files.createDirectories(dataFile.getParent());
+                existed = Files.exists(dataFile);
+                if (!existed) {
+                    Files.createFile(dataFile);
+                }
+                // A scratch file left by a crash is never a recovery candidate: the rename
+                // that publishes it is the last step, so anything still under the temp name
+                // was incomplete when the process died, and data.yml still holds the last
+                // complete snapshot. Removing it keeps a stale half-file from being mistaken
+                // for a backup.
                 Files.deleteIfExists(tempFile);
+            } catch (IOException e) {
+                plugin.getLogger().log(Level.SEVERE, "Failed to prepare data.yml", e);
+                existed = Files.exists(dataFile);
             }
-        } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE, "Failed to prepare data.yml", e);
+
+            YamlConfiguration loaded = new YamlConfiguration();
+            if (existed) {
+                // Read once and parsed from those bytes, so the copy set aside on failure is
+                // exactly what failed to parse. YamlConfiguration.loadConfiguration is not
+                // used: it swallows a parse error and returns an empty configuration, which
+                // made an unreadable file indistinguishable from a fresh install and reset
+                // the spiral counter to zero.
+                byte[] bytes = null;
+                try {
+                    bytes = Files.readAllBytes(dataFile);
+                    loaded.load(new StringReader(new String(bytes, StandardCharsets.UTF_8)));
+                } catch (IOException | InvalidConfigurationException e) {
+                    enterFailedState(bytes, e);
+                    return LoadOutcome.UNREADABLE;
+                }
+            }
+
+            populate(loaded);
+            failure = null;
+            startFlushTask();
+            // An empty but parseable file is what a fresh install leaves behind after its
+            // first start, so it counts as nothing recorded rather than as records.
+            return loaded.getKeys(false).isEmpty() ? LoadOutcome.NO_FILE : LoadOutcome.LOADED;
         }
+    }
 
-        YamlConfiguration loaded = YamlConfiguration.loadConfiguration(dataFile.toFile());
-
+    /** Replaces the in-memory records with what was read from disk. */
+    private void populate(YamlConfiguration loaded) {
         spawnCache.clear();
         nameIndex.clear();
 
@@ -151,8 +210,108 @@ public class YamlDataStorage implements DataStorage {
         synchronized (yamlLock) {
             this.yaml = loaded;
         }
+    }
 
-        startFlushTask();
+    /**
+     * Drops every record and refuses every write until a later load succeeds.
+     *
+     * <p>Empty records alone would be the defect this replaces: the spiral counter restarts
+     * at zero, every returning player looks unallocated, and the next flush publishes that
+     * empty state over the only copy of the real one. So the configuration is dropped as
+     * well, which {@link #save()} and every mutator check, and the file is copied aside
+     * before anyone is tempted to edit it.
+     *
+     * <p>The copy is made once per distinct content. A {@code /sgen reload} that fails on
+     * the same file again reports again but names the copy it already has, so retrying
+     * while diagnosing does not fill the folder with duplicates.
+     *
+     * @param bytes the file's contents, or {@code null} if it could not be read at all
+     */
+    private void enterFailedState(byte[] bytes, Exception cause) {
+        String error = firstLine(cause);
+        // Published before a single record is dropped, and the clear is made under the lock
+        // the mutators check it under. A setSpawn on another region thread either finished
+        // before the clear, and is cleared with the rest, or sees the failure and does
+        // nothing; none can land after the clear and survive the failed state. The copy is
+        // named once it exists.
+        failure = new StorageFailure(error, null);
+        synchronized (yamlLock) {
+            this.yaml = null;
+            spawnCache.clear();
+            nameIndex.clear();
+            currentIndex.set(0);
+            dirty.set(false);
+        }
+
+        String copy = null;
+        String copyError = null;
+        if (bytes != null) {
+            byte[] digest = sha256(bytes);
+            if (brokenCopy != null && Arrays.equals(digest, brokenDigest)) {
+                copy = brokenCopy;
+            } else {
+                try {
+                    copy = writeBrokenCopy(bytes);
+                    brokenDigest = digest;
+                    brokenCopy = copy;
+                } catch (IOException e) {
+                    copyError = e.toString();
+                }
+            }
+        } else {
+            copyError = "the file could not be read";
+        }
+
+        failure = new StorageFailure(error, copy);
+        plugin.getLogger().log(Level.SEVERE, "data.yml could not be read, so storage is"
+                + " unavailable: no spawn will be allocated or changed and nothing will be"
+                + " saved until /sgen reload reads it. " + (copy != null
+                        ? "A copy of it is at " + copy + "."
+                        : "It could not be copied aside (" + copyError + "), so take a copy"
+                                + " before editing it.")
+                + " Error: " + error, cause);
+    }
+
+    /** Copies the unreadable file aside under a name that is not already taken. */
+    private String writeBrokenCopy(byte[] bytes) throws IOException {
+        String base = dataFile.getFileName() + ".broken-" + BROKEN_STAMP.format(Instant.now());
+        for (int attempt = 1; ; attempt++) {
+            String name = attempt == 1 ? base : base + "-" + attempt;
+            try {
+                Files.write(dataFile.resolveSibling(name), bytes, StandardOpenOption.CREATE_NEW,
+                        StandardOpenOption.WRITE);
+                return name;
+            } catch (FileAlreadyExistsException e) {
+                if (attempt >= 100) {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    private static byte[] sha256(byte[] bytes) {
+        try {
+            return MessageDigest.getInstance("SHA-256").digest(bytes);
+        } catch (NoSuchAlgorithmException e) {
+            // Every Java platform is required to provide SHA-256.
+            throw new IllegalStateException(e);
+        }
+    }
+
+    /** The first line of an exception's message, which is all a chat line or reply needs. */
+    private static String firstLine(Exception e) {
+        String message = e.getMessage();
+        if (message == null || message.isBlank()) {
+            return e.getClass().getSimpleName();
+        }
+        String trimmed = message.strip();
+        int newline = trimmed.indexOf('\n');
+        return newline < 0 ? trimmed : trimmed.substring(0, newline).strip();
+    }
+
+    @Override
+    public StorageFailure getFailure() {
+        return failure;
     }
 
     private void startFlushTask() {
@@ -169,7 +328,11 @@ public class YamlDataStorage implements DataStorage {
         }
     }
 
-    private void flushIfDirty() {
+    /**
+     * The flush task's body. Package-private as a test seam: MockBukkit does not run the
+     * asynchronous scheduler, so a test calls this directly to stand in for the task.
+     */
+    void flushIfDirty() {
         if (dirty.get()) {
             save();
         }
@@ -178,6 +341,13 @@ public class YamlDataStorage implements DataStorage {
     @Override
     public void save() {
         synchronized (writeLock) {
+            // Checked under the write lock, which load() holds while it decides, so no save
+            // can run between an unreadable read and the state that records it. This is the
+            // only way into writeAtomically, so neither the scratch file nor the rename can
+            // touch data.yml while storage is failed.
+            if (failure != null) {
+                return;
+            }
             String serialised;
             synchronized (yamlLock) {
                 if (yaml == null) {
@@ -268,6 +438,11 @@ public class YamlDataStorage implements DataStorage {
             flushTask.cancel();
             flushTask = null;
         }
+        if (failure != null) {
+            plugin.getLogger().warning("data.yml was not saved: it could not be read, and the"
+                    + " file on disk is left exactly as it was.");
+            return;
+        }
         save();
     }
 
@@ -306,12 +481,16 @@ public class YamlDataStorage implements DataStorage {
     public void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
                          String playerName, String clientType) {
         StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType);
-        spawnCache.put(uuid, record);
-        if (playerName != null && !playerName.isEmpty()) {
-            nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
-        }
-
+        // Checked and applied under the lock enterFailedState clears under, so the check
+        // and the write cannot straddle the clear.
         synchronized (yamlLock) {
+            if (failure != null) {
+                return;
+            }
+            spawnCache.put(uuid, record);
+            if (playerName != null && !playerName.isEmpty()) {
+                nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
+            }
             if (yaml == null) {
                 return;
             }
@@ -332,12 +511,14 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public void removeSpawn(UUID uuid) {
-        StoredSpawn removed = spawnCache.remove(uuid);
-        if (removed != null && removed.playerName() != null) {
-            nameIndex.remove(removed.playerName().toLowerCase(Locale.ROOT), uuid);
-        }
-
         synchronized (yamlLock) {
+            if (failure != null) {
+                return;
+            }
+            StoredSpawn removed = spawnCache.remove(uuid);
+            if (removed != null && removed.playerName() != null) {
+                nameIndex.remove(removed.playerName().toLowerCase(Locale.ROOT), uuid);
+            }
             if (yaml == null) {
                 return;
             }
@@ -361,6 +542,13 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public int reserveNextIndex() {
+        // Lock-free, unlike the record mutators. A reservation racing the failure can still
+        // advance the zeroed counter, but nothing reads that counter until a successful load
+        // replaces it, and the record the reservation was for is refused by setSpawn.
+        StorageFailure failed = failure;
+        if (failed != null) {
+            throw new IllegalStateException("data.yml could not be read: " + failed.error());
+        }
         int reserved = currentIndex.getAndIncrement();
         dirty.set(true);
         return reserved;

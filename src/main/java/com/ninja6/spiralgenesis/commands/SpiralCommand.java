@@ -20,6 +20,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -57,6 +58,10 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
      */
     private static final String RELEASE_FLAG = "release";
 
+    /** Subcommands that depend on stored records, and are refused while storage is failed. */
+    private static final Set<String> STORAGE_SUBCOMMANDS =
+            Set.of("setspawn", "allocate", "reassign", "protect", "tp", "info");
+
     private final SpiralGenesisPlugin plugin;
 
     public SpiralCommand(SpiralGenesisPlugin plugin) {
@@ -65,7 +70,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!sender.hasPermission("spiralgenesis.admin")) {
+        if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
             sender.sendMessage(ChatColor.RED + "You do not have permission to execute SpiralGenesis commands.");
             return true;
         }
@@ -76,6 +81,15 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         String sub = args[0].toLowerCase();
+        // Every subcommand that reads or writes a player's record is refused while data.yml
+        // could not be read. The records are gone from memory, so these would report every
+        // player as unallocated, or record a spawn that nothing can save. Reload is how the
+        // state is cleared, and setcenter and simulate touch no record.
+        String storageNotice = plugin.storageFailureNotice();
+        if (storageNotice != null && STORAGE_SUBCOMMANDS.contains(sub)) {
+            sender.sendMessage(ChatColor.RED + storageNotice);
+            return true;
+        }
         switch (sub) {
             case "setcenter" -> handleSetCenter(sender, args);
             case "setspawn" -> handleSetSpawn(sender, args);
@@ -297,6 +311,13 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             target.getScheduler().run(plugin, task -> {
                 if (!target.isOnline()) {
                     sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
+                    return;
+                }
+                // A reload that failed to read data.yml can land during the scan. The write
+                // would be refused, so nothing after it may run either.
+                if (plugin.getDataStorage().isFailed()) {
+                    reply(sender, () -> sender.sendMessage(ChatColor.RED + "Reassignment of "
+                            + target.getName() + " was abandoned: " + plugin.storageFailureNotice()));
                     return;
                 }
                 plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN");
@@ -636,7 +657,17 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     private void handleReload(CommandSender sender) {
         plugin.reload();
-        sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
+        // Checked before the green line rather than after it, because storage that is still
+        // unreadable means the reload did not do the one thing the operator most likely ran
+        // it for. The error goes to the console at SEVERE again as well; the copy of the
+        // file is not made a second time.
+        String storageNotice = plugin.storageFailureNotice();
+        if (storageNotice != null) {
+            sender.sendMessage(ChatColor.RED + "Configuration reloaded, but storage is still"
+                    + " unavailable. " + storageNotice);
+        } else {
+            sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
+        }
         // Reloading the file and binding a world are two outcomes, and only the first one
         // succeeded here. Reported to the sender rather than to the console alone: the
         // administrator correcting origin.world is the one person who needs to know the
@@ -667,7 +698,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!sender.hasPermission("spiralgenesis.admin")) {
+        if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
             return Collections.emptyList();
         }
 
