@@ -47,6 +47,17 @@ public class SpawnManager {
      */
     private final AtomicReference<BorderGeometry> exhaustedAgainst = new AtomicReference<>();
 
+    /**
+     * The exhausted border the console was last told is the current one, or {@code null}
+     * once a join has found the border somewhere else.
+     *
+     * <p>Kept apart from {@link #exhaustedAgainst} because that record outlives the border
+     * moving away: a border moved elsewhere and later put back where a scan gave up is
+     * refused against the old record without scanning, and without this the operator would
+     * have been told about it only once, before the border first moved.
+     */
+    private final AtomicReference<BorderGeometry> announcedAgainst = new AtomicReference<>();
+
     private static final Set<Material> HAZARD_MATERIALS = EnumSet.of(
             Material.WATER, Material.LAVA, Material.ICE, Material.PACKED_ICE,
             Material.BLUE_ICE, Material.SEAGRASS, Material.TALL_SEAGRASS,
@@ -154,6 +165,10 @@ public class SpawnManager {
      * border changes. It is an outcome rather than a failure: the future completes
      * exceptionally only for an error nobody expected.
      *
+     * <p>The console is told once per stretch of the border sitting where a scan gave up:
+     * by that scan, or, when the border has since moved away and back, by the first join
+     * refused after it returned. The refusals in between add nothing.
+     *
      * @param indexSupplier atomic source of candidate spiral indices
      * @return CompletableFuture resolving to a {@link LocationResult} or a
      *         {@link BorderExhausted}
@@ -173,17 +188,28 @@ public class SpawnManager {
         // one scan per joiner in flight and one only. Serialising them would buy nothing but
         // a lock on the join path.
         //
-        // Not logged: the scan that gave up already reported it, once, and repeating it for
-        // every join would bury the rest of the console under one line about the border.
+        // Logged once and no more: the scan that gave up already reported it, and repeating
+        // it for every join would bury the rest of the console under one line about the
+        // border. The exception is a border that went elsewhere and came back to where a
+        // scan gave up, which nothing has reported since it moved: the first join refused
+        // on its return says so, and swapping the announcement means only one of several
+        // joins arriving together does.
+        BorderGeometry current = BorderGeometry.of(world);
         BorderGeometry gaveUpAgainst = exhaustedAgainst.get();
-        if (gaveUpAgainst != null && gaveUpAgainst.equals(BorderGeometry.of(world))) {
-            return CompletableFuture.completedFuture(new BorderExhausted(
-                    "Spawn allocation refused: an earlier scan found nothing inside the world "
-                            + "border of world '" + world.getName() + "' and the border has not "
-                            + "changed since. Widen the border or move its centre and the next "
-                            + "join scans again on its own; if you change origin.x, origin.z or "
-                            + "cell-size instead, run /sgen reload.", 0));
+        if (gaveUpAgainst != null && gaveUpAgainst.equals(current)) {
+            String message = "Spawn allocation refused: an earlier scan found nothing inside "
+                    + "the world border of world '" + world.getName() + "' at its current "
+                    + "centre and size. Widen the border or move its centre and the next join "
+                    + "scans again on its own; if you change origin.x, origin.z or cell-size "
+                    + "instead, run /sgen reload.";
+            if (!current.equals(announcedAgainst.getAndSet(current))) {
+                plugin.getLogger().warning(message);
+            }
+            return CompletableFuture.completedFuture(new BorderExhausted(message, 0));
         }
+        // The border is somewhere a scan has not given up against, so whatever was said
+        // about the old record no longer describes it.
+        announcedAgainst.set(null);
 
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
         nextCell(new Scan(indexSupplier, ScanPurpose.PLAYER_ALLOCATION, result));
@@ -745,10 +771,13 @@ public class SpawnManager {
                 BorderGeometry border = BorderGeometry.of(world);
                 message += " Further allocations are refused without claiming an index until "
                         + "the border changes.";
-                // Reported once per border, here, and nowhere else: not by the refusals that
-                // follow, and not by the other scans that were already in flight and give
-                // up against the same border after this one.
-                if (!border.equals(exhaustedAgainst.getAndSet(border))) {
+                // Reported once per border, here: not by the refusals that follow, and not
+                // by the other scans that were already in flight and give up against the
+                // same border after this one. Marked as announced as well, so the refusals
+                // that follow do not report it a second time.
+                boolean recorded = !border.equals(exhaustedAgainst.getAndSet(border));
+                boolean unannounced = !border.equals(announcedAgainst.getAndSet(border));
+                if (recorded || unannounced) {
                     plugin.getLogger().severe(message);
                 }
             }

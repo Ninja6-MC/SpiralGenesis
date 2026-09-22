@@ -365,10 +365,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     case SpawnManager.LocationResult found -> res = found;
                     case SpawnManager.BorderExhausted exhausted -> {
                         // An outcome, not an error: the scan that gave up has already put it
-                        // on the console once, in plain text, and every later join is refused
-                        // for the same reason until the border changes. Repeating it here
-                        // for each of them, with a trace, would bury everything else. The
-                        // player stays where they are, which is inside the border.
+                        // on the console once, in plain text, as has the first refusal after
+                        // the border returned to where a scan gave up, and every later join
+                        // is refused for the same reason until the border changes. Repeating
+                        // it here for each of them, with a trace, would bury everything else.
+                        // The player stays where they are, which is inside the border.
                         getLogger().fine("No plot for " + player.getName() + ": "
                                 + exhausted.message());
                         applied.complete(null);
