@@ -245,6 +245,21 @@ has proven anything, which permanently burns a spiral index per connection and r
 login plugin's own position restore. SpiralGenesis logs a warning at startup if it sees a
 known login plugin while this trigger is set.
 
+### Players from before the plugin was installed
+
+On every path above, a player without a record who played on the server before
+SpiralGenesis was installed is left alone: no plot is allocated, no index is reserved, their
+bed or respawn anchor is kept, and they are not moved or gated. The console says so once per
+player per run, at info. `/sgen reassign <player>` gives such a player a plot when you want
+them to have one; `/sgen allocate` refuses them and says the same.
+
+"Before" is the server's first-played time for the player against `installed-at` in
+`data.yml` (see section 7), not merely whether they have joined before: a player who first
+joined after the install and left before being placed is still allocated on their next
+visit. A player whose server data file carries no first-played time at all was written by
+a server that never ran Bukkit, and counts as before. A player who already has a record is
+never skipped, so one owed a placement is still placed.
+
 ### Respawn
 
 The plugin sets the player's respawn location at allocation time and handles
@@ -767,6 +782,7 @@ spiral position.
 ```yaml
 # data.yml
 current-spiral-index: 12
+installed-at: "2026-08-17T01:58:12.402Z"
 
 players:
   # Bedrock player (Floodgate)
@@ -802,6 +818,17 @@ have not been placed on it yet. They are placed when a new player would be alloc
 under the default `FIRST_ACTION`, on their first uncancelled action after they next join,
 and at once on joining under `ON_JOIN` and for Bedrock players. The key is then removed.
 It is absent from every other record, and a record without it is not owed anything.
+
+`installed-at` is when the plugin first recorded anything on this server, and is what
+decides which players are left alone as having played before it was installed (section 5).
+It is written once, on the first start that finds it missing, and kept from then on. A fresh
+install takes the current time. A file written by an earlier version takes the earliest
+`assigned-date` it holds, since that version allocated the first player to join on their
+first action; with no assignment in it, the current time. Every write of a record (a
+repair, `/sgen reassign`, `/sgen setspawn`) rewrites its `assigned-date`, so the earliest
+one can be later than the real install, which leans toward leaving players alone. It is an
+ISO-8601 instant, quoted or not, and can be edited, for example moved back to allocate
+players who joined in between.
 
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.

@@ -65,6 +65,12 @@ public class PlayerSpawnListener implements Listener {
             return;
         }
 
+        // A player from before the plugin was installed is not gated either: there is
+        // nothing to allocate them, so there is nothing to wait for.
+        if (plugin.skipIfPreInstall(player)) {
+            return;
+        }
+
         // Bedrock players are never gated: Floodgate authenticates them against Xbox Live
         // during the connection itself, so there is no limbo to wait out.
         if (plugin.getFloodgateHook().isBedrockPlayer(player.getUniqueId())) {

@@ -340,8 +340,11 @@ class StorageFailureTest {
         assertFalse(plugin.getDataStorage().isFailed());
         assertNull(plugin.storageFailureNotice());
         assertTrue(drain(console).stream().anyMatch(m -> m.contains("reloaded successfully")));
+        // The load that follows records an install time in a file that has none, and adds
+        // nothing else.
         assertEquals("current-spiral-index: 3\n",
-                Files.readString(dataFile(plugin), StandardCharsets.UTF_8),
+                Files.readString(dataFile(plugin), StandardCharsets.UTF_8)
+                        .replaceAll("(?m)^installed-at: .*\n", ""),
                 "the reload's save must not have written over the repaired file first");
     }
 

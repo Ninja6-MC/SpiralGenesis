@@ -16,6 +16,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -31,6 +32,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -609,5 +611,168 @@ class YamlDataStorageTest {
 
         assertEquals(index + 1, storage.reserveNextIndex(),
                 "an index recorded in this run is never handed out again");
+    }
+
+    @Test
+    @DisplayName("a fresh install records its install time on disk at once, and later loads keep it")
+    void freshInstallRecordsInstallTime() {
+        Instant before = Instant.now();
+        YamlDataStorage storage = new YamlDataStorage(plugin);
+        assertEquals(DataStorage.LoadOutcome.NO_FILE, storage.load());
+        Instant installed = storage.getInstalledAt();
+
+        assertNotNull(installed);
+        assertFalse(installed.isBefore(before), "a fresh install is installed now");
+        YamlConfiguration written = YamlConfiguration.loadConfiguration(dataFile.toFile());
+        assertEquals(installed.toString(), written.getString("installed-at"),
+                "written without waiting for the flush");
+
+        YamlDataStorage restarted = new YamlDataStorage(plugin);
+        restarted.load();
+        assertEquals(installed, restarted.getInstalledAt(), "set once and then kept");
+    }
+
+    @Test
+    @DisplayName("a file from before the install time existed takes its earliest assignment")
+    void olderFileTakesEarliestAssignment() throws IOException {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        writeDataFile("current-spiral-index: 2\nplayers:\n"
+                + "  " + second + ":\n    assigned-index: 1\n    world: world\n"
+                + "    assigned-date: '2026-03-02T10:00:00Z'\n"
+                + "  " + first + ":\n    assigned-index: 0\n    world: world\n"
+                + "    assigned-date: '2026-03-01T09:30:00Z'\n");
+
+        YamlDataStorage storage = loaded();
+
+        Instant expected = Instant.parse("2026-03-01T09:30:00Z");
+        assertEquals(expected, storage.getInstalledAt());
+        assertEquals(expected.toString(),
+                YamlConfiguration.loadConfiguration(dataFile.toFile()).getString("installed-at"));
+        assertTrue(storage.hasSpawn(first) && storage.hasSpawn(second),
+                "the records are untouched");
+    }
+
+    @Test
+    @DisplayName("a file with nothing assigned and no install time takes the current time")
+    void olderFileWithoutAssignmentsTakesNow() throws IOException {
+        writeDataFile("current-spiral-index: 3\n");
+        Instant before = Instant.now();
+
+        YamlDataStorage storage = loaded();
+
+        assertFalse(storage.getInstalledAt().isBefore(before));
+        assertEquals(3, storage.getCurrentIndex());
+    }
+
+    /**
+     * Loads {@code data.yml} holding {@code line} and asserts the install time is read as
+     * {@code expected}, kept as it was, and not reported as invalid.
+     */
+    private void assertInstallTimeKept(String line, Instant expected) throws Exception {
+        writeDataFile(line + "\ncurrent-spiral-index: 0\n");
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        Handler capture = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        plugin.getLogger().addHandler(capture);
+        YamlDataStorage storage;
+        try {
+            storage = loaded();
+        } finally {
+            plugin.getLogger().removeHandler(capture);
+        }
+
+        assertEquals(expected, storage.getInstalledAt());
+        assertTrue(records.stream().noneMatch(r -> r.getLevel().intValue() >= Level.WARNING.intValue()),
+                "a valid value is not reported as invalid: " + records);
+        assertEquals(line + "\ncurrent-spiral-index: 0\n",
+                Files.readString(dataFile, StandardCharsets.UTF_8),
+                "a valid value is not rewritten");
+    }
+
+    @Test
+    @DisplayName("an unquoted install time, as a hand edit writes it, is read and kept")
+    void unquotedInstallTimeIsKept() throws Exception {
+        // SnakeYAML resolves this as a timestamp rather than a string.
+        assertInstallTimeKept("installed-at: 2026-08-10T00:00:00Z",
+                Instant.parse("2026-08-10T00:00:00Z"));
+    }
+
+    @Test
+    @DisplayName("a quoted install time is read and kept")
+    void quotedInstallTimeIsKept() throws Exception {
+        assertInstallTimeKept("installed-at: '2026-08-10T00:00:00.123Z'",
+                Instant.parse("2026-08-10T00:00:00.123Z"));
+    }
+
+    @Test
+    @DisplayName("a recorded install time is written in a form that reads back unchanged")
+    void recordedInstallTimeRoundTrips() {
+        YamlDataStorage first = loaded();
+        Instant installed = first.getInstalledAt();
+
+        YamlConfiguration written = YamlConfiguration.loadConfiguration(dataFile.toFile());
+        assertTrue(written.get("installed-at") instanceof String,
+                "written quoted, so it is not re-read as a timestamp that drops precision");
+
+        YamlDataStorage second = loaded();
+        assertEquals(installed, second.getInstalledAt());
+        second.save();
+        YamlDataStorage third = loaded();
+        assertEquals(installed, third.getInstalledAt(), "unchanged across repeated saves");
+    }
+
+    @Test
+    @DisplayName("an unquoted assigned-date counts toward the install time of an older file")
+    void unquotedAssignedDateIsRead() throws IOException {
+        UUID uuid = UUID.randomUUID();
+        writeDataFile("current-spiral-index: 1\nplayers:\n  " + uuid + ":\n"
+                + "    assigned-index: 0\n    world: world\n"
+                + "    assigned-date: 2026-03-01T09:30:00Z\n");
+
+        YamlDataStorage storage = loaded();
+
+        assertEquals(Instant.parse("2026-03-01T09:30:00Z"), storage.getInstalledAt());
+    }
+
+    @Test
+    @DisplayName("an install time that is not an instant is replaced, and the storage stays usable")
+    void unparseableInstallTimeIsReplaced() throws IOException {
+        writeDataFile("installed-at: last tuesday\ncurrent-spiral-index: 0\n");
+
+        YamlDataStorage storage = loaded();
+
+        assertFalse(storage.isFailed(), "a bad value is not a bad file");
+        assertNotNull(storage.getInstalledAt());
+        assertEquals(storage.getInstalledAt().toString(),
+                YamlConfiguration.loadConfiguration(dataFile.toFile()).getString("installed-at"));
+    }
+
+    @Test
+    @DisplayName("the install time is unreadable while storage is failed, and back once it recovers")
+    void installTimeFollowsTheFailure() throws IOException {
+        YamlDataStorage storage = loaded();
+        Instant installed = storage.getInstalledAt();
+        String healthy = Files.readString(dataFile, StandardCharsets.UTF_8);
+
+        writeDataFile(UNPARSEABLE);
+        storage.load();
+        assertNull(storage.getInstalledAt());
+
+        writeDataFile(healthy);
+        storage.load();
+        assertEquals(installed, storage.getInstalledAt());
     }
 }

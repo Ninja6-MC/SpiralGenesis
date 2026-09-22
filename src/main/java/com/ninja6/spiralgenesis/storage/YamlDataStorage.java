@@ -23,7 +23,9 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.HashSet;
 import java.util.Locale;
 import java.util.Map;
@@ -49,6 +51,9 @@ public class YamlDataStorage implements DataStorage {
 
     /** Per-player key, written only while set, marking a placement still owed. */
     private static final String PLACEMENT_OWED_KEY = "placement-owed";
+
+    /** Top-level key holding {@link #getInstalledAt()}, as an ISO-8601 instant. */
+    private static final String INSTALLED_AT_KEY = "installed-at";
 
     /**
      * Suffix for the copy of an unreadable file. UTC and colon-free, because a colon is not
@@ -134,6 +139,12 @@ public class YamlDataStorage implements DataStorage {
      */
     private volatile StorageFailure failure;
 
+    /**
+     * What {@link #getInstalledAt()} answers. Written under {@link #yamlLock}, and null
+     * whenever {@link #yaml} is.
+     */
+    private volatile Instant installedAt;
+
     /** Digest of the last unreadable file copied aside, guarded by {@link #writeLock}. */
     private byte[] brokenDigest;
     /** File name that copy was written to, guarded by {@link #writeLock}. */
@@ -187,21 +198,108 @@ public class YamlDataStorage implements DataStorage {
                 }
             }
 
-            populate(loaded);
+            // An empty but parseable file is what a fresh install leaves behind after its
+            // first start, so it counts as nothing recorded rather than as records. Decided
+            // before the install time below is added to it.
+            LoadOutcome outcome = loaded.getKeys(false).isEmpty()
+                    ? LoadOutcome.NO_FILE : LoadOutcome.LOADED;
+            Instant earliestAssigned = populate(loaded);
+            // Settled before the failure is cleared, so storage never reads as recovered
+            // while the install time is still unknown: an allocation in that window could
+            // not tell a player from before the install apart from a new one.
+            boolean installRecorded = settleInstalledAt(loaded, earliestAssigned);
             failure = null;
             startFlushTask();
-            // An empty but parseable file is what a fresh install leaves behind after its
-            // first start, so it counts as nothing recorded rather than as records.
-            return loaded.getKeys(false).isEmpty() ? LoadOutcome.NO_FILE : LoadOutcome.LOADED;
+            if (installRecorded) {
+                // Written now rather than on the next flush: it is set once, and a crash
+                // before that flush would have the next start take a later time for it.
+                save();
+            }
+            return outcome;
         }
     }
 
-    /** Replaces the in-memory records with what was read from disk. */
-    private void populate(YamlConfiguration loaded) {
+    /**
+     * Reads the install time from a loaded file, or records one if it has none.
+     *
+     * <p>A file with nothing recorded is a fresh install, so the time is now. A file with
+     * records but no install time was written by a version that predates it, and takes the
+     * earliest assignment it records: that version allocated the first player to join on
+     * their first action. It is an upper bound rather than the install itself, because every
+     * write of a record - a repair, a reassign, a setspawn - rewrites its assignment date, so
+     * it can be later than the real install; that leans toward skipping. With no assignment
+     * to go by it is now, which leaves every player who joined before this
+     * start where they are - the mistake that can be put right with a command, where
+     * allocating a settled player cannot be undone.
+     *
+     * <p>The value is read whether it is quoted or not. SnakeYAML resolves an unquoted
+     * ISO-8601 value as a timestamp and hands back a {@link Date}, which is exactly what an
+     * operator editing the key by hand writes. It is written back as a string, which the
+     * dumper quotes because it would otherwise resolve as a timestamp, so it reads back
+     * the same either way.
+     *
+     * @param earliestAssigned the earliest {@code assigned-date} in the file, or null
+     * @return whether a time was recorded, so the file has to be written
+     */
+    private boolean settleInstalledAt(YamlConfiguration loaded, Instant earliestAssigned) {
+        Object stored = loaded.get(INSTALLED_AT_KEY);
+        Instant parsed = toInstant(stored);
+        if (parsed != null) {
+            synchronized (yamlLock) {
+                installedAt = parsed;
+            }
+            return false;
+        }
+        Instant recorded = earliestAssigned != null ? earliestAssigned : Instant.now();
+        if (stored != null) {
+            plugin.getLogger().warning("data.yml has an " + INSTALLED_AT_KEY + " of '" + stored
+                    + "', which is not an ISO-8601 instant; replacing it with " + recorded + ".");
+        } else if (earliestAssigned != null) {
+            plugin.getLogger().info("data.yml was written by an earlier version and has no "
+                    + INSTALLED_AT_KEY + "; recording its earliest assignment, " + recorded
+                    + ". Players who first joined before it are not allocated a plot.");
+        }
+        synchronized (yamlLock) {
+            installedAt = recorded;
+            loaded.set(INSTALLED_AT_KEY, recorded.toString());
+        }
+        return true;
+    }
+
+    /**
+     * A YAML value as an instant: a timestamp SnakeYAML has already resolved, or a string
+     * holding an ISO-8601 instant. Null for anything else, including null.
+     */
+    private static Instant toInstant(Object value) {
+        if (value instanceof Date date) {
+            return date.toInstant();
+        }
+        return value instanceof String text ? parseInstant(text) : null;
+    }
+
+    /** An ISO-8601 instant, or null for anything else, including null. */
+    private static Instant parseInstant(String text) {
+        if (text == null || text.isBlank()) {
+            return null;
+        }
+        try {
+            return Instant.parse(text.strip());
+        } catch (DateTimeParseException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Replaces the in-memory records with what was read from disk.
+     *
+     * @return the earliest {@code assigned-date} among the records, or null if none has one
+     */
+    private Instant populate(YamlConfiguration loaded) {
         spawnCache.clear();
         nameIndex.clear();
 
         int highestAssigned = -1;
+        Instant earliestAssigned = null;
         ConfigurationSection playersSec = loaded.getConfigurationSection("players");
         if (playersSec != null) {
             for (String key : playersSec.getKeys(false)) {
@@ -238,6 +336,11 @@ public class YamlDataStorage implements DataStorage {
                     nameIndex.put(record.playerName().toLowerCase(Locale.ROOT), uuid);
                 }
                 highestAssigned = Math.max(highestAssigned, record.index());
+                Instant assigned = toInstant(sec.get("assigned-date"));
+                if (assigned != null
+                        && (earliestAssigned == null || assigned.isBefore(earliestAssigned))) {
+                    earliestAssigned = assigned;
+                }
             }
         }
 
@@ -259,6 +362,7 @@ public class YamlDataStorage implements DataStorage {
             highWater = restored;
             this.yaml = loaded;
         }
+        return earliestAssigned;
     }
 
     /**
@@ -286,6 +390,7 @@ public class YamlDataStorage implements DataStorage {
         failure = new StorageFailure(error, null);
         synchronized (yamlLock) {
             this.yaml = null;
+            installedAt = null;
             spawnCache.clear();
             nameIndex.clear();
             currentIndex.set(0);
@@ -611,6 +716,11 @@ public class YamlDataStorage implements DataStorage {
             return null;
         }
         return nameIndex.get(playerName.toLowerCase(Locale.ROOT));
+    }
+
+    @Override
+    public Instant getInstalledAt() {
+        return installedAt;
     }
 
     @Override

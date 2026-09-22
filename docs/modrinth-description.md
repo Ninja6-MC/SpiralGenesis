@@ -10,6 +10,10 @@ The plugin finds them somewhere sensible to stand: not in an ocean, not in a lav
 at the bottom of a ravine or on the edge of a cliff. It happens on first join, off the main
 thread, and the player keeps that spot as their respawn point for good.
 
+Installing it on a server people already play on moves none of them: a player who was there
+before the plugin keeps their position, bed and respawn anchor, and gets a plot only when an
+operator gives them one with `/sgen reassign`.
+
 ---
 
 ## Quick start

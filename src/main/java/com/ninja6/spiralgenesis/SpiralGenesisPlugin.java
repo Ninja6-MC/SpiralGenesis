@@ -26,6 +26,7 @@ import org.bukkit.entity.Player;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.time.Instant;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
@@ -146,6 +147,12 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * storage under the others.
      */
     private final Set<UUID> repairing = ConcurrentHashMap.newKeySet();
+
+    /**
+     * Players already reported as having played here before the plugin was installed, so
+     * the line is logged once per player rather than on every join and action.
+     */
+    private final Set<UUID> preInstallReported = ConcurrentHashMap.newKeySet();
 
     @Override
     public void onEnable() {
@@ -384,6 +391,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return;
         }
 
+        // After the hold rather than before it: the install time is read from storage, which
+        // a failed load leaves unreadable, and a player held for that is decided here once a
+        // reload resumes them. Before takeAllocation, so a skipped player reserves nothing.
+        if (skipIfPreInstall(player)) {
+            if (justBound) {
+                resumeHeldIfAvailable();
+            }
+            return;
+        }
+
         boolean owned = takeAllocation(uuid);
         if (justBound) {
             // After takeAllocation, which drops this player from the hold, so the players
@@ -511,6 +528,72 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             applied.complete(null);
             throw t;
         }
+    }
+
+    /**
+     * Whether a player played on this server before SpiralGenesis was installed.
+     *
+     * <p>{@code hasPlayedBefore()} alone cannot say so: it is as true for a player who first
+     * joined after the install and left before their plot was placed - the gate never
+     * released them, allocation was held, or the write was refused - and treating them as
+     * settled would leave them without a plot for good. So the first-played time the server
+     * keeps for them is compared against the time the plugin first recorded anything, which
+     * storage keeps for exactly this.
+     *
+     * <p>A player whose data file the server has read but who has no first-played time at
+     * all counts as having played before. The server keeps that time beside its own data in
+     * the player file, and reads the first-played and last-played times from it together; a
+     * file with neither was written by a server that has never run Bukkit, so the player
+     * predates any plugin on it. Checked against the CraftPlayer bytecode of paper 1.20.4:
+     * the last-played time then stays at the 0 it is constructed with, while the first-played
+     * time reads as the current join.
+     *
+     * <p>False while the install time is unknown, which is while storage is failed. That is
+     * never taken as leave to allocate: {@link #allocationUnavailable} reports an unknown
+     * install time as unreadable storage, so every caller that could allocate holds the
+     * player first and decides once a reload reads the file.
+     */
+    public boolean isPreInstallPlayer(Player player) {
+        if (!player.hasPlayedBefore()) {
+            return false;
+        }
+        Instant installed = dataStorage.getInstalledAt();
+        if (installed == null) {
+            return false;
+        }
+        long firstPlayed = player.getFirstPlayed();
+        if (player.getLastPlayed() <= 0L || firstPlayed <= 0L) {
+            return true;
+        }
+        return firstPlayed < installed.toEpochMilli();
+    }
+
+    /**
+     * Leaves a player who played here before SpiralGenesis was installed where they are, if
+     * this is one.
+     *
+     * <p>Nothing is allocated, reserved, set or claimed: their bed, anchor and position are
+     * theirs from before the plugin existed. Dropped from the gate, including any hold, so
+     * nothing retries them on each action. A player with a record is never skipped, however
+     * long they have played here, so a plot owed to them is still placed.
+     *
+     * <p>Logged at info, once per player per server run, with the command that places them.
+     *
+     * @return true if the player was skipped and the caller must not allocate them
+     */
+    public boolean skipIfPreInstall(Player player) {
+        UUID uuid = player.getUniqueId();
+        if (dataStorage.hasSpawn(uuid) || !isPreInstallPlayer(player)) {
+            return false;
+        }
+        forgetFromGate(uuid);
+        if (preInstallReported.add(uuid)) {
+            getLogger().info(player.getName() + " played on this server before SpiralGenesis"
+                    + " was installed (" + dataStorage.getInstalledAt() + "), so no plot is"
+                    + " allocated and they are not moved. Run /sgen reassign "
+                    + player.getName() + " to give them one.");
+        }
+        return true;
     }
 
     /**
@@ -1119,7 +1202,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the world is the caller's business.
      */
     AllocationUnavailable allocationUnavailable() {
-        if (dataStorage != null && dataStorage.isFailed()) {
+        // An unknown install time is storage that cannot be read yet, never a reason to
+        // allocate: without it a player from before the install looks like a new one.
+        if (dataStorage != null
+                && (dataStorage.isFailed() || dataStorage.getInstalledAt() == null)) {
             return AllocationUnavailable.STORAGE_FAILED;
         }
         if (spawnManager == null) {

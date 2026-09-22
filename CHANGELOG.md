@@ -222,6 +222,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   saved with the record as an optional `placement-owed` key in `data.yml`, so it survives
   a restart, and is removed once the player is placed; a file written before the key
   existed loads with nobody owed a placement.
+- **Installing on a server people already play on no longer moves them.** Every player
+  without a record was treated as new, so each one who had played there before the
+  install was allocated a plot on their next visit: their bed or respawn anchor was
+  overwritten and they were teleported away from their base, with the first of them landing
+  on whatever already stood around the spiral origin. A player who played on the server
+  before the plugin was installed is now left alone: no index is reserved, nothing is set,
+  moved or claimed, and they are not gated. The console says so once per player per run,
+  and `/sgen reassign` gives them a plot when an operator wants them to have one;
+  `/sgen allocate` refuses them and says the same. "Before" is the server's first-played
+  time against a new `installed-at` key in `data.yml`, not whether they have played
+  before, so a player who first joined after the install and left before being placed is
+  still allocated. A fresh install records the current time. A file written by an earlier
+  version records its earliest `assigned-date`, since that version allocated the first
+  player to join on their first action, or the current time if it assigns nobody. Every
+  record write rewrites its `assigned-date`, so that can be later than the real install,
+  which leans toward leaving players alone. A player
+  with a record is never skipped, so one owed a placement is still placed.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

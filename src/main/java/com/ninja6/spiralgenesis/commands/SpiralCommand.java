@@ -250,6 +250,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return;
         }
 
+        // Refused here as well as in allocation, so the operator is told why rather than
+        // seeing "Allocating" and nothing after it. This command is wired to login hooks, so
+        // it must not be the way round the skip; reassign is the deliberate one.
+        if (plugin.isPreInstallPlayer(target)) {
+            sender.sendMessage(ChatColor.YELLOW + target.getName() + " played on this server"
+                    + " before SpiralGenesis was installed, so they are not allocated a plot."
+                    + " Use /sgen reassign " + target.getName() + " to give them one.");
+            return;
+        }
+
         sender.sendMessage(ChatColor.YELLOW + "Allocating " + target.getName() + "...");
         plugin.getLogger().info(sender.getName() + " released " + target.getName()
                 + " from the allocation gate manually.");

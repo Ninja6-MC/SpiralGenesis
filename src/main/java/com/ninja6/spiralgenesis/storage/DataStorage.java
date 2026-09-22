@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.storage;
 
 import org.bukkit.Location;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -141,6 +142,25 @@ public interface DataStorage {
      * @return the UUID, or {@code null} if that name has no recorded assignment
      */
     UUID findByName(String playerName);
+
+    /**
+     * When SpiralGenesis first recorded anything on this server, or {@code null} while
+     * storage is failed and nothing recorded can be read.
+     *
+     * <p>A player who played here before this instant has no plot because the plugin did not
+     * exist yet, not because allocation missed them, and is left where they are.
+     *
+     * <p>Set once, by the first load that finds no value, and kept from then on. For a file
+     * written before the value existed it is the earliest assignment the file records, the
+     * nearest the plugin can get to its own install from what it wrote, since an older
+     * version allocated the first player to join on their first action. Every write of a
+     * record rewrites its assignment date, so this can be later than the real install,
+     * which leans toward leaving players alone.
+     *
+     * <p>Null is never a reason to allocate: callers treat it as storage that cannot be
+     * read, and hold.
+     */
+    Instant getInstalledAt();
 
     /**
      * Reads the next index that would be handed out, without consuming it.
