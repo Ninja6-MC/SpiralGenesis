@@ -28,10 +28,12 @@ import java.util.logging.Logger;
  *       branch on failure for anything except what it prints. The player keeps their plot,
  *       their teleport and their respawn point whatever a protection plugin does.</li>
  *   <li><b>Nothing is deleted unless a caller asked in as many words.</b> The provider's
- *       release call is reachable from exactly one place - {@link #handOffStaleClaim} with
- *       {@code releaseOld} set - and every default path in the plugin passes {@code false}.
- *       That is what makes "the default never deletes anything" a property of one method
- *       rather than a promise repeated at five call sites.</li>
+ *       release call is reachable only through {@link #releaseQuietly}, which has two
+ *       callers: {@link #handOffStaleClaim} with {@code releaseOld} set, and the
+ *       {@code /sgen release-all confirm} job. Every default path in the plugin passes
+ *       {@code false} to the first and never reaches the second. That is what makes "the
+ *       default never deletes anything" a property of one method rather than a promise
+ *       repeated at five call sites.</li>
  * </ul>
  *
  * <h2>Threading</h2>
@@ -234,18 +236,7 @@ public final class SpawnProtector {
                     + (hint == null || hint.isEmpty() ? "" : " " + hint);
         }
 
-        ReleaseResult result;
-        try {
-            result = current().release(oldSpawn, size(), owner);
-            if (result == null) {
-                result = ReleaseResult.of(ReleaseOutcome.REFUSED, "the provider returned no result.");
-            }
-        } catch (Throwable t) {
-            logger.log(Level.WARNING, "The protection provider threw while releasing the old spawn "
-                    + "claim for " + owner + ". It is still standing.", t);
-            result = ReleaseResult.of(ReleaseOutcome.REFUSED,
-                    "the provider threw " + t.getClass().getSimpleName());
-        }
+        ReleaseResult result = releaseQuietly(owner, oldSpawn);
 
         String where = describe(oldSpawn);
         return switch (result.outcome()) {
@@ -261,6 +252,38 @@ public final class SpawnProtector {
             case PROVIDER_UNAVAILABLE -> "The protection provider went away before the old spawn "
                     + "claim at " + where + " could be released; it is still standing.";
         };
+    }
+
+    /**
+     * Gives back the square this plugin would have claimed around {@code spawn}, and says
+     * nothing about it.
+     *
+     * <p>The one call into the provider's release. The provider decides whether what is
+     * there is recognisably the square it would have created for exactly this owner and the
+     * configured size, and answers {@link ReleaseOutcome#NOT_OURS} otherwise, so a caller
+     * never has to make that judgement itself. Shared by {@code /sgen reassign <player>
+     * release} and {@code /sgen release-all confirm} so the two cannot come to disagree about
+     * what counts as ours.
+     *
+     * @param owner the player the square was claimed for
+     * @param spawn the spawn point the square was centred on
+     * @return what the provider did; never {@code null}, and never a thrown exception
+     */
+    public ReleaseResult releaseQuietly(UUID owner, Location spawn) {
+        if (owner == null || spawn == null || spawn.getWorld() == null) {
+            return ReleaseResult.of(ReleaseOutcome.REFUSED, "the spawn point could not be resolved.");
+        }
+        try {
+            ReleaseResult result = current().release(spawn, size(), owner);
+            return result == null
+                    ? ReleaseResult.of(ReleaseOutcome.REFUSED, "the provider returned no result.")
+                    : result;
+        } catch (Throwable t) {
+            logger.log(Level.WARNING, "The protection provider threw while releasing the spawn "
+                    + "claim for " + owner + ". It is still standing.", t);
+            return ReleaseResult.of(ReleaseOutcome.REFUSED,
+                    "the provider threw " + t.getClass().getSimpleName());
+        }
     }
 
     /** A location as an operator reads it: block coordinates and the world's name. */

@@ -65,6 +65,11 @@ public final class RecordingProvider implements ProtectionProvider {
         return this;
     }
 
+    public RecordingProvider releasing(Function<Releasing, ReleaseResult> function) {
+        this.releaseAnswer = function;
+        return this;
+    }
+
     public RecordingProvider onReserve(Runnable hook) {
         this.onReserve = hook;
         return this;

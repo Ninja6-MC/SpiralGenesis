@@ -10,6 +10,9 @@ import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
+import com.ninja6.spiralgenesis.protection.ReleaseOutcome;
+import com.ninja6.spiralgenesis.protection.ReleaseResult;
+import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -130,14 +133,28 @@ class SpiralCommandProtectionTest {
         public CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
             return getSpawnManager().findSafeSpawnInCell(index);
         }
+
+        /** Drives the release inline, since MockBukkit has no global region scheduler. */
+        @Override
+        void driveClaimRelease(SpawnClaimRelease job, Runnable onFinish) {
+            while (!job.runBatch()) {
+                // One iteration stands in for one tick.
+            }
+            onFinish.run();
+        }
     }
 
     private CommandPlugin load() {
+        return load("ADMIN_CLAIM");
+    }
+
+    private CommandPlugin load(String claimAs) {
         CommandPlugin plugin = MockBukkit.loadWith(CommandPlugin.class,
                 getClass().getResourceAsStream("/plugin.yml"));
         File file = new File(plugin.getDataFolder(), "config.yml");
         YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
         yaml.set("allocation.action-timeout-seconds", 0);
+        yaml.set("protection.claim-as", claimAs);
         try {
             yaml.save(file);
         } catch (IOException e) {
@@ -334,5 +351,108 @@ class SpiralCommandProtectionTest {
         assertTrue(provider.releases.isEmpty(),
                 "revalidation leaves the old claim standing, like every other path");
         assertEquals(44, (int) plugin.getDataStorage().getRecord(player.getUniqueId()).x());
+    }
+
+    /** Two players with stored plots, one of them offline, as an uninstall finds them. */
+    private List<java.util.UUID> storeTwoPlots(CommandPlugin plugin) {
+        InlinePlayerMock online = join("Bob");
+        java.util.UUID offline = java.util.UUID.randomUUID();
+        plugin.getDataStorage().setSpawn(online.getUniqueId(), new Location(world, 10, 64, 10),
+                1, 0, 0, "Bob", "JAVA");
+        plugin.getDataStorage().setSpawn(offline, new Location(world, 600, 64, 600),
+                2, 1, 0, "Carol", "JAVA");
+        return List.of(online.getUniqueId(), offline);
+    }
+
+    @Test
+    @DisplayName("release-all without the confirm token says what it would do and deletes nothing")
+    void releaseAllWithoutConfirmDeletesNothing() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all").assertSucceeded();
+        List<String> said = drain();
+
+        assertTrue(provider.releases.isEmpty(), "nothing may go without the confirm token");
+        assertTrue(saidSomethingContaining(said, "/sgen release-all confirm"), said.toString());
+        assertTrue(saidSomethingContaining(said, "2 stored players"), said.toString());
+    }
+
+    @Test
+    @DisplayName("release-all confirm releases each current plot's claim and keeps every record")
+    void releaseAllConfirmReleasesEveryCurrentPlot() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider().releasing(r ->
+                r.centre().getBlockX() == 600
+                        ? ReleaseResult.of(ReleaseOutcome.NOT_OURS, "it has been resized.")
+                        : ReleaseResult.of(ReleaseOutcome.RELEASED));
+        plugin.provider = provider;
+        List<java.util.UUID> owners = storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all", "CONFIRM").assertSucceeded();
+        List<String> said = drain();
+
+        assertEquals(2, provider.releases.size(), provider.releases.toString());
+        assertTrue(provider.releases.stream().anyMatch(r -> r.owner().equals(owners.get(1))
+                && r.centre().getBlockX() == 600), "an offline player's claim is reached too");
+        assertTrue(provider.reservations.isEmpty(), "releasing must never claim anything");
+        assertTrue(saidSomethingContaining(said, "1 released, 1 not ours"), said.toString());
+        for (java.util.UUID owner : owners) {
+            assertNotNull(plugin.getDataStorage().getRecord(owner),
+                    "every spawn record is kept");
+        }
+        assertFalse(plugin.isClaimReleaseRunning(), "the job must clear itself when done");
+    }
+
+    @Test
+    @DisplayName("release-all is refused under PLAYER_CLAIM")
+    void releaseAllIsRefusedUnderPlayerClaim() {
+        CommandPlugin plugin = load("PLAYER_CLAIM");
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all", "confirm").assertSucceeded();
+        List<String> said = drain();
+
+        assertTrue(provider.releases.isEmpty(), said.toString());
+        assertTrue(saidSomethingContaining(said, "PLAYER_CLAIM"), said.toString());
+    }
+
+    @Test
+    @DisplayName("release-all is refused when no protection plugin is available, as on Folia")
+    void releaseAllIsRefusedWithoutAProvider() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider().available(false);
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all", "confirm").assertSucceeded();
+        List<String> said = drain();
+
+        assertTrue(provider.releases.isEmpty(), said.toString());
+        assertTrue(saidSomethingContaining(said, "not active"), said.toString());
+        assertFalse(plugin.isClaimReleaseRunning());
+    }
+
+    @Test
+    @DisplayName("release-all refuses a mistyped token and completes the right one")
+    void releaseAllRefusesAMistypedToken() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all", "confrim").assertSucceeded();
+        List<String> said = drain();
+
+        assertTrue(provider.releases.isEmpty(), said.toString());
+        assertTrue(saidSomethingContaining(said, "Usage"), said.toString());
+        assertEquals(List.of("confirm"), plugin.getCommand("sgen").tabComplete(
+                server.getConsoleSender(), "sgen", new String[] {"release-all", "con"}));
+        assertTrue(plugin.getCommand("sgen").tabComplete(server.getConsoleSender(), "sgen",
+                new String[] {"rel"}).contains("release-all"));
     }
 }

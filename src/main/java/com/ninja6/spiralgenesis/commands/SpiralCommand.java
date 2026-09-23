@@ -4,8 +4,10 @@ import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.config.ClaimOwnership;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
+import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
@@ -61,9 +63,18 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
      */
     private static final String RELEASE_FLAG = "release";
 
+    /**
+     * The word {@code release-all} needs before it deletes anything.
+     *
+     * <p>A trailing literal token, the same shape as {@link #RELEASE_FLAG} and for the same
+     * reason. Without it the command only says what it would do, so a subcommand typed or
+     * tab-completed by accident costs nothing.
+     */
+    private static final String CONFIRM_TOKEN = "confirm";
+
     /** Subcommands that depend on stored records, and are refused while storage is failed. */
     private static final Set<String> STORAGE_SUBCOMMANDS =
-            Set.of("setspawn", "allocate", "reassign", "protect", "tp", "info");
+            Set.of("setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info");
 
     private final SpiralGenesisPlugin plugin;
 
@@ -99,6 +110,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             case "allocate" -> handleAllocate(sender, args);
             case "reassign" -> handleReassign(sender, args);
             case "protect" -> handleProtect(sender, args);
+            case "release-all" -> handleReleaseAll(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
             case "simulate" -> handleSimulate(sender, args);
@@ -479,6 +491,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     + "running; wait for it to report before starting another.");
             return;
         }
+        if (plugin.isClaimReleaseRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn claim release is running; wait for "
+                    + "it to report before claiming anything.");
+            return;
+        }
 
         SpawnProtectionBackfill job = plugin.startProtectionBackfill(summary ->
                 reply(sender, () -> sender.sendMessage(ChatColor.GREEN + summary)));
@@ -495,6 +512,78 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.YELLOW + "Claiming spawn squares for " + job.total()
                     + " stored spawns, a few per tick. Spawns that are already claimed are "
                     + "skipped, so running this again is safe.");
+        }
+    }
+
+    /**
+     * Releases the spawn claim around every player's current plot, for uninstalling.
+     *
+     * <p>Every release goes through the same provider call as {@code reassign <player>
+     * release}, which deletes a claim only when it is exactly the square this plugin would
+     * create there for that player, so a claim anybody has resized or made by hand is left
+     * standing and listed in the console. No spawn record is changed.
+     *
+     * <p>Refused under {@code protection.claim-as: PLAYER_CLAIM}: there the spawn claim is
+     * the player's own, a claim they made themselves over the same square cannot be told
+     * apart from it, and they can abandon it themselves. Gated on the existing
+     * {@code spiralgenesis.admin}, like every other subcommand.
+     */
+    private void handleReleaseAll(CommandSender sender, String[] args) {
+        if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase(CONFIRM_TOKEN))) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen release-all [" + CONFIRM_TOKEN + "]");
+            return;
+        }
+
+        SpawnProtector protector = plugin.getSpawnProtector();
+        if (!protector.isActive()) {
+            // Folia lands here too: GriefPrevention does not run there, so the provider is
+            // the no-op and there is no claim this plugin made to give back.
+            sender.sendMessage(ChatColor.RED + "Spawn protection is not active, so there are "
+                    + "no spawn claims to release. GriefPrevention has to be installed and "
+                    + "running, with protection.enabled set; it does not run on Folia.");
+            return;
+        }
+        if (plugin.getPluginConfig().getClaimOwnership() == ClaimOwnership.PLAYER_CLAIM) {
+            sender.sendMessage(ChatColor.RED + "protection.claim-as is PLAYER_CLAIM, so each "
+                    + "spawn claim belongs to its player and cannot be told apart from a claim "
+                    + "they made themselves over the same square. Nothing was released. Players "
+                    + "can remove their own with /abandonclaim.");
+            return;
+        }
+        if (plugin.isClaimReleaseRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn claim release is already running; "
+                    + "wait for it to report before starting another.");
+            return;
+        }
+        if (plugin.isProtectionBackfillRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn protection backfill is running; "
+                    + "wait for it to report before releasing anything.");
+            return;
+        }
+
+        if (args.length == 1) {
+            int stored = plugin.getDataStorage().getAllRecords().size();
+            sender.sendMessage(ChatColor.YELLOW + "This releases the spawn claim around the "
+                    + "current plot of each of " + stored + " stored players, where the claim is "
+                    + "still exactly the " + protector.size() + "x" + protector.size()
+                    + " square SpiralGenesis creates. Resized or hand-made claims, and claims "
+                    + "around plots players have left, are not touched. Spawn records are kept. "
+                    + "Run /sgen release-all " + CONFIRM_TOKEN + " to go ahead.");
+            return;
+        }
+
+        plugin.getLogger().info(sender.getName() + " started releasing every stored spawn claim.");
+        SpawnClaimRelease job = plugin.startClaimRelease(summary ->
+                reply(sender, () -> sender.sendMessage(ChatColor.GREEN + summary)));
+        if (job == null) {
+            sender.sendMessage(ChatColor.YELLOW + "The spawn claim release did not start; "
+                    + "another may already be running, or scheduling was refused. Check the "
+                    + "console.");
+            return;
+        }
+        if (job.total() > 0) {
+            sender.sendMessage(ChatColor.YELLOW + "Releasing spawn claims for " + job.total()
+                    + " stored spawns, a few per tick.");
         }
     }
 
@@ -789,6 +878,8 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 + "' also removes the claim around their old spawn; without it the old claim is kept.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen protect" + ChatColor.WHITE
                 + " - Claims the spawn square for players allocated before protection was enabled.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen release-all [" + CONFIRM_TOKEN + "]" + ChatColor.WHITE
+                + " - Releases the spawn claim around every player's current plot, for uninstalling.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen simulate <count>" + ChatColor.WHITE + " - Measures allocation against live terrain.");
@@ -802,7 +893,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "tp", "info", "simulate", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {
@@ -828,6 +919,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         if (args.length == 3 && "reassign".equals(args[0].toLowerCase())
                 && RELEASE_FLAG.startsWith(args[2].toLowerCase())) {
             return List.of(RELEASE_FLAG);
+        }
+
+        if (args.length == 2 && "release-all".equals(args[0].toLowerCase())
+                && CONFIRM_TOKEN.startsWith(args[1].toLowerCase())) {
+            return List.of(CONFIRM_TOKEN);
         }
 
         return Collections.emptyList();
