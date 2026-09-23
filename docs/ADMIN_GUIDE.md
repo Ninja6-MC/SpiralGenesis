@@ -942,8 +942,12 @@ does not move anyone already allocated.
    and `origin.z`. `origin.world` must name a loaded world exactly; if it does not,
    nothing is allocated until it does. If you would rather stand on the spot and run
    `/sgen setcenter`, turn the whitelist on before the first start instead, set the
-   centre, then turn it off. Whitelist existing players if they should keep playing
-   meanwhile; they are left alone either way.
+   centre, then turn it off. `setcenter` sets only `origin.x` and `origin.z`, from where
+   you stand or from the coordinates given; it never changes `origin.world`. If the
+   spiral is not in the world named `world`, set `origin.world` in `config.yml` before
+   the first start, or edit it and run `/sgen reload` before running `setcenter`.
+   Whitelist existing players if they should keep playing meanwhile; they are left alone
+   either way.
 2. **Put the origin away from existing builds and claims.** Allocation checks terrain
    only. It does not look for builds, claims or anybody's base, so a spot on top of
    someone's house is accepted if the ground passes the rules in section 3, and the new

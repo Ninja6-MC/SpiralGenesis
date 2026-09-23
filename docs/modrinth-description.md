@@ -129,7 +129,7 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 
 | Command | What it does |
 | :--- | :--- |
-| `/sgen setcenter` | Set the centre of the spiral to where you're standing. |
+| `/sgen setcenter` | Set the centre's X and Z to where you're standing. The world is always `origin.world`. |
 | `/sgen setcenter <x> <z>` | Set the centre to explicit coordinates. |
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
