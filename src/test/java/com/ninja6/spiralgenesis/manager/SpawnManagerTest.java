@@ -1346,7 +1346,7 @@ class SpawnManagerTest {
         AtomicInteger indices = new AtomicInteger();
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the spiral index must not advance");
         assertEquals(1, res.gridU());
@@ -1361,6 +1361,116 @@ class SpawnManagerTest {
                 "repair left the owner's cell: " + res.location().getZ());
     }
 
+    /** Cell {@code index} of the spiral at the fixture's origin and cell size. */
+    private static SpiralCell originCell(int index) {
+        return new SpiralCentre(0, 0, 0, CELL).cell(index);
+    }
+
+    @Test
+    @DisplayName("A repair searches the cell it is given, whatever origin is configured now")
+    void inCellRepairIgnoresTheConfiguredOrigin() throws Exception {
+        PluginConfig config = config(0, 8);
+        config.setOriginX(-1000);
+        SpawnManager manager = managerWith(config);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(CELL + 0.5, res.location().getX(), 1e-9,
+                "the repair must stay on the record's own centre, not index 1 of the moved one");
+        assertEquals(0, res.centre());
+    }
+
+    @Test
+    @DisplayName("A repair searches only as far as its own cell size allows, not the configured one")
+    void inCellRepairUsesTheCellsOwnSize() throws Exception {
+        // A 17-block cell fits no ring at stride 16, so its centre is its only candidate.
+        // The configured 65 fits two, and those candidates are in the next cells over.
+        SpiralCell small = new SpiralCentre(3, 0, 0, 17).cell(1);
+        world.getBlockAt(small.centreX(), MOCK_SURFACE_Y, small.centreZ()).setType(Material.LAVA);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(small).get(10, TimeUnit.SECONDS),
+                "a candidate outside the 17-block cell must never be probed");
+    }
+
+    @Test
+    @DisplayName("A scan keeps the centre of its first cell when the origin moves under it")
+    void scanPinsItsCentreAtTheFirstCell() throws Exception {
+        // Nothing passes, so the scan walks its whole budget and falls back.
+        PluginConfig config = config(100, 4);
+        SpawnManager manager = managerWith(config);
+        List<int[]> asked = new CopyOnWriteArrayList<>();
+        AtomicInteger indices = new AtomicInteger();
+        CellReserver moving = (originX, originZ, cellSize) -> {
+            asked.add(new int[]{originX, originZ, cellSize});
+            // A setcenter landing while the scan is running.
+            config.setOriginX(5000);
+            return new SpiralCentre(0, originX, originZ, cellSize).cell(indices.getAndIncrement());
+        };
+
+        SpawnManager.LocationResult res = assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(moving).get(10, TimeUnit.SECONDS));
+
+        assertTrue(res.fallback());
+        assertEquals(4, asked.size());
+        for (int[] geometry : asked) {
+            assertEquals(0, geometry[0], "every cell of one scan is on the centre it started on");
+            assertEquals(CELL, geometry[2]);
+        }
+    }
+
+    @Test
+    @DisplayName("Moving the centre after a border exhaustion lets the next join scan again")
+    void movingTheCentreClearsAnExhaustion() {
+        borderAround(100_000, 100_000, 16);
+        int budget = 4;
+        PluginConfig config = config(0, budget);
+        SpawnManager manager = managerWith(config);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.BorderExhausted first = exhaustion(manager, indices);
+        assertTrue(first.message().contains("refused")
+                        && first.message().contains("origin.x, origin.z or cell-size is changed"),
+                "the line says a new origin or cell size also clears it: " + first.message());
+        exhaustion(manager, indices);
+        assertEquals(budget, indices.get(), "refused at the exhausted centre");
+
+        config.setOriginX(1000);
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(), "a moved centre is a spiral nobody has scanned");
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(), "and once it has, it is refused in turn");
+    }
+
+    @Test
+    @DisplayName("A scan that exhausts after the centre moved records the spiral it walked")
+    void exhaustionIsRecordedAgainstTheSpiralTheScanWalked() {
+        borderAround(100_000, 100_000, 16);
+        int budget = 4;
+        PluginConfig config = config(0, budget);
+        SpawnManager manager = managerWith(config);
+        AtomicInteger indices = new AtomicInteger();
+        CellReserver moving = (originX, originZ, cellSize) -> {
+            config.setOriginX(1000);
+            return new SpiralCentre(0, originX, originZ, cellSize).cell(indices.getAndIncrement());
+        };
+
+        SpawnManager.BorderExhausted walked = assertInstanceOf(
+                SpawnManager.BorderExhausted.class, manager.allocateNextSafeSpawn(moving).join());
+        assertEquals(budget, indices.get());
+        assertTrue(walked.message().contains("spiral centre 0 (origin 0, 0, cell-size " + CELL
+                        + ")"), "the line names the spiral walked: " + walked.message());
+        assertTrue(walked.message().contains("the next join scans the spiral configured now"),
+                "and does not claim the moved spiral is refused: " + walked.message());
+        assertFalse(walked.message().contains("refused"), walked.message());
+
+        // The configured spiral is the moved one, which nothing has scanned.
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(),
+                "the record must not be keyed on a spiral the scan never walked");
+    }
+
     @Test
     @DisplayName("A cell where every sampled candidate fails resolves to nothing, not to a bad point")
     void inCellRepairGivesUpRatherThanReturningAnUnsafePoint() throws Exception {
@@ -1368,7 +1478,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
     }
 
@@ -1852,7 +1962,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
                 "a cell outside the border holds no usable point");
     }
 
@@ -1937,7 +2047,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
-        assertNull(manager.findSafeSpawnInCell(0).join(),
+        assertNull(manager.findSafeSpawnInCell(originCell(0)).join(),
                 "the repair must not return a point outside the border or outside the cell");
 
         borderAround(0, 0, 1000);
@@ -1959,7 +2069,7 @@ class SpawnManagerTest {
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the repair must stay in the owner's cell");
         assertTrue(world.getWorldBorder().isInside(res.location()),

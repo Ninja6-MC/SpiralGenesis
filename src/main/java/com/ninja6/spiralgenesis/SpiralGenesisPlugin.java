@@ -10,6 +10,8 @@ import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProviders;
@@ -943,15 +945,37 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         });
     }
 
-    /** Announces the repair and hands off to the in-cell search. */
+    /**
+     * Announces the repair and hands off to the in-cell search, or, for a record with no
+     * cell to search, straight to the outcome of a search that found nothing.
+     */
     private void startRepairSearch(Player player, StoredSpawn record, Location stored) {
+        String where = " at (" + stored.getBlockX() + ", " + stored.getBlockY() + ", "
+                + stored.getBlockZ() + ")";
+        SpiralCell cell = recordedCell(record);
+        if (cell == null) {
+            // A point set by hand is on no spiral, and a plot on a centre data.yml does not
+            // record has no cell anyone can rebuild, so there is nothing to search that is
+            // known to be the player's. Handled like a cell where nothing passed: record
+            // unchanged, player held at world spawn until the point is safe again or an
+            // operator sets a new one.
+            String reason = record.onSpiral()
+                    ? "plot " + record.plotLabel() + " is on spiral centre " + record.centre()
+                            + ", which data.yml does not record, so its cell cannot be found"
+                    : "point " + record.plotLabel() + " was set by /sgen setspawn and is on no"
+                            + " spiral, so there is no cell to search";
+            getLogger().warning("The spawn point of " + player.getName() + where
+                    + " is no longer safe, and " + reason + ". Set a new one with"
+                    + " /sgen setspawn or /sgen reassign.");
+            applyRepair(player, record, stored, null, null, "No replacement was searched for;");
+            return;
+        }
         getLogger().warning("Plot " + record.plotLabel() + " is no longer safe for "
-                + player.getName() + " at (" + stored.getBlockX() + ", "
-                + stored.getBlockY() + ", " + stored.getBlockZ()
-                + "); searching that cell for a replacement point.");
+                + player.getName() + where + "; searching that cell for a replacement point.");
         try {
-            searchInCell(record.index())
-                    .whenComplete((res, ex) -> applyRepair(player, record, stored, res, ex));
+            searchInCell(cell).whenComplete((res, ex) -> applyRepair(player, record, stored,
+                    res, ex, "No safe point found among the " + pluginConfig.getMaxCandidates()
+                            + " sampled candidates in plot " + record.plotLabel() + ";"));
         } catch (Throwable t) {
             // The search does real work before it returns a future - it requests the first
             // chunk - so a throw there escapes before whenComplete is attached, and would
@@ -970,8 +994,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * search hops through, so the repair path is otherwise unreachable from a test - which
      * would leave the claim that follows a revalidation move with no coverage at the level
      * it was specified.
+     *
+     * @param cell the record's own cell; see {@link #recordedCell}
      */
-    CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
+    CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
         // Read once, for the reason allocateSpawn does: repairSpawn null-checked the
         // manager several ticks ago, across a revalidation that awaits a chunk.
         SpawnManager manager = spawnManager;
@@ -979,7 +1005,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "no world is bound; origin.world names no loaded world"));
         }
-        return manager.findSafeSpawnInCell(index);
+        return manager.findSafeSpawnInCell(cell);
+    }
+
+    /**
+     * The cell a record was allocated in: its index on its own centre, at the origin and
+     * cell size recorded for that centre, never the configured ones. After
+     * {@code /sgen setcenter} or a reload with a new origin or cell size the configured
+     * geometry is a different spiral, and its cell at the same index is usually another
+     * player's. A record of a file written before centres had ids is on centre 0, which is
+     * recorded at the geometry configured when that file was first loaded.
+     *
+     * @return the cell, or {@code null} for a point set by {@code /sgen setspawn}, which is
+     *         on no spiral, or for a centre {@code data.yml} does not record
+     */
+    SpiralCell recordedCell(StoredSpawn record) {
+        if (!record.onSpiral()) {
+            return null;
+        }
+        SpiralCentre centre = dataStorage.getCentre(record.centre());
+        return centre == null ? null : centre.cell(record.index());
     }
 
     /**
@@ -1010,9 +1055,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * candidate failed leaves the record alone deliberately: {@code max-candidates} samples
      * a dozen points out of the hundreds a cell holds, so "no candidate passed" is not
      * evidence the plot is unusable, and overwriting it would lose the assignment for good.
+     *
+     * @param nothingFound the start of the line logged when {@code res} is {@code null},
+     *                     saying why there is no replacement
      */
     private void applyRepair(Player player, StoredSpawn record, Location stored,
-                             SpawnManager.LocationResult res, Throwable error) {
+                             SpawnManager.LocationResult res, Throwable error,
+                             String nothingFound) {
         UUID uuid = player.getUniqueId();
         if (error != null) {
             repairing.remove(uuid);
@@ -1030,9 +1079,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 }
                 if (res == null) {
                     World world = Bukkit.getWorld(record.worldName());
-                    getLogger().warning("No safe point found among the "
-                            + pluginConfig.getMaxCandidates() + " sampled candidates in plot "
-                            + record.plotLabel() + "; sending " + player.getName()
+                    getLogger().warning(nothingFound + " sending " + player.getName()
                             + " to world spawn. Their plot assignment is unchanged.");
                     if (player.isDead()) {
                         // Still on the death screen, so there is nothing to teleport, and on

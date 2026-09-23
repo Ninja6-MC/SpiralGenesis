@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -67,9 +68,9 @@ class RepairRespawnPointTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
             return CompletableFuture.completedFuture(new LocationResult(
-                    replacement, index, 0, 0, 63, 1, 1, false, Map.of()));
+                    replacement, cell.index(), 0, 0, 63, 1, 1, false, Map.of()));
         }
     }
 

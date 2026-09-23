@@ -8,6 +8,7 @@ import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
 import com.ninja6.spiralgenesis.protection.ReleaseOutcome;
@@ -105,8 +106,8 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(int cellIndex) {
-            index = cellIndex;
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+            index = cell.index();
             return CompletableFuture.completedFuture(result());
         }
     }
@@ -131,8 +132,8 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
-            return getSpawnManager().findSafeSpawnInCell(index);
+        public CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
+            return getSpawnManager().findSafeSpawnInCell(cell);
         }
 
         /**

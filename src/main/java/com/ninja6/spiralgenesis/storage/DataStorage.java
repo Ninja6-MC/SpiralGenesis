@@ -235,6 +235,19 @@ public interface DataStorage {
     SpiralCell reserveCell(int originX, int originZ, int cellSize);
 
     /**
+     * Claims the next free cell of {@code centre}, as {@link #reserveCell(int, int, int)}
+     * does for its geometry, without making it the active centre.
+     *
+     * <p>For the second and later cells of a scan, which stay on the spiral its first cell
+     * came from even when the configured origin or cell size has changed since: the scan
+     * must not mix two spirals, and must not turn the spiral new scans start on back to the
+     * one the operator moved away from.
+     *
+     * @throws IllegalStateException while storage is failed
+     */
+    SpiralCell reserveCell(SpiralCentre centre);
+
+    /**
      * Ends the in-flight registration of cell {@code (centre, index)}, reserved and then
      * given up on or never written, so it no longer blocks cells of other centres. Its index
      * is not handed out again.

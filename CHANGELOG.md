@@ -298,6 +298,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on another centre is not protected against later centres. With an even `cell-size`
   the in-cell search no longer reaches the first column of the neighbouring cell, so every
   candidate stays inside its own cell.
+- **Repairing a plot searches the plot's own cell.** The in-cell repair rebuilt the cell
+  from the configured `origin` and `cell-size`, so after `/sgen setcenter` or a reload
+  with a new origin or cell size it searched the cell at the same index of the new spiral,
+  often another player's, and a point set with `/sgen setspawn` had the origin cell
+  searched for it. A repair now searches the record's index on its own centre, at the
+  origin and cell size recorded for that centre, and reserves nothing. A `setspawn` point
+  that fails its re-check is not searched around: it is kept, and the player is sent to
+  world spawn with a warning. A scan also keeps the centre its first cell was on for every
+  later cell, so a `setcenter` during a scan applies from the next scan, and a scan that
+  gives up against the world border records the spiral it walked rather than the one
+  configured when it gave up, so the moved spiral is still scanned on the next join.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
