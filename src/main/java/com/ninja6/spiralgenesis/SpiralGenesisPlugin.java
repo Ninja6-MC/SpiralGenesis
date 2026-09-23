@@ -13,6 +13,8 @@ import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProviders;
+import com.ninja6.spiralgenesis.config.ClaimOwnership;
+import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.DataStorage;
@@ -122,6 +124,12 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     private final AtomicReference<SpawnProtectionBackfill> backfill = new AtomicReference<>();
 
+    /**
+     * The {@code /sgen release-all} job currently running, or {@code null}. One at a time,
+     * for the reason {@link #backfill} is.
+     */
+    private final AtomicReference<SpawnClaimRelease> claimRelease = new AtomicReference<>();
+
     /** Login plugins found at startup. Reported, and used to word the gate's timeout warning. */
     private List<String> detectedLoginPlugins = List.of();
 
@@ -219,6 +227,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // would otherwise have cleared it. A reload that left this set would come back up
         // refusing /sgen protect with "already running" and no job anywhere to finish.
         backfill.set(null);
+        claimRelease.set(null);
         if (dataStorage != null) {
             dataStorage.shutdown();
         }
@@ -1473,6 +1482,87 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     /** Whether a backfill is running right now. */
     public boolean isProtectionBackfillRunning() {
         return backfill.get() != null;
+    }
+
+    /**
+     * Starts the {@code /sgen release-all} job, if one is not already running.
+     *
+     * <p>Shaped exactly like {@link #startProtectionBackfill}: the job bounds itself per
+     * tick, and this owns only the one-at-a-time guard and the driving.
+     *
+     * @param report invoked once with the summary line when the run finishes
+     * @return the job that was started, or {@code null} if one was already running or it
+     *         could not be scheduled
+     */
+    public SpawnClaimRelease startClaimRelease(Consumer<String> report) {
+        if (claimRelease.get() != null) {
+            return null;
+        }
+        SpawnClaimRelease job = new SpawnClaimRelease(getSpawnProtector(),
+                dataStorage.getAllRecords(), line -> getLogger().info(line),
+                this::claimReleaseHaltReason);
+        if (!claimRelease.compareAndSet(null, job)) {
+            return null;
+        }
+        if (job.isFinished()) {
+            claimRelease.set(null);
+            report.accept(job.summary());
+            return job;
+        }
+        try {
+            driveClaimRelease(job, () -> {
+                claimRelease.set(null);
+                getLogger().info(job.summary());
+                report.accept(job.summary());
+            });
+        } catch (Throwable t) {
+            // Cleared for the reason startProtectionBackfill clears its guard: a job that
+            // was never scheduled must not leave every later run answering "already running".
+            claimRelease.set(null);
+            getLogger().log(Level.WARNING, "The spawn claim release could not be scheduled, "
+                    + "so nothing was released.", t);
+            report.accept("The spawn claim release could not be scheduled; see the console.");
+            return null;
+        }
+        return job;
+    }
+
+    /**
+     * Why a running {@code /sgen release-all} has to stop, or {@code null} to carry on.
+     *
+     * <p>The two refusals the command makes before starting, asked again before every
+     * entry, because {@code /sgen reload} can change either while the job runs.
+     */
+    String claimReleaseHaltReason() {
+        if (!getSpawnProtector().isActive()) {
+            return "spawn protection stopped being active";
+        }
+        if (getPluginConfig().getClaimOwnership() == ClaimOwnership.PLAYER_CLAIM) {
+            return "protection.claim-as was changed to PLAYER_CLAIM";
+        }
+        return null;
+    }
+
+    /** Whether a {@code /sgen release-all} job is running right now. */
+    public boolean isClaimReleaseRunning() {
+        return claimRelease.get() != null;
+    }
+
+    /**
+     * Runs a release job one batch per tick until it says it is finished.
+     *
+     * <p>The global region scheduler, for the reasons {@link #driveBackfill} gives: releases
+     * must happen on the main thread and the owners are mostly offline. Package-private as
+     * the same test seam. On Folia the command never gets this far, because no supported
+     * claim plugin runs there and it refuses while protection is inactive.
+     */
+    void driveClaimRelease(SpawnClaimRelease job, Runnable onFinish) {
+        getServer().getGlobalRegionScheduler().runAtFixedRate(this, task -> {
+            if (job.runBatch()) {
+                task.cancel();
+                onFinish.run();
+            }
+        }, 1L, 1L);
     }
 
     /**

@@ -135,8 +135,9 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
-| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. The only command in the plugin that deletes a claim. |
+| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. |
 | `/sgen protect` | Claim the spawn square for players allocated before spawn protection was switched on. Safe to run twice. |
+| `/sgen release-all confirm` | Release the spawn claim around every player's current plot, for uninstalling. Refused under `PLAYER_CLAIM`. See [Uninstalling](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#11-uninstalling). |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
 | `/sgen simulate <count>` | Dry-run 1-500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |

@@ -17,8 +17,9 @@ its own section, [section 10](#10-installing-on-an-existing-server).
 8. [Tuning with `/sgen simulate`](#8-tuning-with-sgen-simulate)
 9. [Sizing and world generation](#9-sizing-and-world-generation)
 10. [Installing on an existing server](#10-installing-on-an-existing-server)
-11. [Testing checklist](#11-testing-checklist)
-12. [Where the code lives](#12-where-the-code-lives)
+11. [Uninstalling](#11-uninstalling)
+12. [Testing checklist](#12-testing-checklist)
+13. [Where the code lives](#13-where-the-code-lives)
 
 ---
 
@@ -672,14 +673,15 @@ rules hold across all of them:
 * **A claim can never cost a player their plot.** The claim is asked for after the spawn
   is final and written to storage, and a provider that refuses, or breaks outright, still
   leaves the player allocated, teleported and with their respawn point set.
-* **Nothing is deleted unless you ask in as many words.** Exactly one command argument in
-  the whole plugin removes a claim.
+* **Nothing is deleted unless you ask in as many words.** Exactly two things in the
+  whole plugin remove a claim: the `release` argument on `reassign` here, and
+  `/sgen release-all confirm` for uninstalling (section 11).
 
 | Path | The new spawn | The old claim |
 | :--- | :--- | :--- |
 | First allocation | Claimed last of all - after the spawn is stored, the respawn point set and the teleport requested | There is none |
 | `/sgen reassign <player>` | Claimed | Left standing, with its coordinates and world named in the command output. See the note below on removing it |
-| `/sgen reassign <player> release` | Claimed | Released, if it is still recognisably the claim SpiralGenesis made. The only thing in the plugin that deletes a claim |
+| `/sgen reassign <player> release` | Claimed | Released, if it is still recognisably the claim SpiralGenesis made. The only path that moves a spawn and deletes a claim |
 | `/sgen setspawn <player> [x y z]` | Claimed | Left standing and reported in the command output. There is no `release` argument here |
 | Respawn revalidation repair | Claimed at the repaired point | Left standing and reported to the server log, since this path has no command output |
 | Teleport re-assert | Nothing at all. The stored spawn has not moved, so the claim already there is the right one | Unchanged |
@@ -1036,7 +1038,92 @@ the spiral in one piece.
 
 ---
 
-## 11. Testing checklist
+## 11. Uninstalling
+
+Removing the jar stops new allocations and nothing else. Two things SpiralGenesis created
+outlive it: the spawn claims in GriefPrevention, and each player's respawn point. Deal
+with the claims before you remove the jar, because the command that releases them is part
+of the plugin.
+
+### Releasing the spawn claims
+
+Under the default `protection.claim-as: ADMIN_CLAIM` every spawn claim is an
+administrative claim, and players cannot abandon one. Without help an uninstall would be
+one `/sgen reassign <player> release` per player, which also moves each of them to a new
+plot on the way. Instead, run:
+
+```
+/sgen release-all
+/sgen release-all confirm
+```
+
+The first form only says how many stored players it would cover and what it leaves alone;
+nothing is released without `confirm`. It is gated on the existing `spiralgenesis.admin`
+permission and adds no new permission node.
+
+* **It covers the claim around each player's current plot, and only that.** Every
+  release goes through the same check as `/sgen reassign <player> release` (section 6,
+  "What `release` will and will not delete"), so a claim is deleted only when it is still
+  exactly the square SpiralGenesis would create there today. Offline players are covered;
+  their plot is read from `data.yml`.
+* **It changes nothing in `data.yml`.** Every spawn record is kept, so a server that keeps
+  the plugin after all still knows where everyone lives, and `/sgen protect` can put the
+  claims back.
+* **It does not freeze the server.** It works through `data.yml` in the same bounded
+  slices per tick as `/sgen protect`, answers at once, and reports when it is done.
+* **It refuses to run when protection is not active.** That includes Folia, where
+  GriefPrevention does not run and SpiralGenesis has made no claims.
+* **It refuses to run under `PLAYER_CLAIM`.** There each spawn claim belongs to its player
+  and cannot be told apart from a claim they made themselves over the same square. Players
+  can remove their own with `/abandonclaim`.
+* **It stops if either of those changes while it runs.** Both are checked again before
+  every entry, so a `/sgen reload` that switches to `PLAYER_CLAIM` or turns protection off
+  part way ends the run; the entries it had not reached are counted as skipped.
+
+The report counts every outcome, and each claim left standing is also listed in the server
+log with its coordinates and owner:
+
+```
+Spawn claim release finished: 131 released, 4 not ours, 5 with no claim, 0 with no
+GriefPrevention, 0 in unloaded worlds, 0 failed, 0 skipped, out of 140 stored spawns.
+```
+
+"Not ours" is a claim that no longer matches, most often because its owner resized it over
+their house. "With no claim" is a plot that never had one, or whose claim was already
+removed.
+
+**What it cannot reach.** `data.yml` records each player's current spawn and nothing
+about claims, so these are left standing and have to be removed with GriefPrevention's own
+tools, such as `/deleteclaim` while standing in the claim:
+
+* claims around plots a player left through an earlier `/sgen reassign` without `release`,
+  or through `/sgen setspawn`. Their coordinates were printed when that happened;
+* every spawn claim on a `PLAYER_CLAIM` server;
+* claims made before `protection.size` or `protection.claim-as` was changed, which no
+  longer match the square the check looks for and are reported as "not ours".
+
+### Respawn points
+
+SpiralGenesis does not clear respawn points, and uninstalling cannot. A respawn point is
+stored in each player's own data file, which the plugin cannot change for a player who is
+offline. So every player keeps their plot as their respawn point until they sleep in a bed,
+set a respawn anchor, or have another point set for them. An admin can reset one with
+`/spawnpoint <player>` at the new spot, or `/spawnpoint <player> <x> <y> <z>`.
+
+Players who first joined before SpiralGenesis was installed were never given a plot
+(section 5), so their respawn points are unaffected unless an admin ran `reassign` or
+`setspawn` on them.
+
+### Removing the plugin
+
+With the claims released, stop the server, remove the jar, and start it again.
+`plugins/SpiralGenesis/`, holding `config.yml` and `data.yml`, is not read by anything else
+and can be deleted or kept. Keeping it means a later reinstall picks up the same plots and
+the same `installed-at`.
+
+---
+
+## 12. Testing checklist
 
 Worth running once on a staging server before going live:
 
@@ -1055,7 +1142,7 @@ Worth running once on a staging server before going live:
 
 ---
 
-## 12. Where the code lives
+## 13. Where the code lives
 
 All implementation is under `src/main/java/com/ninja6/spiralgenesis/`. The source is the
 authoritative reference — this guide describes behaviour, not line numbers.
@@ -1076,6 +1163,7 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | GriefPrevention claims | `protection/GriefPreventionProtectionProvider.java` | Creates and releases the spawn claim | §6 |
 | Provider selection | `protection/ProtectionProviders.java` | Picks the provider, or the no-op | §6 |
 | Protection backfill | `protection/SpawnProtectionBackfill.java` | `/sgen protect`, a bounded slice per tick | §6 |
+| Claim release | `protection/SpawnClaimRelease.java` | `/sgen release-all`, a bounded slice per tick | §11 |
 | Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
 | Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |
 

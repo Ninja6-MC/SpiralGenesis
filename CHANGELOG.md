@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`/sgen release-all confirm` releases the spawn claims, for uninstalling.** Under the
+  default `protection.claim-as: ADMIN_CLAIM` players cannot abandon their spawn claims, so
+  removing the plugin meant a `/sgen reassign <player> release` for each of them, which
+  also moved them. The new command releases the claim around every stored player's
+  current plot, online or not, through the same check `reassign ... release` uses, a few
+  per tick, and reports how many were released, not ours, unclaimed or unreachable,
+  listing each claim left standing in the console. It keeps every spawn record, is refused
+  while protection is inactive (including on Folia) and under `PLAYER_CLAIM`, stops if a
+  reload switches either mid-run, and without `confirm` only says what it would do. The
+  admin guide has a new "Uninstalling" section covering it, the claims it cannot reach,
+  and why respawn points are left as they are.
+
 ### Changed
 - **`origin.world` is matched exactly, and no other world is ever substituted for it.**
   Previously a name that matched no loaded world fell back to whichever world the server
