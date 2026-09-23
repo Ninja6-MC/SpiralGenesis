@@ -2,7 +2,8 @@
 
 This is the reference for server owners who want to know exactly how SpiralGenesis picks a
 spot, what it stores, and how to size a world for it. For installation and day-to-day use,
-start with the [README](../README.md).
+start with the [README](../README.md). Installing onto a server people already play on has
+its own section, [section 10](#10-installing-on-an-existing-server).
 
 **Contents**
 
@@ -15,8 +16,9 @@ start with the [README](../README.md).
 7. [Stored data](#7-stored-data)
 8. [Tuning with `/sgen simulate`](#8-tuning-with-sgen-simulate)
 9. [Sizing and world generation](#9-sizing-and-world-generation)
-10. [Testing checklist](#10-testing-checklist)
-11. [Where the code lives](#11-where-the-code-lives)
+10. [Installing on an existing server](#10-installing-on-an-existing-server)
+11. [Testing checklist](#11-testing-checklist)
+12. [Where the code lives](#12-where-the-code-lives)
 
 ---
 
@@ -251,7 +253,9 @@ On every path above, a player without a record who played on the server before
 SpiralGenesis was installed is left alone: no plot is allocated, no index is reserved, their
 bed or respawn anchor is kept, and they are not moved or gated. The console says so once per
 player per run, at info. `/sgen reassign <player>` gives such a player a plot when you want
-them to have one; `/sgen allocate` refuses them and says the same.
+them to have one; `/sgen allocate` refuses them and says the same. Reassigning replaces
+their respawn point with the new plot, including a bed or respawn anchor they had set, and
+`/sgen setspawn` does the same; section 10 covers installing onto a live server.
 
 "Before" is the server's first-played time for the player against `installed-at` in
 `data.yml` (see section 7), not merely whether they have joined before: a player who first
@@ -889,7 +893,8 @@ index burn, fallback use, or spawns below `min-surface-y`.
 ## 9. Sizing and world generation
 
 Allocation generates chunks while it searches, so pregenerate with a tool such as Chunky
-before opening the doors.
+before opening the doors. On a server people already play on, read section 10 first: the
+origin, and so the area to pregenerate, should be chosen around the existing builds.
 
 | Expected players | Cell size | Minimum world radius | Chunky command |
 | :--- | :--- | :--- | :--- |
@@ -906,7 +911,91 @@ Also check that your world border is larger than the radius you plan to fill.
 
 ---
 
-## 10. Testing checklist
+## 10. Installing on an existing server
+
+Nothing above changes on a server people already play on, except that the first start
+with the plugin installed matters more. It decides who counts as an existing player, and
+from that moment every new player is placed around whatever origin `config.yml` holds.
+Set things up before that start rather than after it.
+
+### What the first start does
+
+* `plugins/SpiralGenesis/config.yml` is written from the defaults only if there is no file
+  there. A `config.yml` you put in place before the first start is kept as it is, and any
+  key you leave out of it takes its default.
+* `installed-at` is recorded in `data.yml` as the time of that start (section 7). A player
+  who first joined the server before it is an existing player and is left alone (section
+  5). Anyone joining for the first time after it is a new player and is allocated a plot.
+* The default origin is `(0, 0)` in the world named `world`. On most servers that is close
+  to world spawn, which is usually where the oldest builds are.
+
+That is why the quick start's order - start the server, then run `/sgen setcenter` -
+leaves a gap on a live server. A new player who joins between the first start and
+`setcenter` is allocated plot #0 around `(0, 0)`, and keeps it: moving the centre later
+does not move anyone already allocated.
+
+### Before the first start
+
+1. **Write `config.yml` yourself, or keep new players out.** Create
+   `plugins/SpiralGenesis/config.yml` before the first start, starting from the
+   [default file](../src/main/resources/config.yml), and set `origin.world`, `origin.x`
+   and `origin.z`. `origin.world` must name a loaded world exactly; if it does not,
+   nothing is allocated until it does. If you would rather stand on the spot and run
+   `/sgen setcenter`, turn the whitelist on before the first start instead, set the
+   centre, then turn it off. Whitelist existing players if they should keep playing
+   meanwhile; they are left alone either way.
+2. **Put the origin away from existing builds and claims.** Allocation checks terrain
+   only. It does not look for builds, claims or anybody's base, so a spot on top of
+   someone's house is accepted if the ground passes the rules in section 3, and the new
+   player respawns there. Plot #0 is centred on the origin and each plot is `cell-size`
+   blocks across. The first 9 plots fill a 3 x 3 block of cells centred on the origin, the
+   first 25 a 5 x 5 block, the first 49 a 7 x 7 block, and so on outward. Skipped cells
+   use up indices too, so the spiral reaches further than the player count alone suggests.
+   Plan from the radius in section 9 and keep that whole square clear of anything you want
+   left alone.
+3. **Measure and pregenerate around the new origin.** With the origin set and the server
+   still closed, `/sgen simulate` (section 8) reports how many indices each spawn uses on
+   your terrain, which is the headroom to add. Pregenerate the area with, for example,
+   `chunky center <x> <z>` followed by `chunky radius <blocks>`. Both generate chunks that
+   do not exist yet; neither changes chunks that already do.
+4. **Choose the trigger and protection before opening.** `allocation.trigger` is
+   `FIRST_ACTION` by default, which is right behind a login plugin; `ON_JOIN` is only for
+   online-mode servers and networks that authenticate at the proxy (section 5).
+   `protection.enabled` is `false` by default. If you turn it on, read section 6 first,
+   and note that a spawn square overlapping a claim that already exists is not created:
+   the player keeps the spawn with no claim of their own. That is one more reason to keep
+   the origin away from claimed land.
+5. **Open the server.** Watch the console for the startup lines and for the first new
+   player's allocation.
+
+### What happens to the players already there
+
+* **They are left alone.** No plot is allocated, no index is reserved, their bed or
+  respawn anchor is kept, and they are not moved or gated. The console says so once per
+  player per run, at info. When one of them dies with no bed or anchor, they respawn
+  wherever the server would have sent them before the plugin was installed.
+* **New players are placed as usual**, starting at plot #0.
+* **`/sgen reassign <player>` gives an existing player a plot.** They must be online. It
+  reserves a fresh index, teleports them to the new plot and claims the spawn square if
+  protection is on. It also **replaces their respawn point with the plot, including a bed
+  or respawn anchor they had set.** Tell them before you run it; sleeping in a bed or
+  setting an anchor again afterwards takes precedence over the plot as usual.
+* **`/sgen setspawn <player>` replaces the respawn point the same way**, bed or anchor
+  included, for any player it is run on.
+* **`/sgen allocate` refuses an existing player** and names `reassign` instead, so wiring
+  it to a login plugin cannot place them by accident.
+
+### Moving the centre after opening
+
+`/sgen setcenter`, or a changed `origin` or `cell-size` followed by `/sgen reload`, takes
+effect from the next allocation. Players already allocated keep their spawns, and the
+spiral counter carries on from where it was, so the next plot is that index's cell on the
+new grid. Nothing keeps it clear of plots allocated around the old centre. Choose the
+origin and cell size before the first new player joins and leave them alone after that.
+
+---
+
+## 11. Testing checklist
 
 Worth running once on a staging server before going live:
 
@@ -925,7 +1014,7 @@ Worth running once on a staging server before going live:
 
 ---
 
-## 11. Where the code lives
+## 12. Where the code lives
 
 All implementation is under `src/main/java/com/ninja6/spiralgenesis/`. The source is the
 authoritative reference — this guide describes behaviour, not line numbers.
