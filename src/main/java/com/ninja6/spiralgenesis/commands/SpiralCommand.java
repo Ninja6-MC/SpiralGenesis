@@ -378,7 +378,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 // the main thread wherever a real provider exists - and not in the teleport
                 // callback below, which resolves on whichever thread finished the teleport
                 // and would breach the provider's threading contract.
-                plugin.getSpawnProtector().protect(target.getUniqueId(), res.location(),
+                plugin.getSpawnProtector().protectAllocated(target.getUniqueId(), res.location(),
                         "sgen reassign");
                 String staleNotice = plugin.getSpawnProtector().handOffStaleClaim(
                         target.getUniqueId(), target.getName(), oldSpawn, res.location(), release,

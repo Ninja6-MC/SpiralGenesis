@@ -87,10 +87,15 @@ allocation:
 # so their bed and first chest are covered the moment they arrive. The rest of the plot is
 # left unclaimed and is theirs to claim normally.
 protection:
-  # Off by default, and off is genuinely off: nothing is claimed, nothing is looked up, and
-  # a server with no protection plugin behaves exactly as it did before this block existed.
+  # Off by default, and off is genuinely off for claiming: nothing is claimed, and a server
+  # with no protection plugin behaves exactly as it did before this block existed.
   # Turning it on with the provider below missing is also harmless: nothing is claimed and
   # the plugin carries on as if this were false.
+  #
+  # Separately, and whatever this says, allocation keeps new spawns off existing claims
+  # wherever GriefPrevention is installed: a spot whose square of the size below would
+  # overlap any claim, whoever owns it, is not chosen. There is no such check without
+  # GriefPrevention, or on Folia.
   enabled: false
   # Which protection plugin creates the claim.
   # GRIEF_PREVENTION - the only implementation shipped today. (Default)
@@ -103,7 +108,8 @@ protection:
   provider: GRIEF_PREVENTION
   # The side of the claimed square in blocks, centred on the spawn point. 9 means four
   # blocks out in every direction from the block the player lands on. Clamped to 3-255, and
-  # a value outside that range is logged at warning naming what was used instead.
+  # a value outside that range is logged at warning naming what was used instead. It is
+  # also the square allocation keeps clear of existing claims, with enabled on or off.
   #
   # Even sizes are rounded UP to the next odd number, and a warning naming both the
   # configured value and the value actually used is logged every time the config loads. An

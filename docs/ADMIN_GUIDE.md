@@ -33,9 +33,10 @@ A player joins for the first time. SpiralGenesis:
 2. Loads that cell's chunks asynchronously and probes **candidate points inside the cell**,
    spiralling outward from its centre.
 3. Accepts the first (or best, depending on strategy) candidate that passes every terrain
-   rule in §3.
+   rule in §3 and, where GriefPrevention is installed, is clear of existing claims (section 6).
 4. If every candidate in the cell fails, claims another index and starts again — up to
-   `safety.max-scan-attempts` cells.
+   `safety.max-scan-attempts` cells. A cell whose every candidate is inside an existing
+   claim is skipped and does not count toward that limit.
 5. If all attempts are exhausted, settles on the best candidate seen anywhere during the
    scan rather than dropping the player at world spawn.
 
@@ -111,6 +112,7 @@ names `/sgen simulate` reports:
 | `PIT` | Sits more than the allowed depth below the median of surrounding terrain — ravines, canyons, sinkholes, craters. | `safety.max-pit-depth` (8) |
 | `ROUGH` | Surroundings vary more sharply than allowed — cliff edges, spikes, jagged ground. | `safety.max-roughness` (12) |
 | `NEARBY_HAZARD` | Lava or powder snow within the sampled surroundings. | — |
+| `CLAIMED` | The square around it would overlap an existing claim. Only where GriefPrevention is installed; see [existing claims](#existing-claims-and-allocation). | `protection.size` (9) |
 
 Two details worth knowing:
 
@@ -380,9 +382,12 @@ Nothing here repairs the plot. `/sgen tp` is for looking; `/sgen setspawn` and
 SpiralGenesis can claim a small square of ground around each player's spawn point, so
 their bed, their first chest and the block they land on are covered the moment they
 arrive. It is **off by default**, it needs
-[GriefPrevention](https://github.com/TechFortress/GriefPrevention) installed, and it
-changes nothing about allocation: a player gets the same plot, the same index and the same
-teleport whether the claim succeeds, fails or is never attempted.
+[GriefPrevention](https://github.com/TechFortress/GriefPrevention) installed, and turning
+it on or off changes nothing about allocation: a player gets the same plot, the same index
+and the same teleport whether the claim succeeds, fails or is never attempted. Allocation
+does keep new spawns off claims that already exist, but it does so whenever GriefPrevention
+is installed, protection on or off; see
+[existing claims and allocation](#existing-claims-and-allocation).
 
 The claim is deliberately much smaller than the plot. See
 [the claim is small on purpose](#the-claim-is-small-on-purpose) below, which is the part
@@ -400,9 +405,9 @@ protection:
 
 | Key | Default | What it does |
 | :--- | :--- | :--- |
-| `enabled` | `false` | Whether any claim is created at all. Off is genuinely off: nothing is claimed, nothing is looked up, and the server behaves exactly as it did before this block existed. |
+| `enabled` | `false` | Whether any claim is created at all. Off is genuinely off for claiming: nothing is claimed and the provider is never asked. Allocation still avoids existing GriefPrevention claims wherever GriefPrevention is installed; see [existing claims](#existing-claims-and-allocation). |
 | `provider` | `GRIEF_PREVENTION` | Which plugin creates the claim. `GRIEF_PREVENTION` is the only implementation shipped. `NONE` claims nothing, the same as `enabled: false`. An unrecognised name falls back to `NONE`, not to the default, and is logged at warning. |
-| `size` | `9` | The side of the claimed square in blocks, centred on the spawn point. `9` means four blocks out in every direction from the block the player lands on. Clamped to 3-255. |
+| `size` | `9` | The side of the claimed square in blocks, centred on the spawn point. `9` means four blocks out in every direction from the block the player lands on. Clamped to 3-255. Also the square allocation keeps clear of existing claims, with `enabled` on or off. |
 | `claim-as` | `ADMIN_CLAIM` | Whether the claim is an administrative claim the player is trusted onto, or an ordinary claim the player owns and pays for. An unrecognised name falls back to `ADMIN_CLAIM`, logged at warning. |
 
 All four are re-read by `/sgen reload`, which rebuilds the provider from scratch, so a
@@ -438,6 +443,7 @@ section, read that line on your own server.
 | Folia | INFO | `Spawn protection is configured for GriefPrevention, which does not run on Folia. Nothing will be claimed, and everything else behaves exactly as it does without this feature.` |
 | GriefPrevention present, its own startup failed | WARNING | `GriefPrevention is enabled but has not published its API, so no spawn claims will be created. This usually means its own startup failed - check the log above for its errors.` |
 | `size` below GriefPrevention's minimum | WARNING | Names both numbers; see [the minimum claim size](#the-minimum-claim-size-the-one-that-catches-people) below. The "working" line above is then deliberately not printed. |
+| GriefPrevention installed, any `enabled` | INFO | `Allocation avoids existing GriefPrevention claims: a spawn whose protection.size square would overlap one is not chosen.` Printed each time allocation binds to its world, separately from the lines above; see [existing claims](#existing-claims-and-allocation). |
 
 There is no per-player line for any of these. Every condition above is a server-wide
 setting that would otherwise produce one identical line per joining player, which is how a
@@ -448,13 +454,15 @@ log gets trained out of being read.
 **Not installed.** Nothing is claimed and nothing else changes. The provider resolves as
 absent at startup, every claim request answers "no provider" and stays silent, and
 allocation, reassign, setspawn and revalidation all behave exactly as they do with
-`enabled: false`. You can leave `protection.enabled: true` in the file on a server with no
-claim plugin; it costs one INFO line at boot and nothing else.
+`enabled: false`. There are no claims for allocation to avoid either, so it checks terrain
+only. You can leave `protection.enabled: true` in the file on a server with no claim
+plugin; it costs one INFO line at boot and nothing else.
 
 **Folia.** GriefPrevention does not run on Folia at all - it declares no `folia-supported`
 flag, so Folia refuses to load it, and no configuration on either side will make it
 appear. SpiralGenesis detects the platform, picks the no-op provider, and says so once at
-INFO rather than leaving a silence that reads like a bug. Nothing about
+INFO rather than leaving a silence that reads like a bug. Allocation does no claim check
+there either, and never tries to load GriefPrevention's classes to find out. Nothing about
 `folia-supported: true` in SpiralGenesis' own `plugin.yml` becomes dishonest by this: the
 plugin still runs on Folia in full, and the one feature that cannot work there says so
 instead of failing quietly.
@@ -599,6 +607,47 @@ too. It is `0` - unlimited - on a stock install; if you have capped it, a player
 at the cap is refused rather than quietly handed one more claim than you allowed. Admin
 claims count against nobody's cap.
 
+### Existing claims and allocation
+
+Wherever GriefPrevention is installed, allocation keeps new spawns off ground that is
+already claimed, **whether or not `protection.enabled` is on**: players claim their bases
+either way. Every claim counts, whoever owns it - a player's own claim, an administrative
+claim, and a spawn claim SpiralGenesis made earlier and left behind, for example by
+`/sgen reassign` without `release`.
+
+* **What is tested.** A candidate is rejected, as `CLAIMED`, when the `protection.size`
+  square centred on it would overlap an existing claim. That is the square a spawn claim
+  there would cover, and the same square is used with protection off: it keeps the same
+  distance from a neighbour's claim either way, and a server that turns protection on
+  later, or runs `/sgen protect`, finds the square around each new spawn free to claim
+  rather than refused. A larger `size` keeps new players further from existing claims, at
+  the cost of more rejected candidates.
+* **A claimed candidate costs no chunk.** The test reads GriefPrevention's own claim index
+  and needs no terrain, so it runs before the candidate's chunk is loaded, as the world
+  border test does. Its cost is one lookup per chunk the square touches - at most 4 at the
+  default `size: 9` - and a comparison per claim listed in those chunks. It does not grow
+  with the number of claims on the server.
+* **A wholly claimed cell is skipped.** When every candidate in a cell is inside a claim,
+  the scan moves on to the next cell and logs `Skipped plot #0,3: every candidate spawn is
+  inside an existing claim.` Like a cell skipped for overlapping another centre's plot
+  (section 7), it uses up its index but does not count toward `safety.max-scan-attempts`,
+  so a claimed town around the origin cannot spend the scan's budget and be reported as
+  the spiral outgrowing the world border. A cell where only some candidates are claimed
+  counts as usual, and a claimed candidate is never the least-bad fallback. If one claim
+  covers everything inside the world border, the scan walks past it until its cells are
+  outside the border and reports that.
+* **Unclaimed builds are not detected.** Nothing looks at the blocks players have placed,
+  which would be costly on a live server and unreliable. Keep the origin away from them;
+  see section 10.
+* **Only with GriefPrevention.** Without it there is no claim check. On Folia, where
+  GriefPrevention cannot run, there is none either.
+* **Repairs and `setspawn` do not check.** A revalidation repair searches the player's own
+  cell, where the claim nearest its candidates is their own spawn claim; `/sgen setspawn`
+  puts the spawn exactly where the operator says.
+
+A claim made after the scan chose a plot, but before the player was placed, can still be
+in the way. The next section covers that.
+
 ### Overlapping claims
 
 GriefPrevention refuses any new claim that overlaps an existing one, and SpiralGenesis
@@ -606,21 +655,33 @@ treats that as an ordinary outcome rather than an error. The player keeps their 
 loses the protection, nothing is retried, nothing is moved, and the existing claim is
 never touched.
 
-The overlap is logged at `INFO`, so it **is** in your console. The line names the path
-that asked, the claim that got in the way and who owns it:
+On the two paths that allocate - first allocation and `/sgen reassign` - allocation has
+already avoided every claim it could see, so an overlap there means a claim was made in
+the moment between choosing the plot and placing the player, who now stands inside it
+without build rights. That is logged at `WARNING`, naming the claim and its owner:
 
 ```
 No spawn claim for 06e7b6b2-9f1c (first allocation): the square overlaps
+claim 214 (Steve). The claim appeared after allocation chose this plot, so
+the player is placed inside it without a claim of their own. Move them with
+/sgen reassign if the claim is not theirs.
+```
+
+On `/sgen setspawn` and a revalidation repair the overlap is logged at `INFO`, because
+there it is usually the player's own claim:
+
+```
+No spawn claim for 06e7b6b2-9f1c (sgen setspawn): the square overlaps
 claim 214 (Steve). They keep the spawn, and their cover there is whatever
 that claim already gives them.
 ```
 
-That last clause is careful on purpose. Usually the claim in the way belongs to somebody
-else and the player has no protection at all, which is the case worth looking into. But
-`/sgen setspawn` moving a spawn a few blocks, or a revalidation repair, can land the new
-centre inside the player's *own* spawn square, and the overlap reported is then their
-existing claim - they are exactly as covered as they were a moment ago. Read the claim
-number and the owner before deciding which one you are looking at.
+That last clause is careful on purpose. Moving a spawn a few blocks, as either path can,
+lands the new centre inside the player's *own* spawn square, and the overlap reported is
+then their existing claim - they are exactly as covered as they were a moment ago. But
+`setspawn` can also put a spawn inside somebody else's claim, where the player has no
+protection at all. Read the claim number and the owner before deciding which one you are
+looking at.
 
 It is not one line per joining player, whatever it might look like. A claim is only ever
 asked for when a spawn point is created or moved - first allocation, `/sgen reassign`,
@@ -992,10 +1053,13 @@ does not move anyone already allocated.
    the first start, or edit it and run `/sgen reload` before running `setcenter`.
    Whitelist existing players if they should keep playing meanwhile; they are left alone
    either way.
-2. **Put the origin away from existing builds and claims.** Allocation checks terrain
-   only. It does not look for builds, claims or anybody's base, so a spot on top of
-   someone's house is accepted if the ground passes the rules in section 3, and the new
-   player respawns there. Plot #0,0 is centred on the origin and each plot is `cell-size`
+2. **Put the origin away from existing builds.** Allocation checks terrain and, where
+   GriefPrevention is installed, existing claims: a spot whose `protection.size` square
+   would overlap any claim is not chosen, with protection on or off (section 6). It does
+   not look for builds nobody has claimed, so a spot on top of an unclaimed house is
+   accepted if the ground passes the rules in section 3, and the new player respawns
+   there. Without GriefPrevention, and on Folia, claims are not checked either. Cells
+   skipped because they are claimed also use up indices. Plot #0,0 is centred on the origin and each plot is `cell-size`
    blocks across. The first 9 plots fill a 3 x 3 block of cells centred on the origin, the
    first 25 a 5 x 5 block, the first 49 a 7 x 7 block, and so on outward. Skipped cells
    use up indices too, so the spiral reaches further than the player count alone suggests.
@@ -1009,10 +1073,11 @@ does not move anyone already allocated.
 4. **Choose the trigger and protection before opening.** `allocation.trigger` is
    `FIRST_ACTION` by default, which is right behind a login plugin; `ON_JOIN` is only for
    online-mode servers and networks that authenticate at the proxy (section 5).
-   `protection.enabled` is `false` by default. If you turn it on, read section 6 first,
-   and note that a spawn square overlapping a claim that already exists is not created:
-   the player keeps the spawn with no claim of their own. That is one more reason to keep
-   the origin away from claimed land.
+   `protection.enabled` is `false` by default. If you turn it on, read section 6 first.
+   Allocation already keeps new spawns off existing claims, so a spawn square is only
+   refused for overlapping one when that claim was made between choosing the plot and
+   placing the player; the player keeps the spawn with no claim of their own, and the
+   console says so at warning.
 5. **Open the server.** Watch the console for the startup lines and for the first new
    player's allocation.
 

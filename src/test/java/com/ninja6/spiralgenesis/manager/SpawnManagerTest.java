@@ -4,9 +4,11 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.CellArea;
 import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.math.SpiralMath;
+import com.ninja6.spiralgenesis.protection.ClaimLookup;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -106,7 +108,12 @@ class SpawnManagerTest {
 
         InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config,
                            BlockShapes shapes) {
-            super(plugin, world, config);
+            this(plugin, world, config, shapes, ClaimLookup.NONE);
+        }
+
+        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config,
+                           BlockShapes shapes, ClaimLookup claims) {
+            super(plugin, world, config, claims);
             this.shapes = shapes;
         }
 
@@ -2081,6 +2088,142 @@ class SpawnManagerTest {
                 "the centre and its neighbours should have been rejected for the border");
         assertTrue(manager.revalidate(res.location()).get(10, TimeUnit.SECONDS),
                 "the replacement point must pass the same re-check the old one failed");
+    }
+
+    /**
+     * A claim plugin holding exactly one claim, over {@code claim}, recording every square
+     * it is asked about.
+     */
+    private static final class OneClaim implements ClaimLookup {
+        private final CellArea claim;
+        private final List<CellArea> asked = new CopyOnWriteArrayList<>();
+
+        OneClaim(CellArea claim) {
+            this.claim = claim;
+        }
+
+        @Override
+        public boolean overlapsClaim(World in, CellArea area) {
+            asked.add(area);
+            return claim.overlaps(area);
+        }
+    }
+
+    private InlineSpawnManager managerAvoiding(PluginConfig config, ClaimLookup claims) {
+        return new InlineSpawnManager(plugin, world, config, shapes, claims);
+    }
+
+    /** A FIRST_SAFE configuration with a {@code protection:} block. */
+    private PluginConfig configWithProtection(int maxScanAttempts, boolean enabled, int size) {
+        String yaml = """
+                origin:
+                  world: "world"
+                  x: 0
+                  z: 0
+                cell-size: %d
+                placement:
+                  strategy: FIRST_SAFE
+                  stride: %d
+                  max-candidates: 12
+                safety:
+                  min-surface-y: 0
+                  max-scan-attempts: %d
+                protection:
+                  enabled: %b
+                  size: %d
+                """.formatted(CELL, STRIDE, maxScanAttempts, enabled, size);
+        return new PluginConfig(YamlConfiguration.loadConfiguration(new StringReader(yaml)));
+    }
+
+    @Test
+    @DisplayName("A candidate inside an existing claim is passed over for the next one in the cell")
+    void aClaimedCandidateIsSkippedWithinTheCell() throws Exception {
+        // A small claim on the cell centre: the centre's 9x9 square overlaps it, the next
+        // candidate's, 16 blocks east, does not.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-2, -2, 2, 2));
+        InlineSpawnManager manager = managerAvoiding(config(0, 8), claims);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0, res.index(), "one claimed candidate must not discard the cell");
+        assertEquals(STRIDE + 0.5, res.location().getX(), 1e-9);
+        assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(1, manager.chunkLoads.get(),
+                "the claimed candidate is rejected before its chunk is asked for");
+        assertEquals(CellArea.square(0, 0, 9), claims.asked.get(0),
+                "the square tested is protection.size across, 9 by default");
+    }
+
+    @Test
+    @DisplayName("A cell whose every candidate is claimed is skipped without counting as an attempt")
+    void aWhollyClaimedCellIsSkippedAndNotCounted() throws Exception {
+        // Covers every candidate of cell 0 (they reach 32 blocks from its centre) and none
+        // of cell 1's, which start at x = 49 and whose squares start at 45.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-40, -40, 40, 40));
+        // One attempt only: were the claimed cell counted, the scan would give up on it.
+        InlineSpawnManager manager = managerAvoiding(config(0, 1), claims);
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logs = recordLogs();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(1, res.index(), "the scan moves on to the next cell");
+        assertFalse(res.fallback(), "and settles there as an ordinary result, not a fallback");
+        assertEquals(1, res.cellsProbed(), "the claimed cell is not an attempt");
+        assertEquals(2, indices.get(), "though it used an index, as a skipped overlap does");
+        assertEquals(12, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(1, manager.chunkLoads.get(), "no chunk was loaded for the claimed cell");
+        assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.INFO
+                        && r.getMessage().startsWith("Skipped plot #0,0: every candidate spawn is"
+                        + " inside an existing claim")),
+                "the skip is logged: " + logs.stream().map(LogRecord::getMessage).toList());
+    }
+
+    @Test
+    @DisplayName("Claims are avoided with protection disabled, using protection.size as the square")
+    void claimsAreAvoidedWithProtectionDisabled() throws Exception {
+        // Reached by a 21-block square around the centre and not by a 9-block one, so the
+        // centre is rejected only if the configured size is what is tested. West of the
+        // centre, so the next candidate, 16 blocks east, is clear of it.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-11, -1, -10, 1));
+        InlineSpawnManager manager = managerAvoiding(configWithProtection(8, false, 21), claims);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0, res.index());
+        assertNotEquals(0.5, res.location().getX(), "the centre's square reaches the claim");
+        assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(new CellArea(-10, -10, 11, 11), claims.asked.get(0),
+                "the centre's square is protection.size across, protection enabled or not");
+    }
+
+    @Test
+    @DisplayName("Without a claim plugin, allocation does not look for claims at all")
+    void noClaimPluginMeansNoClaimCheck() throws Exception {
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.CLAIMED));
+    }
+
+    @Test
+    @DisplayName("An in-cell repair ignores claims, since the cell and its spawn claim are the owner's")
+    void aRepairIgnoresClaims() throws Exception {
+        // Every square anywhere is claimed. A repair that avoided claims would find nothing,
+        // since the owner's own spawn claim sits on the cell's first candidates.
+        ClaimLookup everything = (in, area) -> true;
+        SpawnManager manager = managerAvoiding(config(0, 8), everything);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(0)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.CLAIMED));
     }
 
     /**
