@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.commands;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
 import com.ninja6.spiralgenesis.manager.CellReserver;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
@@ -339,9 +340,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             }
             // Player state must be touched on the thread owning that player: the entity
             // scheduler on Folia, the main thread on Paper.
-            target.getScheduler().run(plugin, task -> {
+            ScheduledTask scheduled = target.getScheduler().run(plugin, task -> {
                 if (!target.isOnline()) {
-                    sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
+                    abandonReassignment(sender, target, res);
                     return;
                 }
                 // A reload that failed to read data.yml can land during the scan, or between
@@ -410,13 +411,31 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                             + ", " + res.location().getBlockZ() + ")"
                             + (Boolean.TRUE.equals(success) ? "" : " - spawn recorded, but the teleport did not complete"));
                 });
-            }, () -> sender.sendMessage(ChatColor.RED + target.getName()
-                    + " went offline before reassignment completed."));
+            }, () -> abandonReassignment(sender, target, res));
+            // A refused task runs neither callback, and the scheduler refuses only an entity
+            // already retired, which is the same departure.
+            if (scheduled == null) {
+                abandonReassignment(sender, target, res);
+            }
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Failed to reassign " + target.getName(), ex);
             sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");
             return null;
         });
+    }
+
+    /**
+     * Drops a reassignment whose player left before it could be applied.
+     *
+     * <p>The plot it found is never written, so nothing else ends the cell's reservation:
+     * left in flight, it would keep other centres off that ground until a restart. Released
+     * here, and the player keeps the plot they had.
+     */
+    private void abandonReassignment(CommandSender sender, Player target,
+                                     SpawnManager.LocationResult res) {
+        plugin.getDataStorage().releaseCell(res.centre(), res.index());
+        reply(sender, () -> sender.sendMessage(ChatColor.RED + target.getName()
+                + " went offline before reassignment completed."));
     }
 
     /**
