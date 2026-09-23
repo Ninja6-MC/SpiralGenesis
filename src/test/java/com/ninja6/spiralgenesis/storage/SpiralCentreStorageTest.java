@@ -177,6 +177,56 @@ class SpiralCentreStorageTest {
         }
     }
 
+    /**
+     * A file holding two plots on centre 0 index 0, as a downgraded jar or a file from
+     * before indices were protected across reloads can.
+     */
+    private YamlDataStorage sharedIndex(UUID first, UUID second) throws IOException {
+        writeDataFile("current-spiral-index: 1\nactive-centre: 0\ncentres:\n"
+                + "  '0':\n    x: 0\n    z: 0\n    cell-size: 500\n    next-index: 1\n"
+                + "players:\n"
+                + "  " + first + ":\n    name: First\n    centre: 0\n    assigned-index: 0\n"
+                + "    x: 0.5\n    z: 0.5\n    world: world\n"
+                + "  " + second + ":\n    name: Second\n    assigned-index: 0\n"
+                + "    x: 10.5\n    z: 10.5\n    world: world\n");
+        return loaded();
+    }
+
+    @Test
+    @DisplayName("two plots on one index both protect it, and removing one leaves it protected")
+    void sharedIndexSurvivesARemove() throws IOException {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        YamlDataStorage storage = sharedIndex(first, second);
+
+        storage.removeSpawn(second);
+
+        SpiralCell moved = storage.reserveCell(250, 250, CELL);
+        assertFalse(moved.area().overlaps(storage.getCentre(0).cell(0).area()),
+                "First still holds cell #0,0, but " + moved.label() + " overlaps it");
+    }
+
+    @Test
+    @DisplayName("two plots on one index, one reassigned away, leave the other protected")
+    void sharedIndexSurvivesAReassign() throws IOException {
+        UUID first = UUID.randomUUID();
+        UUID second = UUID.randomUUID();
+        YamlDataStorage storage = sharedIndex(first, second);
+
+        // A reassignment rewrites the record onto a fresh index of the same centre.
+        SpiralCell fresh = storage.reserveCell(0, 0, CELL);
+        int[] grid = fresh.grid();
+        storage.setSpawn(second, new Location(world, fresh.centreX() + 0.5, 64,
+                fresh.centreZ() + 0.5), 0, fresh.index(), grid[0], grid[1], "Second",
+                "REASSIGN", false);
+
+        // South-west of cell #0,0, so its cell 0 overlaps that cell and not the fresh one.
+        SpiralCell moved = storage.reserveCell(-250, -250, CELL);
+        assertFalse(moved.area().overlaps(storage.getCentre(0).cell(0).area()),
+                "First still holds cell #0,0, but " + moved.label() + " overlaps it");
+        assertFalse(moved.area().overlaps(fresh.area()), moved.label());
+    }
+
     @Test
     @DisplayName("changing the cell size mid-spiral skips every cell that would land on a plot")
     void changedCellSizeSkipsOverlappingCells() {
