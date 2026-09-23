@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.2] - 2026-09-23
+
+**Upgrading from 1.0.0-alpha.1.** `data.yml` gains a `centres` table, an `active-centre`
+key and a `centre` on every record, as well as an `installed-at` key and an optional
+per-record `placement-owed`. A file written by 1.0.0-alpha.1 loads as it is, with all of
+its plots on centre 0 and `installed-at` taken from its earliest `assigned-date`, or the
+current time if it has none. Going back to 1.0.0-alpha.1 still loads the file, but a plot
+that version records writes no `centre` key and reads back as centre 0, so one it
+allocates on another centre is not protected against later centres. A server whose
+`origin.world` does not name a loaded world stops allocating until the name is corrected,
+and spawn claims created under `ADMIN_CLAIM` before this release need `/sgen protect`
+before their owners can `/trust` anyone. The entries below have the detail.
+
 ### Added
 - **`/sgen release-all confirm` releases the spawn claims, for uninstalling.** Under the
   default `protection.claim-as: ADMIN_CLAIM` players cannot abandon their spawn claims, so
@@ -250,8 +263,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version records its earliest `assigned-date`, since that version allocated the first
   player to join on their first action, or the current time if it assigns nobody. Every
   record write rewrites its `assigned-date`, so that can be later than the real install,
-  which leans toward leaving players alone. A player
-  with a record is never skipped, so one owed a placement is still placed.
+  which leans toward leaving players alone. A player with a record is never skipped, so
+  one owed a placement is still placed.
 - **A respawn point forced elsewhere is kept on Paper 1.21 and later.** The respawn
   handler left a respawn alone only when Paper flagged it as a bed or anchor spawn. Paper
   1.21.11 and later flag neither for a forced point, so a working point set by
@@ -268,7 +281,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guide has a new section on installing onto a server people already play on: writing
   `config.yml` before the first start, choosing an origin away from existing builds and
   claims, and what happens to the players already there. The README quick start said the
-  first player gets plot #1; the first plot is #0.
+  first player gets plot #1; the first plot is #0,0.
 - **SpiralGenesis loads after Multiverse-Core.** Multiverse-Core creates its worlds in its
   own startup, and nothing ordered the two, so an `origin.world` that Multiverse loads could
   still be missing when SpiralGenesis bound it: the log said no spawn would be allocated,
