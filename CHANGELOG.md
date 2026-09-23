@@ -239,6 +239,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record write rewrites its `assigned-date`, so that can be later than the real install,
   which leans toward leaving players alone. A player
   with a record is never skipped, so one owed a placement is still placed.
+- **A respawn point forced elsewhere is kept on Paper 1.21 and later.** The respawn
+  handler left a respawn alone only when Paper flagged it as a bed or anchor spawn. Paper
+  1.21.11 and later flag neither for a forced point, so a working point set by
+  `/spawnpoint`, EssentialsX or Multiverse was replaced with the plot for every player who
+  had one, and so was a location another plugin chose for the respawn, such as EssentialsX
+  respawn-at-home. Paper 1.20.4 flags every working point as a bed, the plot included, so
+  the respawn-time re-check of the plot never ran there. The handler now acts only on a
+  respawn headed for the plot's block column, or one whose point failed and fell back to
+  world spawn, and leaves a working bed, anchor or forced point and a location another
+  plugin set alone on every version.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

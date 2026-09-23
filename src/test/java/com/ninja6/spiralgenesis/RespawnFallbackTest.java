@@ -17,6 +17,9 @@ import org.bukkit.World;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.damage.DamageSource;
 import org.bukkit.damage.DamageType;
+import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
+import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
@@ -370,6 +373,198 @@ class RespawnFallbackTest {
                 world.getSpawnLocation(), false, false, PlayerRespawnEvent.RespawnReason.DEATH);
         server.getPluginManager().callEvent(respawn);
         return respawn;
+    }
+
+    /**
+     * A respawn event as Paper builds it when the respawn resolves: at {@code target}, with
+     * the bed and anchor flags as the server version sets them. Verified with javap:
+     * paper-1.21.11 and 26.2 put a forced point in its own block, at x + 0.5, y + 0.1,
+     * z + 0.5, with neither flag; paper-1.20.4 sets the bed flag for every point that
+     * resolves, the forced plot included, unless it is an anchor.
+     */
+    private PlayerRespawnEvent respawnAt(RespawnPlayer player, Location target, boolean bed) {
+        PlayerRespawnEvent respawn = new PlayerRespawnEvent(player, target.clone(), bed, false,
+                PlayerRespawnEvent.RespawnReason.DEATH);
+        server.getPluginManager().callEvent(respawn);
+        return respawn;
+    }
+
+    /** Where the server places a player for a forced point that resolves. */
+    private static Location forcedTarget(Location point) {
+        return new Location(point.getWorld(), point.getBlockX() + 0.5, point.getBlockY() + 0.1,
+                point.getBlockZ() + 0.5);
+    }
+
+    /** Another plugin sending every respawn somewhere of its own, as EssentialsX does. */
+    public static final class RespawnAtHome implements Listener {
+
+        private final Location home;
+
+        RespawnAtHome(Location home) {
+            this.home = home;
+        }
+
+        @EventHandler(priority = EventPriority.NORMAL)
+        public void onRespawn(PlayerRespawnEvent event) {
+            event.setRespawnLocation(home.clone());
+        }
+    }
+
+    @Test
+    @DisplayName("on Paper 1.21.11 and later, a working point forced elsewhere is kept for the respawn")
+    void paperForcedPointElsewhereIsKept() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location elsewhere = new Location(world, -300, 80, 40);
+        player.setRespawnLocation(elsewhere, true);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, forcedTarget(elsewhere), false);
+        player.place();
+
+        assertEquals(forcedTarget(elsewhere), respawn.getRespawnLocation(),
+                "the plot must not replace a point another plugin or command forced");
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(elsewhere, player.point);
+    }
+
+    @Test
+    @DisplayName("on Paper 1.20.4, a working point forced elsewhere is kept for the respawn")
+    void oldPaperForcedPointElsewhereIsKept() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location elsewhere = new Location(world, -300, 80, 40);
+        player.setRespawnLocation(elsewhere, true);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, forcedTarget(elsewhere), true);
+        player.place();
+
+        assertEquals(forcedTarget(elsewhere), respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+    }
+
+    @Test
+    @DisplayName("a respawn location another plugin chose is kept, even when the point is the plot")
+    void locationChosenByAnotherPluginIsKept() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location home = new Location(world, 400.5, 71, -250.5);
+        server.getPluginManager().registerEvents(new RespawnAtHome(home), plugin);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, forcedTarget(plot), false);
+        player.place();
+
+        assertEquals(home, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("a location another plugin chose is not undone when the point failed on Paper 1.21.11")
+    void locationChosenByAnotherPluginSurvivesAFailedPoint() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        bed.getBlock().setType(Material.AIR);
+        Location home = new Location(world, 400.5, 71, -250.5);
+        server.getPluginManager().registerEvents(new RespawnAtHome(home), plugin);
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertEquals(home, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("on Paper 1.21.11 and later, a respawn onto the plot is still lifted over a build")
+    void paperPlotRespawnIsStillHandled() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        Location top = plot.clone().add(0, 2, 0);
+        manager.lifted = top;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, forcedTarget(plot), false);
+        player.place();
+
+        assertSameBlock(top, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+    }
+
+    @Test
+    @DisplayName("on Paper 1.20.4, the plot is re-checked although the server calls it a bed")
+    void oldPaperPlotFlaggedAsBedIsRechecked() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        RespawnPlayer player = join(plugin, plot);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, forcedTarget(plot), true);
+        player.place();
+
+        assertSameBlock(world.getSpawnLocation(), respawn.getRespawnLocation());
+    }
+
+    @Test
+    @DisplayName("a respawn at a working bed is left alone")
+    void workingBedRespawnIsKept() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        Location bed = sleepInBed(player);
+        Location beside = bed.clone().add(1.5, 0, 0.5);
+
+        die(player);
+        PlayerRespawnEvent respawn = respawnAt(player, beside, true);
+        player.place();
+
+        assertEquals(beside, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+    }
+
+    @Test
+    @DisplayName("on Paper 1.21.11, a point forced elsewhere that failed falls back to the plot")
+    void paperFailedForcedPointElsewhereFallsBackToThePlot() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        player.setRespawnLocation(new Location(world, -300, 80, 40), true);
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        respawnPointFails(player);
+        player.place();
+
+        assertSameBlock(plot, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+        assertSameBlock(plot, player.point);
+    }
+
+    @Test
+    @DisplayName("a player with no respawn point, kept off a plot outside the border, is not sent to it")
+    void noPointLeavesTheRespawnAlone() {
+        SpiralGenesisPlugin plugin = load();
+        Location plot = plot();
+        RespawnPlayer player = join(plugin, plot);
+        shrinkBorderAwayFromPlot();
+
+        die(player);
+        assertNull(player.point, "precondition: the death cleared the plot as the point");
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+
+        assertSameBlock(world.getSpawnLocation(), respawn.getRespawnLocation());
     }
 
     private static void assertSameBlock(Location expected, Location actual) {

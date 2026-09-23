@@ -16,6 +16,7 @@ import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -30,6 +31,12 @@ public class PlayerSpawnListener implements Listener {
      * {@link #onRespawnPointLost}.
      */
     private final Set<UUID> respawnEventSeen = ConcurrentHashMap.newKeySet();
+    /**
+     * Where the server was sending each respawn in progress before other plugins handled
+     * it. Set by {@link #onRespawnOffered}, consumed by {@link #onPlayerRespawn} in the same
+     * event, so an entry never outlives it.
+     */
+    private final Map<UUID, Location> offeredRespawn = new ConcurrentHashMap<>();
 
     public PlayerSpawnListener(SpiralGenesisPlugin plugin, PlayerActionGateListener gate) {
         this.plugin = plugin;
@@ -346,6 +353,10 @@ public class PlayerSpawnListener implements Listener {
      * repair running, or finished, by the time this fires. What is left for here is the
      * player who clicks respawn faster than a chunk loads.
      *
+     * <p>Only a respawn headed for the plot, or one whose point failed, is touched; which
+     * those are is {@link #headedForPlot}. A bed, an anchor, a point forced elsewhere and a
+     * location another plugin chose all outrank the plot.
+     *
      * <p>This event is synchronous and nothing can be awaited inside it, so the re-check is
      * split. What is already resident is judged here, inline and for free; what is not is
      * left alone and corrected by the repair afterwards. Sending every unverifiable respawn
@@ -365,8 +376,8 @@ public class PlayerSpawnListener implements Listener {
      * {@code EndPortalBlock} fires this event itself with {@code RespawnReason.END_PORTAL}
      * rather than going through the path Folia stubs out. Verified against folia-1.21.11.
      *
-     * <p>That case is handled the same as any other: a player with no bed or anchor is sent
-     * to their plot. Whether an End exit should route there is a question nobody has
+     * <p>That case is handled the same as any other: a player whose respawn point is the
+     * plot is sent to it. Whether an End exit should route there is a question nobody has
      * answered deliberately - it falls out of not filtering on
      * {@code event.getRespawnReason()}. It is defensible, since the plot is effectively
      * their home, but it is not a decision anyone recorded.
@@ -376,15 +387,15 @@ public class PlayerSpawnListener implements Listener {
         Player player = event.getPlayer();
         // Tells onRespawnPointLost that this respawn has already been routed.
         respawnEventSeen.add(player.getUniqueId());
+        Location offered = offeredRespawn.remove(player.getUniqueId());
 
-        // A bed or anchor is the player's own choice and outranks their plot.
-        if (event.isBedSpawn() || event.isAnchorSpawn()) {
-            return;
-        }
         StoredSpawn record = plugin.getDataStorage().getRecord(player.getUniqueId());
         Location spawn = record == null ? null : record.toLocation();
         if (spawn == null || spawn.getWorld() == null) {
             return; // World not loaded; vanilla handling is the only thing left.
+        }
+        if (!headedForPlot(event, offered, player.getPotentialBedLocation(), spawn)) {
+            return;
         }
 
         SpawnManager manager = plugin.getSpawnManager();
@@ -420,5 +431,58 @@ public class PlayerSpawnListener implements Listener {
         event.setRespawnLocation(spawn);
         plugin.repairSpawn(player, record, true);
         player.getScheduler().run(plugin, task -> placeOnPlot(player, spawn, true), null);
+    }
+
+    /**
+     * Records where the server itself is sending a respawn, before any other plugin has
+     * had a say, so {@link #onPlayerRespawn} can tell the server's choice from one another
+     * plugin made in between.
+     */
+    @EventHandler(priority = EventPriority.LOWEST)
+    public void onRespawnOffered(PlayerRespawnEvent event) {
+        offeredRespawn.put(event.getPlayer().getUniqueId(), event.getRespawnLocation().clone());
+    }
+
+    /**
+     * Whether a respawn is one this plugin should route to the plot: it is already headed
+     * for the plot's block column, or the player's respawn point failed and the server fell
+     * back to world spawn, which the plot replaces.
+     *
+     * <p>Everything else is left alone: a respawn another plugin moved (EssentialsX
+     * respawn-at-home and spawn-on-death, Multiverse), and one that resolved through a
+     * point that is not the plot - a working bed or anchor, or a point forced elsewhere
+     * such as by {@code /spawnpoint}.
+     *
+     * <p>The bed and anchor flags alone cannot decide it. From the bytecode of each smoke
+     * matrix server: paper-1.21.11 and 26.2 build a forced point with neither flag set and
+     * place the player in its own block, so a point forced elsewhere looked like a respawn
+     * with no point at all and was replaced; paper-1.20.4 sets the bed flag for every point
+     * that resolves unless it is an anchor, so the plot itself looked like a bed and was
+     * never re-checked. The flags still identify a working bed or anchor on every version.
+     *
+     * <p>A point that failed is recognised by where the respawn lands: not at the point,
+     * whose block the server would otherwise have used. Paper 1.21.11 and later fire this
+     * event before clearing the failed point, so the point is still the one that failed;
+     * 1.20.4 fires {@link #onRespawnPointLost} first, which has already made the plot the
+     * point. With no point at all the respawn is left alone: {@link #onPlayerDeath} leaves
+     * a player without one only to keep them off a plot outside the world border.
+     *
+     * @param offered where the server sent the respawn before any plugin changed it, or
+     *                null when that was not recorded
+     * @param point   the player's respawn point, read without resolving it
+     */
+    private static boolean headedForPlot(PlayerRespawnEvent event, Location offered,
+                                         Location point, Location plot) {
+        Location target = event.getRespawnLocation();
+        if (SpiralGenesisPlugin.isPlotColumn(target, plot)) {
+            return true;
+        }
+        if (offered != null && !offered.equals(target)) {
+            return false;
+        }
+        if (point == null || event.isBedSpawn() || event.isAnchorSpawn()) {
+            return false;
+        }
+        return !sameBlock(target, point);
     }
 }
