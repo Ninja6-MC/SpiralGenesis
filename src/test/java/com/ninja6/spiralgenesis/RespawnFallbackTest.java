@@ -8,6 +8,7 @@ import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Location;
@@ -282,7 +283,7 @@ class RespawnFallbackTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
             return cellHasNoPoint ? CompletableFuture.completedFuture(null)
                     : new CompletableFuture<>();
         }

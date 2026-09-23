@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
 import org.bukkit.Bukkit;
@@ -106,7 +107,7 @@ class StorageFailureTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
             searches.incrementAndGet();
             return new CompletableFuture<>();
         }

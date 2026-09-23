@@ -9,6 +9,7 @@ import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
 import com.ninja6.spiralgenesis.storage.DataStorage;
@@ -197,9 +198,9 @@ class RefusedWriteTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> searchInCell(int index) {
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
-                    repairTo, index, 0, 0, 63, 1, 1, false, Map.of()));
+                    repairTo, cell.index(), 0, 0, 63, 1, 1, false, Map.of()));
         }
 
         @Override

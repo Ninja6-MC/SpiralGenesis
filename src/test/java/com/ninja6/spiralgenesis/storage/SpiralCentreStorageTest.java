@@ -332,6 +332,28 @@ class SpiralCentreStorageTest {
     }
 
     @Test
+    @DisplayName("a scan still on the old centre reserves there without making it active again")
+    void reservingOnAKnownCentreKeepsTheActiveOne() {
+        YamlDataStorage storage = loaded();
+        SpiralCell first = storage.reserveCell(0, 0, CELL);
+        SpiralCentre old = first.centre();
+        // Centre 1 is 500 blocks east, over centre 0's cell 1; this is what setcenter
+        // followed by a join does.
+        SpiralCell moved = storage.reserveCell(500, 0, CELL);
+        assertEquals(1, moved.centre().id());
+        assertEquals(1, storage.getCurrentIndex(), "centre 1 is active and has handed out 0");
+
+        SpiralCell next = storage.reserveCell(old);
+
+        assertEquals(0, next.centre().id(), "the scan stays on the spiral it started on");
+        assertTrue(next.index() > 1, "index 1 is under centre 1's cell 0, still in flight");
+        assertFalse(next.area().overlaps(moved.area()),
+                "the old centre's cells are still tested against the new centre's");
+        assertEquals(1, storage.getCurrentIndex(), "new scans still start on centre 1");
+        assertEquals(1, storage.reserveCell(500, 0, CELL).index());
+    }
+
+    @Test
     @DisplayName("a file written before centres had ids puts its plots on centre 0 at the configured origin")
     void legacyRecordsAreCentreZeroAtTheConfiguredOrigin() throws IOException {
         UUID a = UUID.randomUUID();

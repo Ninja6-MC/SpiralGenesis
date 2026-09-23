@@ -317,6 +317,13 @@ would make griefing somebody's spawn a way to evict them from their land. On suc
 point is written to `data.yml` under the same index, their respawn point is updated, and they
 are teleported to it - logged at `INFO`.
 
+The cell is the one the plot was allocated in: its index on its own spiral centre, at the
+origin and cell size recorded for that centre in `data.yml`. `/sgen setcenter`, or a reload
+with a new `origin` or `cell-size`, does not change which ground a repair searches. A point
+set with `/sgen setspawn` is on no spiral, so there is no cell to search: when it fails its
+re-check the player is sent to world spawn with a warning, the point is left as it is, and it
+is up to an operator to set a new one.
+
 If every sampled candidate in the cell fails, the player is sent to world spawn with a
 warning and **their plot assignment is left unchanged**. `max-candidates` defaults to 12 of
 the 961 points that fit a 500-block cell, so "no candidate passed" is not evidence the plot

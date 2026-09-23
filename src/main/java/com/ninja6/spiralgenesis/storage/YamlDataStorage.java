@@ -902,6 +902,29 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
+    public SpiralCell reserveCell(SpiralCentre centre) {
+        List<String> skipped = new ArrayList<>();
+        SpiralCell cell;
+        synchronized (yamlLock) {
+            throwIfFailed();
+            SpiralCentre known = knownCentre(centre.originX(), centre.originZ(),
+                    centre.cellSize());
+            if (known == null) {
+                // A load since the scan's first cell no longer knows its spiral. Recorded
+                // as any new geometry is, so its cells are still tested, but the active
+                // centre stays the one new scans start on.
+                int active = activeCentre;
+                known = resolveCentre(centre.originX(), centre.originZ(), centre.cellSize());
+                activeCentre = active;
+            }
+            cell = known.cell(reserveLocked(known.id(), skipped));
+        }
+        dirty.set(true);
+        logSkipped(skipped);
+        return cell;
+    }
+
+    @Override
     public void releaseCell(int centre, int index) {
         synchronized (yamlLock) {
             inFlight.remove(new CellKey(centre, index));
@@ -947,12 +970,10 @@ public class YamlDataStorage implements DataStorage {
             activeCentre = 0;
             return state(0).centre;
         }
-        for (Map.Entry<Integer, CentreState> entry : centres.entrySet()) {
-            SpiralCentre known = entry.getValue().centre;
-            if (known != null && known.hasGeometry(originX, originZ, cellSize)) {
-                activeCentre = entry.getKey();
-                return known;
-            }
+        SpiralCentre known = knownCentre(originX, originZ, cellSize);
+        if (known != null) {
+            activeCentre = known.id();
+            return known;
         }
         int id = centres.isEmpty() ? 0 : centres.lastKey() + 1;
         SpiralCentre created = new SpiralCentre(id, originX, originZ, cellSize);
@@ -963,6 +984,20 @@ public class YamlDataStorage implements DataStorage {
         dirty.set(true);
         activeCentre = id;
         return created;
+    }
+
+    /**
+     * The recorded centre with this geometry, or {@code null} if there is none. Called
+     * under {@link #yamlLock}.
+     */
+    private SpiralCentre knownCentre(int originX, int originZ, int cellSize) {
+        for (CentreState state : centres.values()) {
+            SpiralCentre known = state.centre;
+            if (known != null && known.hasGeometry(originX, originZ, cellSize)) {
+                return known;
+            }
+        }
+        return null;
     }
 
     /**
