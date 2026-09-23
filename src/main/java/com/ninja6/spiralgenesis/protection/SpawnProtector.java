@@ -109,7 +109,34 @@ public final class SpawnProtector {
      * @return what the provider did; never {@code null}, and never a thrown exception
      */
     public ClaimResult protect(UUID owner, Location spawn, String context) {
+        return protect(owner, spawn, context, false);
+    }
+
+    /**
+     * {@link #protect} for a spawn allocation has just chosen: first allocation and
+     * {@code /sgen reassign}.
+     *
+     * <p>The one difference is how an overlap is reported. Allocation rejects every
+     * candidate whose square overlaps an existing claim wherever the claim plugin is
+     * installed, so an overlap here means a claim was made between the scan and the
+     * placement, and the player now stands in somebody's claim without one of their own.
+     * That is logged at {@code WARNING}. The player still keeps the spawn, as on every other
+     * path: moving them again would be a second allocation nobody asked for.
+     */
+    public ClaimResult protectAllocated(UUID owner, Location spawn, String context) {
+        return protect(owner, spawn, context, true);
+    }
+
+    private ClaimResult protect(UUID owner, Location spawn, String context, boolean allocated) {
         ClaimResult result = protectQuietly(owner, spawn);
+        if (allocated && result.outcome() == ClaimOutcome.ALREADY_CLAIMED) {
+            logger.warning("No spawn claim for " + owner + " (" + context + "): "
+                    + (result.hasDetail() ? result.detail() : "the square is already claimed.")
+                    + " The claim appeared after allocation chose this plot, so the player is"
+                    + " placed inside it without a claim of their own. Move them with"
+                    + " /sgen reassign if the claim is not theirs.");
+            return result;
+        }
         switch (result.outcome()) {
             case CREATED -> logger.info("Claimed the " + size() + "x" + size()
                     + " spawn square for " + owner + " (" + context + ")"
@@ -131,7 +158,9 @@ public final class SpawnProtector {
             // overlap at a new point from a repeat, a cost with nothing to buy. INFO rather
             // than WARNING because nothing malfunctioned: WARNING is what this class says
             // when the provider refuses or breaks, and spending it on an ordinary outcome
-            // is how a server owner learns to skim past the real ones.
+            // is how a server owner learns to skim past the real ones. The two allocation
+            // paths do not reach this line: they come through protectAllocated, where an
+            // overlap means a claim appeared after the scan avoided every claim it saw.
             case ALREADY_CLAIMED -> logger.info("No spawn claim for " + owner + " ("
                     + context + "): " + (result.hasDetail() ? result.detail()
                     : "the square is already claimed.")

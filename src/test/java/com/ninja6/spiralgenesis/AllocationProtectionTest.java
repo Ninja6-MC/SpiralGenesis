@@ -7,6 +7,7 @@ import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ClaimOutcome;
+import com.ninja6.spiralgenesis.protection.ClaimResult;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
@@ -24,9 +25,14 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -237,6 +243,51 @@ class AllocationProtectionTest {
                 "the re-assert re-sends the player to the same stored point, so there is no "
                         + "new ground for a claim to be needed around");
         assertTrue(provider.releases.isEmpty(), "and nothing on that path deletes anything");
+    }
+
+    @Test
+    @DisplayName("a claim refused after placement leaves the player placed and logs a warning")
+    void aClaimInTheWayAfterPlacementIsAWarning() {
+        ProtectedPlugin plugin = load(ProtectedPlugin.class);
+        // The claim appeared between the scan, which avoided every claim it saw, and the
+        // placement: the one way an allocated spawn can still land in somebody's claim.
+        plugin.provider = new RecordingProvider()
+                .answering(r -> ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED,
+                        "the square overlaps claim 7 (Alex)."));
+        List<LogRecord> logs = new CopyOnWriteArrayList<>();
+        Handler handler = new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                logs.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        };
+        plugin.getLogger().addHandler(handler);
+        InlinePlayerMock player = join("Late");
+
+        try {
+            plugin.allocateNow(player, "JAVA");
+        } finally {
+            plugin.getLogger().removeHandler(handler);
+        }
+
+        StoredSpawn record = plugin.getDataStorage().getRecord(player.getUniqueId());
+        assertNotNull(record, "the player keeps the plot");
+        Location plot = record.toLocation();
+        assertNotNull(plot);
+        assertEquals(plot.getBlockX(), player.getLocation().getBlockX(), "and is placed on it");
+        assertNotNull(player.getRespawnLocation());
+        assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.WARNING
+                        && r.getMessage().contains("claim 7 (Alex)")
+                        && r.getMessage().contains("first allocation")),
+                "the overlap is a warning: " + logs.stream().map(LogRecord::getMessage).toList());
     }
 
     @Test

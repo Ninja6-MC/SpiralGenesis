@@ -14,6 +14,24 @@ public record CellArea(int minX, int minZ, int maxX, int maxZ) {
         return new CellArea(x, z, x + 1, z + 1);
     }
 
+    /**
+     * The square of side {@code side} centred on the column {@code (x, z)}: with an odd
+     * side, {@code (side - 1) / 2} columns out from it in each direction, which is the
+     * square a spawn claim covers.
+     */
+    public static CellArea square(int x, int z, int side) {
+        int radius = (side - 1) / 2;
+        return new CellArea(x - radius, z - radius, x + radius + 1, z + radius + 1);
+    }
+
+    /**
+     * The columns from {@code (lesserX, lesserZ)} to {@code (greaterX, greaterZ)}, both
+     * corners included, as a protection plugin states a claim's extent.
+     */
+    public static CellArea inclusive(int lesserX, int lesserZ, int greaterX, int greaterZ) {
+        return new CellArea(lesserX, lesserZ, greaterX + 1, greaterZ + 1);
+    }
+
     /** Whether the column {@code (x, z)} is inside this area. */
     public boolean contains(int x, int z) {
         return x >= minX && x < maxX && z >= minZ && z < maxZ;

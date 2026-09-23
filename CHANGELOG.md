@@ -309,6 +309,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   later cell, so a `setcenter` during a scan applies from the next scan, and a scan that
   gives up against the world border records the spiral it walked rather than the one
   configured when it gave up, so the moved spiral is still scanned on the next join.
+- **Allocation no longer places new players inside existing claims.** Candidates were
+  judged on terrain alone, so on a populated world a new player could be placed, and
+  their respawn point forced, inside somebody's base; the spawn claim was then refused and
+  they lived there without build rights. Wherever GriefPrevention is installed, whether
+  or not `protection.enabled` is on, a candidate whose `protection.size` square would
+  overlap any existing claim is now rejected as `CLAIMED`, before its chunk is loaded:
+  players' own claims, administrative claims and spawn claims left behind by
+  `/sgen reassign` without `release` alike. A cell whose every candidate is claimed is
+  skipped and logged, and does not count toward `max-scan-attempts`. Repairs and
+  `/sgen setspawn` do not check, and there is no check without GriefPrevention or on
+  Folia. Unclaimed builds are not detected. A spawn claim refused for an overlap on first
+  allocation or `/sgen reassign`, which now means the claim appeared after the plot was
+  chosen, is logged at warning; the player still keeps the plot.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

@@ -32,5 +32,11 @@ public enum RejectionReason {
     NEARBY_HAZARD,
 
     /** Sits outside the world border, where a player takes damage until they die. */
-    OUTSIDE_BORDER
+    OUTSIDE_BORDER,
+
+    /**
+     * The spawn claim square around it would overlap a claim that already exists, whoever
+     * owns it. Only checked where GriefPrevention is installed.
+     */
+    CLAIMED
 }

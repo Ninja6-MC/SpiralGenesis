@@ -349,7 +349,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }
             unresolvedWorldReported.set(null);
             recordConfiguredCentre(config);
-            this.spawnManager = new SpawnManager(this, world, config);
+            // Resolved on every bind rather than with the protection provider: it is in force
+            // whenever GriefPrevention is installed, protection enabled or not.
+            this.spawnManager = new SpawnManager(this, world, config,
+                    ProtectionProviders.createClaimLookup(this));
             getLogger().info("SpawnManager bound to world '" + world.getName()
                     + "' (origin.world: '" + configured + "').");
         }
@@ -887,7 +890,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // whichever thread finished the teleport. Callers run on the thread that owns the
         // player - the main thread on every server where a real provider exists - which is
         // what the provider's threading contract requires.
-        getSpawnProtector().protect(player.getUniqueId(), plot, "first allocation");
+        //
+        // Allocation has already steered around every claim it could see, so a claim in the
+        // way here was made after the scan chose the plot, and is reported at warning.
+        getSpawnProtector().protectAllocated(player.getUniqueId(), plot, "first allocation");
     }
 
     /**

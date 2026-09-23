@@ -2,9 +2,11 @@ package com.ninja6.spiralgenesis.manager;
 
 import com.ninja6.spiralgenesis.config.PlacementStrategy;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.CellArea;
 import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.math.SpiralMath;
+import com.ninja6.spiralgenesis.protection.ClaimLookup;
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -39,6 +41,12 @@ public class SpawnManager {
     private final JavaPlugin plugin;
     private final World world;
     private final PluginConfig config;
+
+    /**
+     * Existing claims a new spawn must stay off; {@link ClaimLookup#NONE} without a claim
+     * plugin. See {@link #nextCandidate}.
+     */
+    private final ClaimLookup claims;
 
     /**
      * The border and spiral a scan has already given up against, or {@code null} if none
@@ -158,9 +166,19 @@ public class SpawnManager {
     private static final int PENALTY_PER_PIT_BLOCK = 10;
 
     public SpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
+        this(plugin, world, config, ClaimLookup.NONE);
+    }
+
+    /**
+     * @param claims the existing claims allocation steers around, whatever
+     *               {@code protection.enabled} says; {@link ClaimLookup#NONE} for none
+     */
+    public SpawnManager(JavaPlugin plugin, World world, PluginConfig config,
+                        ClaimLookup claims) {
         this.plugin = plugin;
         this.world = world;
         this.config = config;
+        this.claims = claims;
     }
 
     /**
@@ -777,6 +795,9 @@ public class SpawnManager {
      *
      * <p>Only the first cell reads the configured geometry. Later cells are reserved on the
      * centre the first one is on, so a scan never mixes two spirals.
+     *
+     * <p>A cell whose every candidate is inside an existing claim is not an attempt either;
+     * see {@link #finishCell}.
      */
     private void nextCell(Scan scan) {
         scan.attempt++;
@@ -792,6 +813,7 @@ public class SpawnManager {
         scan.centreX = cell.centreX();
         scan.centreZ = cell.centreZ();
         scan.candidate = -1;
+        scan.claimedInCell = 0;
         scan.bestInCell = null;
         nextCandidate(scan);
     }
@@ -827,6 +849,22 @@ public class SpawnManager {
             // fallback either. Outside the border the terrain is beside the point: however
             // good the ground is, a player standing on it takes border damage until they
             // die, and the respawn point forced onto that same spot puts them straight back.
+            runGlobally(scan.result, () -> nextCandidate(scan));
+            return;
+        }
+
+        // Existing claims, whoever owns them: a player's base, an administrative claim, or a
+        // spawn claim this plugin made earlier and left behind. The square tested is the one
+        // a spawn claim here would cover, protection.size across, and it is tested whether or
+        // not protection is enabled - see ClaimLookup. Like the border test it needs only x
+        // and z, so it comes before the chunk request and a claimed candidate costs no chunk.
+        // Never scored, so never the least-bad fallback: settling a player inside someone
+        // else's claim is the outcome this exists to prevent.
+        if (scan.purpose.avoidsClaims()
+                && claims.overlapsClaim(world, CellArea.square(x, z, config.getProtectionSize()))) {
+            scan.candidatesProbed++;
+            scan.claimedInCell++;
+            scan.rejections.merge(RejectionReason.CLAIMED, 1, Integer::sum);
             runGlobally(scan.result, () -> nextCandidate(scan));
             return;
         }
@@ -877,6 +915,24 @@ public class SpawnManager {
             scan.result.complete(null);
             return;
         }
+        if (scan.claimedInCell == candidateBudget(scan.centre.cellSize())) {
+            // Every candidate was inside an existing claim, so the cell is skipped as a cell
+            // overlapping another centre's plot is, and for the same reasons it is not an
+            // attempt: nothing about the terrain or the border was learned from it, and
+            // counting it would let a claimed town around the origin spend the whole
+            // max-scan-attempts budget and be reported as the spiral outgrowing the border,
+            // refusing every later join. It still uses the index, as a skipped overlap does.
+            // The walk ends: claims cover finite ground and the border test runs first, so
+            // past the claims every cell either holds a candidate or counts.
+            scan.attempt--;
+            scan.claimSkipped++;
+            if (scan.purpose == ScanPurpose.PLAYER_ALLOCATION) {
+                plugin.getLogger().info("Skipped plot " + SpiralCentre.label(scan.centre.id(),
+                        scan.index) + ": every candidate spawn is inside an existing claim.");
+            }
+            nextCell(scan);
+            return;
+        }
         if (scan.attempt < config.getMaxScanAttempts()) {
             nextCell(scan);
             return;
@@ -890,14 +946,22 @@ public class SpawnManager {
         // inside the border by definition.
         if (scan.bestOverall == null) {
             SpiralCentre walked = scan.centre;
+            // Candidates in a counted cell can also have been inside claims, when the cell
+            // mixed claimed ground with ground outside the border.
+            boolean claimsInWay = scan.rejections.containsKey(RejectionReason.CLAIMED);
             String message = "Spawn allocation failed: every candidate across " + scan.attempt
                     + " cells of spiral centre " + walked.id() + " (origin " + walked.originX()
                     + ", " + walked.originZ() + ", cell-size " + walked.cellSize()
-                    + ") fell outside the world border of world '" + world.getName()
-                    + "'. That spiral has outgrown the border; widen the border, or change "
+                    + ") fell outside the world border of world '" + world.getName() + "'"
+                    + (claimsInWay ? " or inside an existing claim" : "")
+                    + ". That spiral has outgrown the border; widen the border, or change "
                     + "origin.x, origin.z or cell-size so new plots grow on a spiral inside it."
-                    + " This scan claimed " + scan.attempt + " spiral indices, the last of them "
+                    + " This scan claimed " + (scan.attempt + scan.claimSkipped)
+                    + " spiral indices, the last of them "
                     + SpiralCentre.label(walked.id(), scan.index)
+                    + (scan.claimSkipped > 0 ? ", " + scan.claimSkipped + " of them skipped"
+                            + " because every candidate in the cell was inside an existing claim"
+                            : "")
                     + ", and none of them holds a plot.";
             if (scan.purpose.recordsExhaustion()) {
                 // Recorded before the outcome is published, so the next join is refused
@@ -1221,6 +1285,16 @@ public class SpawnManager {
         boolean recordsExhaustion() {
             return this != SIMULATION;
         }
+
+        /**
+         * Whether candidates inside existing claims are rejected. Not for a repair: the
+         * cell is already the player's, and the claim most likely to cover its candidates
+         * is their own spawn claim, around the builds the repair is keeping them beside.
+         * A simulation does, so it previews what allocation would reject.
+         */
+        boolean avoidsClaims() {
+            return this != REPAIR;
+        }
     }
 
     /**
@@ -1250,6 +1324,10 @@ public class SpawnManager {
         private int centreZ;
         private int candidate;
         private int candidatesProbed;
+        /** Candidates of the current cell rejected for an existing claim. */
+        private int claimedInCell;
+        /** Cells skipped because every candidate in them was inside a claim. */
+        private int claimSkipped;
         private Candidate bestInCell;
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);

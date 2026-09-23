@@ -109,6 +109,37 @@ public final class ProtectionProviders {
     }
 
     /**
+     * Builds the lookup allocation uses to keep new spawns off existing claims.
+     *
+     * <p>Independent of the {@code protection:} block: players claim their bases whether
+     * or not SpiralGenesis claims anything, so the lookup is GriefPrevention's whenever
+     * GriefPrevention is installed and enabled, and {@link ClaimLookup#NONE} otherwise. On
+     * Folia it is always {@code NONE}, decided before anything names a GriefPrevention
+     * type, since GriefPrevention cannot be loaded there.
+     *
+     * @param plugin this plugin, for its logger
+     * @return a lookup; never {@code null}, and never one that throws on use
+     */
+    public static ClaimLookup createClaimLookup(Plugin plugin) {
+        if (isFolia() || !isGriefPreventionPresent()) {
+            // Silent: a server without GriefPrevention has nothing to avoid, and on Folia
+            // the protection startup line already explains GriefPrevention's absence
+            // wherever it was configured.
+            return ClaimLookup.NONE;
+        }
+        try {
+            ClaimLookup lookup = GriefPreventionClaimLookup.live(plugin.getLogger());
+            plugin.getLogger().info("Allocation avoids existing GriefPrevention claims: a "
+                    + "spawn whose protection.size square would overlap one is not chosen.");
+            return lookup;
+        } catch (Throwable t) {
+            plugin.getLogger().log(Level.WARNING, "GriefPrevention is installed but could not be "
+                    + "bound, so allocation will not avoid its claims.", t);
+            return ClaimLookup.NONE;
+        }
+    }
+
+    /**
      * Whether GriefPrevention is installed and enabled.
      *
      * <p>The name is GriefPrevention's own {@code plugin.yml} {@code name:}, and this
