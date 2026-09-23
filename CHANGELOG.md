@@ -11,16 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.0.0-alpha.2] - 2026-09-24
 
-**Upgrading from 1.0.0-alpha.1.** `data.yml` gains a `centres` table, an `active-centre`
-key and a `centre` on every record, as well as an `installed-at` key and an optional
-per-record `placement-owed`. A file written by 1.0.0-alpha.1 loads as it is, with all of
-its plots on centre 0 and `installed-at` taken from its earliest `assigned-date`, or the
-current time if it has none. Going back to 1.0.0-alpha.1 still loads the file, but a plot
-that version records writes no `centre` key and reads back as centre 0, so one it
-allocates on another centre is not protected against later centres. A server whose
-`origin.world` does not name a loaded world stops allocating until the name is corrected,
-and spawn claims created under `ADMIN_CLAIM` before this release need `/sgen protect`
-before their owners can `/trust` anyone. The entries below have the detail.
+**Upgrading from 1.0.0-alpha.1.** `data.yml` gains an `installed-at` key, a `centre` on
+each spiral plot's record as it is written (a point set with `/sgen setspawn` has none,
+and a record without one reads as centre 0), and an optional per-record `placement-owed`.
+Once a spiral centre has been placed it also gains a `centres` table and an
+`active-centre` key; until then neither is written. A file written by 1.0.0-alpha.1 loads
+as it is, with all of its spiral plots on centre 0 and `installed-at` taken from its
+earliest `assigned-date`, or the current time if it has none. Going back to 1.0.0-alpha.1
+still loads the file, but a plot that version records writes no `centre` key and reads
+back as centre 0, so one it allocates on another centre is not protected against later
+centres. A server whose `origin.world` does not name a loaded world stops allocating until
+the name is corrected, and the owner of a spawn claim created under `ADMIN_CLAIM` before
+this release cannot `/trust` anyone on it until `/sgen protect` repairs it. The entries
+below have the detail.
 
 ### Added
 - **`/sgen release-all confirm` releases the spawn claims, for uninstalling.** Under the
