@@ -33,6 +33,7 @@ import java.util.logging.LogRecord;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -212,6 +213,35 @@ class RepairRecordCellTest {
         assertEquals(spawn.getBlockZ(), player.getLocation().getBlockZ());
         assertTrue(logged.stream().anyMatch(line -> line.contains("/sgen setspawn")
                         && line.contains("no cell to search")),
+                "the log must say why nothing was searched: " + logged);
+    }
+
+    @Test
+    @DisplayName("a plot on a centre data.yml does not record is not searched; it is kept and the player held")
+    void plotOnAnUnrecordedCentreIsNotSearched() {
+        SpiralGenesisPlugin plugin = load();
+        InlinePlayerMock player = player();
+        Location plot = new Location(world, 800.5, 64, 300.5);
+        // Centre 7 is in no centres table, as in a hand-edited file.
+        plugin.getDataStorage().setSpawn(player.getUniqueId(), plot, 7, 2, 1, 1, "Bob", "JAVA",
+                false);
+        assertNull(plugin.getDataStorage().getCentre(7));
+        RecordingManager manager = bindRecorder(plugin);
+
+        repair(plugin, player);
+
+        assertTrue(manager.searched.isEmpty(),
+                "with no recorded geometry any cell searched would be a guess");
+        StoredSpawn kept = plugin.getDataStorage().getRecord(player.getUniqueId());
+        assertEquals(7, kept.centre());
+        assertEquals(2, kept.index());
+        assertEquals(800.5, kept.x(), 1e-9);
+        assertEquals(300.5, kept.z(), 1e-9);
+        Location spawn = world.getSpawnLocation();
+        assertEquals(spawn.getBlockX(), player.getLocation().getBlockX());
+        assertEquals(spawn.getBlockZ(), player.getLocation().getBlockZ());
+        assertTrue(logged.stream().anyMatch(line -> line.contains("spiral centre 7")
+                        && line.contains("does not record")),
                 "the log must say why nothing was searched: " + logged);
     }
 

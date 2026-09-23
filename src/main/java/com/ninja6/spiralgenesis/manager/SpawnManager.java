@@ -889,21 +889,33 @@ public class SpawnManager {
         // the border nor spins: the caller leaves them standing where they are, which is
         // inside the border by definition.
         if (scan.bestOverall == null) {
+            SpiralCentre walked = scan.centre;
             String message = "Spawn allocation failed: every candidate across " + scan.attempt
-                    + " cells fell outside the world border of world '" + world.getName()
-                    + "'. The spiral has outgrown the border; widen it, or move origin.x and "
-                    + "origin.z so the spiral keeps growing inside it. This scan claimed "
-                    + scan.attempt + " spiral indices, the last of them "
-                    + SpiralCentre.label(scan.centre.id(), scan.index)
+                    + " cells of spiral centre " + walked.id() + " (origin " + walked.originX()
+                    + ", " + walked.originZ() + ", cell-size " + walked.cellSize()
+                    + ") fell outside the world border of world '" + world.getName()
+                    + "'. That spiral has outgrown the border; widen the border, or change "
+                    + "origin.x, origin.z or cell-size so new plots grow on a spiral inside it."
+                    + " This scan claimed " + scan.attempt + " spiral indices, the last of them "
+                    + SpiralCentre.label(walked.id(), scan.index)
                     + ", and none of them holds a plot.";
             if (scan.purpose.recordsExhaustion()) {
                 // Recorded before the outcome is published, so the next join is refused
                 // without claiming an index rather than repeating this scan and burning
                 // another max-scan-attempts of them. Never recorded for a diagnostic run,
                 // whose cells say nothing about where the live spiral has reached.
-                ExhaustionKey border = ExhaustionKey.of(world, scan.centre);
-                message += " Further allocations are refused without claiming an index until "
-                        + "the border changes.";
+                ExhaustionKey border = ExhaustionKey.of(world, walked);
+                // Keyed on the walked spiral, so after a setcenter during the scan the
+                // configured spiral is not refused, and the line must not say it is.
+                if (walked.hasGeometry(config.getOriginX(), config.getOriginZ(),
+                        config.getCellSize())) {
+                    message += " Further allocations are refused without claiming an index"
+                            + " until the border changes or origin.x, origin.z or cell-size"
+                            + " is changed.";
+                } else {
+                    message += " The origin or cell size has changed since this scan started,"
+                            + " so the next join scans the spiral configured now.";
+                }
                 // Reported once per border, here: not by the refusals that follow, and not
                 // by the other scans that were already in flight and give up against the
                 // same border after this one. Marked as announced as well, so the refusals

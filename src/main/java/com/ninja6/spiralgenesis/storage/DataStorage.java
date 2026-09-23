@@ -245,9 +245,7 @@ public interface DataStorage {
      *
      * @throws IllegalStateException while storage is failed
      */
-    default SpiralCell reserveCell(SpiralCentre centre) {
-        return reserveCell(centre.originX(), centre.originZ(), centre.cellSize());
-    }
+    SpiralCell reserveCell(SpiralCentre centre);
 
     /**
      * Ends the in-flight registration of cell {@code (centre, index)}, reserved and then

@@ -1429,7 +1429,10 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config);
         AtomicInteger indices = new AtomicInteger();
 
-        exhaustion(manager, indices);
+        SpawnManager.BorderExhausted first = exhaustion(manager, indices);
+        assertTrue(first.message().contains("refused")
+                        && first.message().contains("origin.x, origin.z or cell-size is changed"),
+                "the line says a new origin or cell size also clears it: " + first.message());
         exhaustion(manager, indices);
         assertEquals(budget, indices.get(), "refused at the exhausted centre");
 
@@ -1453,9 +1456,14 @@ class SpawnManagerTest {
             return new SpiralCentre(0, originX, originZ, cellSize).cell(indices.getAndIncrement());
         };
 
-        assertInstanceOf(SpawnManager.BorderExhausted.class,
-                manager.allocateNextSafeSpawn(moving).join());
+        SpawnManager.BorderExhausted walked = assertInstanceOf(
+                SpawnManager.BorderExhausted.class, manager.allocateNextSafeSpawn(moving).join());
         assertEquals(budget, indices.get());
+        assertTrue(walked.message().contains("spiral centre 0 (origin 0, 0, cell-size " + CELL
+                        + ")"), "the line names the spiral walked: " + walked.message());
+        assertTrue(walked.message().contains("the next join scans the spiral configured now"),
+                "and does not claim the moved spiral is refused: " + walked.message());
+        assertFalse(walked.message().contains("refused"), walked.message());
 
         // The configured spiral is the moved one, which nothing has scanned.
         exhaustion(manager, indices);

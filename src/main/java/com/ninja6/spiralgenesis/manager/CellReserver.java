@@ -26,8 +26,9 @@ public interface CellReserver {
 
     /**
      * Claims the next cell of {@code centre}, the spiral an earlier cell of the same scan
-     * came from. Unlike {@link #reserve(int, int, int)} this does not make it the spiral
-     * new scans start on.
+     * came from. A reserver backed by storage must not make it the spiral new scans start
+     * on, as {@link #of} does not; the default, for reservers that have no such spiral,
+     * reserves at its geometry.
      */
     default SpiralCell reserve(SpiralCentre centre) {
         return reserve(centre.originX(), centre.originZ(), centre.cellSize());
