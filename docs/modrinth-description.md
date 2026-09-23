@@ -51,8 +51,9 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 * **Skips bad ground.** Oceans, lava, ice, deep water, ravines, sinkholes, cliff edges and
   jagged peaks are all rejected. The plugin searches *inside* a plot for a good landing
   spot before giving up on it.
-* **Respawns at home.** Die without a bed or anchor and you return to your own plot, not to
-  world spawn.
+* **Respawns at home.** Die and you return to your own plot, not to world spawn - unless
+  a bed, a respawn anchor, a `/spawnpoint` set elsewhere or another plugin's respawn
+  location says otherwise.
 * **Cross-play aware.** Bedrock players (Geyser/Floodgate) are placed the moment they join.
   Java players behind any login plugin are held until they authenticate, so nobody burns a
   plot before proving who they are. This works without naming a login plugin, so it covers
@@ -207,7 +208,8 @@ logs `Configured world '...' (origin.world) is not loaded` at SEVERE, lists the 
 that are, and allocates nothing. New players are held where they joined and allocated as
 soon as the world is bound: correct `origin.world` and run `/sgen reload`. A world that a
 world manager loads after SpiralGenesis starts needs no reload; it is picked up the next
-time a player without a plot passes the gate or a held player acts.
+time a player without a plot passes the gate or a held player acts. Multiverse-Core is
+always enabled first, so its worlds are already loaded when SpiralGenesis starts.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.

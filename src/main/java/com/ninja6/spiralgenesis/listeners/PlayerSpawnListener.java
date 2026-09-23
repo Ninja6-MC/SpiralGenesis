@@ -344,10 +344,12 @@ public class PlayerSpawnListener implements Listener {
      * Sends a player back to their plot, but only after re-checking that the plot is still
      * survivable.
      *
-     * <p>A plot is validated once, when it is allocated, and the plugin has no claim or
-     * protection system: 500-block cells are wide open, so anyone can flood a spawn, pour
-     * lava on it or dig out the ground under it. Without a re-check the owner respawns into
-     * it, dies, and respawns into it again.
+     * <p>A plot is validated once, when it is allocated, and 500-block cells are wide open:
+     * spawn protection claims only a {@code protection.size} square around the spawn point,
+     * and only when {@code protection.enabled} is true (off by default) and GriefPrevention
+     * is present, so never on Folia. Anyone can flood a spawn, pour lava on it or dig out
+     * the ground under it. Without a re-check the owner respawns into it, dies, and respawns
+     * into it again.
      *
      * <p>The backstop rather than the main event: {@link #onPlayerDeath} normally has the
      * repair running, or finished, by the time this fires. What is left for here is the

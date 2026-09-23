@@ -267,13 +267,24 @@ never skipped, so one owed a placement is still placed.
 ### Respawn
 
 The plugin sets the player's respawn location at allocation time and handles
-`PlayerRespawnEvent` at `HIGHEST` priority. A bed or respawn anchor always takes priority;
-the genesis plot is the fallback, replacing world spawn.
+`PlayerRespawnEvent` at `HIGHEST` priority. The genesis plot is the fallback, replacing
+world spawn, and three things always outrank it:
+
+* a working bed or respawn anchor;
+* a respawn point forced elsewhere, such as by `/spawnpoint`;
+* a respawn location another plugin sets, such as EssentialsX respawn-at-home or
+  spawn-on-death, or Multiverse.
+
+The handler acts only on a respawn already headed for the plot, or one whose respawn point
+failed - a broken bed, an emptied anchor - and fell back to world spawn. Everything else is
+left where it was going.
 
 The plot is re-checked on the way through, because it was validated once - when it was
-allocated - and cells are 500 blocks wide with no claim or protection system. Anyone can
-flood a spawn, pour lava on it, or dig the ground out from under it, and without a re-check
-the owner respawns into it, dies, and respawns into it again.
+allocated - and cells are 500 blocks wide. Spawn protection claims only a
+`protection.size` square around the spawn point, and only when `protection.enabled` is
+true (it is off by default) and GriefPrevention is present, so never on Folia (see
+section 6). Anyone can flood a spawn, pour lava on it, or dig the ground out from under
+it, and without a re-check the owner respawns into it, dies, and respawns into it again.
 
 The check starts **on death**, not on respawn. That buys the seconds a player spends on the
 death screen, so a plot that can be repaired in time is usually already fixed before they

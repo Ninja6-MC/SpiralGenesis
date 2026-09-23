@@ -202,6 +202,14 @@ class WorldBindingTest {
         // already contains it, so a message that dropped the list would still pass.
         assertTrue(severe.get(0).contains("Loaded worlds: world"),
                 "the loaded worlds must be listed: " + severe.get(0));
+        // A world a manager loads after enable is still bound on the next join, so the
+        // report must not say nothing will ever be allocated.
+        assertFalse(severe.get(0).contains("no spawn will be allocated"),
+                "the report must not claim allocation is off for good: " + severe.get(0));
+        assertTrue(severe.get(0).contains("picked up on the next join"),
+                "the report must say a later load is picked up: " + severe.get(0));
+        assertTrue(severe.get(0).contains("correct origin.world and run /sgen reload"),
+                "the report must say how to fix a wrong name: " + severe.get(0));
     }
 
     @Test
@@ -406,5 +414,21 @@ class WorldBindingTest {
 
         assertEquals(1, messagesAt(Level.SEVERE).size(),
                 "a retry per join must not repeat the error: " + messagesAt(Level.SEVERE));
+    }
+
+    @Test
+    @DisplayName("plugin.yml soft-depends on Multiverse-Core, so its worlds exist at enable")
+    void softDependsOnMultiverseCore() {
+        // Multiverse-Core creates its worlds in its own onEnable. Only a softdepend entry
+        // matching its plugin.yml `name:` exactly - the same in 4.x and 5.x - orders that
+        // before the bind above; a misspelled one is ignored without a word.
+        File descriptor = new File("src/main/resources/plugin.yml");
+        assertTrue(descriptor.isFile(), "plugin.yml should be where this test expects it");
+
+        List<String> softdepend = YamlConfiguration.loadConfiguration(descriptor)
+                .getStringList("softdepend");
+
+        assertTrue(softdepend.contains("Multiverse-Core"),
+                "softdepend must name Multiverse-Core exactly, and it reads " + softdepend);
     }
 }
