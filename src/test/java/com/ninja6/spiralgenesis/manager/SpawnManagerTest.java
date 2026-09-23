@@ -4,6 +4,8 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.math.SpiralMath;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -64,7 +66,8 @@ class SpawnManagerTest {
 
     /** Default surface height of a MockBukkit world. */
     private static final int MOCK_SURFACE_Y = 4;
-    private static final int CELL = 64;
+    /** Odd, so two rings of candidates at {@link #STRIDE} fit inside a cell; see makeCellOcean. */
+    private static final int CELL = 65;
     private static final int STRIDE = 16;
 
     private ServerMock server;
@@ -220,7 +223,7 @@ class SpawnManagerTest {
      * Marks every candidate column of a cell as ocean, so the whole cell is unusable
      * rather than just its centre.
      *
-     * <p>With {@code CELL}=64 and {@code STRIDE}=16 the in-cell search reaches two rings
+     * <p>With {@code CELL}=65 and {@code STRIDE}=16 the in-cell search reaches two rings
      * out, so the candidates are exactly the 5x5 stride grid around the cell centre.
      */
     private void makeCellOcean(int gridU, int gridV) {
@@ -286,6 +289,36 @@ class SpawnManagerTest {
         assertEquals(0, res.gridV());
         assertEquals(CELL + 0.5, res.location().getX(), 1e-9);
         assertEquals(2, indices.get(), "one index per cell, including the rejected one");
+    }
+
+    @Test
+    @DisplayName("A scan hands back the cells it gave up on and keeps the one it settled on")
+    void rejectedCellsAreReleased() throws Exception {
+        makeCellOcean(0, 0);
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+        List<SpiralCell> released = new CopyOnWriteArrayList<>();
+        CellReserver cells = new CellReserver() {
+            @Override
+            public SpiralCell reserve(int originX, int originZ, int cellSize) {
+                return new SpiralCentre(3, originX, originZ, cellSize)
+                        .cell(indices.getAndIncrement());
+            }
+
+            @Override
+            public void release(SpiralCell cell) {
+                released.add(cell);
+            }
+        };
+
+        SpawnManager.LocationResult res = assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(cells).get(10, TimeUnit.SECONDS));
+
+        assertEquals(1, res.index());
+        assertEquals(3, res.centre(), "the result names the centre its cell was reserved on");
+        assertEquals("#3,1", res.plotLabel());
+        assertEquals(List.of(new SpiralCentre(3, 0, 0, CELL).cell(0)), released,
+                "only the ocean cell is handed back");
     }
 
     @Test
@@ -1356,7 +1389,7 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A cell outside the world border is skipped even though its terrain is safe")
     void candidatesOutsideTheBorderAreRejected() throws Exception {
-        // The border reaches x in (44, 84): the whole of cell 0 is outside it, and cell 1's
+        // The border reaches x in (45, 85): the whole of cell 0 is outside it, and cell 1's
         // centre is inside. Terrain everywhere is the mock's default flat, safe surface, so
         // the border is the only thing that can reject anything here.
         borderAround(CELL, 0, 20);
@@ -1915,8 +1948,8 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A plot whose cell is only partly outside the border is repaired inside it")
     void partlyOutsideCellIsRepairedInsideTheBorder() throws Exception {
-        // The border reaches x in (76, 116): cell 1's centre at x=64 is outside it, and the
-        // candidates at x=80 and x=96 are inside. The repair has to land on one of those.
+        // The border reaches x in (76, 116): cell 1's centre at x=65 is outside it, and the
+        // candidates at x=81 and x=97 are inside. The repair has to land on one of those.
         world.loadChunk(CELL >> 4, 0);
         Location stored = new Location(world, CELL + 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
         borderAround(96, 0, 20);

@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ClaimOutcome;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
@@ -26,7 +27,6 @@ import java.io.UncheckedIOException;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -82,8 +82,8 @@ class AllocationProtectionTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
-            int index = indexSupplier.getAsInt();
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
+            int index = cells.reserve(getPluginConfig()).index();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16 + 8, 64, 24);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     where, index, 0, 0, 63, 1, 1, false, Map.of()));

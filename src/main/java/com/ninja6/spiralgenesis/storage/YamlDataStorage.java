@@ -1,5 +1,8 @@
 package com.ninja6.spiralgenesis.storage;
 
+import com.ninja6.spiralgenesis.math.CellArea;
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import org.bukkit.Location;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.InvalidConfigurationException;
@@ -24,17 +27,20 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -54,6 +60,25 @@ public class YamlDataStorage implements DataStorage {
 
     /** Top-level key holding {@link #getInstalledAt()}, as an ISO-8601 instant. */
     private static final String INSTALLED_AT_KEY = "installed-at";
+
+    /**
+     * Top-level key holding the active centre's counter. Kept under the name it had before
+     * centres had ids, so a version that predates them still loads the file and resumes the
+     * spiral it would be allocating on.
+     */
+    private static final String COUNTER_KEY = "current-spiral-index";
+
+    /**
+     * Top-level table of spiral centres, {@code id: {x, z, cell-size, next-index}}. A file
+     * written before centres had ids has none, and all of its records are on centre 0.
+     */
+    private static final String CENTRES_KEY = "centres";
+
+    /** Top-level key holding the id of the centre {@link #COUNTER_KEY} counts for. */
+    private static final String ACTIVE_CENTRE_KEY = "active-centre";
+
+    /** Per-player key holding the id of the centre a plot's index is on. */
+    private static final String CENTRE_KEY = "centre";
 
     /**
      * Suffix for the copy of an unreadable file. UTC and colon-free, because a colon is not
@@ -95,38 +120,32 @@ public class YamlDataStorage implements DataStorage {
 
     private final Map<UUID, StoredSpawn> spawnCache = new ConcurrentHashMap<>();
     private final Map<String, UUID> nameIndex = new ConcurrentHashMap<>();
-    private final AtomicInteger currentIndex = new AtomicInteger();
 
     /**
-     * The highest value {@link #currentIndex} has held in this process, guarded by
-     * {@link #yamlLock}.
+     * Every spiral centre known to this process, by id, guarded by {@link #yamlLock}.
      *
-     * <p>Every index below it has been handed to a scan or recorded, and a scan that
-     * reserved one may still write it after the load that follows. So a load never restores
-     * the counter below this, whatever the file says: the file can be older than the
-     * reservation, because the reservation was not flushed before the file became
-     * unreadable, or because it was made between the save and the load of a reload. Not
-     * cleared by a failed load, which is exactly the case it exists for.
+     * <p>Not cleared by a failed load, and merged rather than replaced by a successful one:
+     * a centre recorded after the last save is still one a scan in flight may write, and
+     * its counter state is what keeps that scan's index from being handed out again.
      */
-    private int highWater;
+    private final TreeMap<Integer, CentreState> centres = new TreeMap<>();
+
+    /** Id of the centre the last reservation was made on, guarded by {@link #yamlLock}. */
+    private int activeCentre;
 
     /**
-     * Indices whose write was refused since the last successful load, guarded by
-     * {@link #yamlLock}.
-     *
-     * <p>A refused index is never recorded and its scan is over, so it is the one reserved
-     * index nothing can still write. The next load lowers the high-water mark past those at
-     * its top, which hands them out again rather than burning them - but never past
-     * {@link #highestRecorded}, since a refused rewrite of a plot already recorded, such as
-     * an in-cell repair, names an index that is not free.
+     * Whether centre 0 is that of a file written before centres had ids and has not been
+     * placed yet, guarded by {@link #yamlLock}. The next {@link #centreFor} places it at the
+     * geometry it is given, which is the configured one.
      */
-    private final Set<Integer> refusedIndices = new HashSet<>();
+    private boolean legacyCentrePending;
 
     /**
-     * The highest index recorded in this process, from a file or a write, guarded by
-     * {@link #yamlLock}. Like {@link #highWater}, not cleared by a failed load.
+     * Cells reserved by a scan and not yet recorded, refused or released, guarded by
+     * {@link #yamlLock}. Not cleared by any load: the scan holding one may write it after.
      */
-    private int highestRecorded = -1;
+    private final Map<CellKey, SpiralCell> inFlight = new HashMap<>();
+
     private final AtomicBoolean dirty = new AtomicBoolean();
 
     private ScheduledTask flushTask;
@@ -298,7 +317,7 @@ public class YamlDataStorage implements DataStorage {
         spawnCache.clear();
         nameIndex.clear();
 
-        int highestAssigned = -1;
+        Map<Integer, Integer> highestAssigned = new HashMap<>();
         Instant earliestAssigned = null;
         ConfigurationSection playersSec = loaded.getConfigurationSection("players");
         if (playersSec != null) {
@@ -328,14 +347,19 @@ public class YamlDataStorage implements DataStorage {
                         sec.getString("client", "UNKNOWN"),
                         // Absent from every file written before the key existed, and from
                         // every record not owed a placement.
-                        sec.getBoolean(PLACEMENT_OWED_KEY, false)
+                        sec.getBoolean(PLACEMENT_OWED_KEY, false),
+                        // Absent from every file written before centres had ids, all of whose
+                        // plots are on the one spiral it had: centre 0.
+                        sec.getInt(CENTRE_KEY, 0)
                 );
 
                 spawnCache.put(uuid, record);
                 if (record.playerName() != null && !record.playerName().isEmpty()) {
                     nameIndex.put(record.playerName().toLowerCase(Locale.ROOT), uuid);
                 }
-                highestAssigned = Math.max(highestAssigned, record.index());
+                if (record.onSpiral()) {
+                    highestAssigned.merge(record.centre(), record.index(), Math::max);
+                }
                 Instant assigned = toInstant(sec.get("assigned-date"));
                 if (assigned != null
                         && (earliestAssigned == null || assigned.isBefore(earliestAssigned))) {
@@ -345,24 +369,100 @@ public class YamlDataStorage implements DataStorage {
         }
 
         // Self-healing: if a crash lost the counter write, recover from the highest index
-        // actually handed out. Skipping indices is harmless; reusing one is not.
-        int stored = loaded.getInt("current-spiral-index", 0);
+        // actually handed out. Skipping indices is harmless; reusing one is not. Per centre,
+        // so returning to one centre never inherits another's maximum.
+        ConfigurationSection centresSec = loaded.getConfigurationSection(CENTRES_KEY);
+        Map<Integer, SpiralCentre> fileCentres = readCentres(centresSec);
+        Map<Integer, Integer> storedCounters = new HashMap<>();
+        for (Integer id : fileCentres.keySet()) {
+            storedCounters.put(id, centresSec.getInt(id + ".next-index", 0));
+        }
+        // The counter every version writes is the active centre's. A version that predates
+        // centres advances it and nothing else, so it is taken if it is ahead.
+        int storedActive = Math.max(0, loaded.getInt(ACTIVE_CENTRE_KEY, 0));
+        storedCounters.merge(storedActive, loaded.getInt(COUNTER_KEY, 0), Math::max);
 
+        List<String> warnings = new ArrayList<>();
         // Under the lock reservations take, so a reservation lands either before the
         // restore, and is counted in the high-water mark, or after it, on the new counter.
         synchronized (yamlLock) {
-            int reserved = highWater;
-            while (reserved > highestRecorded + 1 && refusedIndices.contains(reserved - 1)) {
-                reserved--;
+            for (SpiralCentre centre : fileCentres.values()) {
+                CentreState state = state(centre.id());
+                if (state.centre == null) {
+                    state.centre = centre;
+                } else if (!state.centre.equals(centre)) {
+                    warnings.add("data.yml records centre " + centre.id() + " at ("
+                            + centre.originX() + ", " + centre.originZ() + ") with cell-size "
+                            + centre.cellSize() + ", but this server already has it at ("
+                            + state.centre.originX() + ", " + state.centre.originZ()
+                            + ") with cell-size " + state.centre.cellSize()
+                            + "; keeping the one already in use.");
+                }
             }
-            refusedIndices.clear();
-            highestRecorded = Math.max(highestRecorded, highestAssigned);
-            int restored = Math.max(Math.max(stored, highestAssigned + 1), reserved);
-            currentIndex.set(restored);
-            highWater = restored;
+            for (Integer id : storedCounters.keySet()) {
+                state(id);
+            }
+            for (Integer id : highestAssigned.keySet()) {
+                state(id);
+            }
+            CentreState first = centres.get(0);
+            legacyCentrePending = centresSec == null && (first == null || first.centre == null);
+
+            for (Map.Entry<Integer, CentreState> entry : centres.entrySet()) {
+                int id = entry.getKey();
+                CentreState state = entry.getValue();
+                int reserved = state.highWater;
+                while (reserved > state.highestRecorded + 1
+                        && state.refused.contains(reserved - 1)) {
+                    reserved--;
+                }
+                state.refused.clear();
+                int assigned = highestAssigned.getOrDefault(id, -1);
+                state.highestRecorded = Math.max(state.highestRecorded, assigned);
+                int restored = Math.max(Math.max(storedCounters.getOrDefault(id, 0),
+                        assigned + 1), reserved);
+                state.next = restored;
+                state.highWater = restored;
+                if (state.centre == null && assigned >= 0 && !(id == 0 && legacyCentrePending)) {
+                    warnings.add("data.yml records plots on centre " + id + ", which is not in"
+                            + " its " + CENTRES_KEY + " table; new plots are not tested against"
+                            + " them.");
+                }
+            }
+            activeCentre = storedActive;
             this.yaml = loaded;
         }
+        for (String warning : warnings) {
+            plugin.getLogger().warning(warning);
+        }
         return earliestAssigned;
+    }
+
+    /** The centre table of a loaded file, skipping and reporting any entry it cannot use. */
+    private Map<Integer, SpiralCentre> readCentres(ConfigurationSection centresSec) {
+        Map<Integer, SpiralCentre> read = new HashMap<>();
+        if (centresSec == null) {
+            return read;
+        }
+        for (String key : centresSec.getKeys(false)) {
+            ConfigurationSection sec = centresSec.getConfigurationSection(key);
+            int id;
+            try {
+                id = Integer.parseInt(key.strip());
+            } catch (NumberFormatException e) {
+                id = -1;
+            }
+            if (id < 0 || sec == null || !sec.isInt("x") || !sec.isInt("z")
+                    || sec.getInt("cell-size") <= 0) {
+                plugin.getLogger().warning("Skipping malformed centre '" + key + "' in data.yml;"
+                        + " a centre needs a non-negative id, an integer x and z, and a"
+                        + " positive cell-size.");
+                continue;
+            }
+            read.put(id, new SpiralCentre(id, sec.getInt("x"), sec.getInt("z"),
+                    sec.getInt("cell-size")));
+        }
+        return read;
     }
 
     /**
@@ -393,7 +493,6 @@ public class YamlDataStorage implements DataStorage {
             installedAt = null;
             spawnCache.clear();
             nameIndex.clear();
-            currentIndex.set(0);
             dirty.set(false);
         }
 
@@ -507,7 +606,7 @@ public class YamlDataStorage implements DataStorage {
                 if (yaml == null) {
                     return;
                 }
-                yaml.set("current-spiral-index", currentIndex.get());
+                writeCentres();
                 // Serialising under the yaml lock is cheap and in-memory; the disk write
                 // below happens outside it so a slow disk never stalls an allocation.
                 serialised = yaml.saveToString();
@@ -632,20 +731,28 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
-    public boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
-                            String playerName, String clientType, boolean placementOwed) {
-        StoredSpawn record = StoredSpawn.of(location, index, gridU, gridV, playerName, clientType,
-                placementOwed);
+    public boolean setSpawn(UUID uuid, Location location, int centre, int index, int gridU,
+                            int gridV, String playerName, String clientType,
+                            boolean placementOwed) {
+        StoredSpawn record = StoredSpawn.of(location, centre, index, gridU, gridV, playerName,
+                clientType, placementOwed);
         // Checked and applied under the lock enterFailedState clears under, so the check
         // and the write cannot straddle the clear, and the answer returned is the one that
         // decided the write.
         synchronized (yamlLock) {
+            // Recorded or refused, the scan that held the cell is done with it.
+            inFlight.remove(new CellKey(centre, index));
             if (failure != null) {
-                refusedIndices.add(index);
+                if (record.onSpiral()) {
+                    state(centre).refused.add(index);
+                }
                 return false;
             }
             spawnCache.put(uuid, record);
-            highestRecorded = Math.max(highestRecorded, index);
+            if (record.onSpiral()) {
+                CentreState state = state(centre);
+                state.highestRecorded = Math.max(state.highestRecorded, index);
+            }
             if (playerName != null && !playerName.isEmpty()) {
                 nameIndex.put(playerName.toLowerCase(Locale.ROOT), uuid);
             }
@@ -655,6 +762,7 @@ public class YamlDataStorage implements DataStorage {
             String path = "players." + uuid;
             yaml.set(path + ".name", record.playerName());
             yaml.set(path + ".client", record.clientType());
+            yaml.set(path + "." + CENTRE_KEY, record.onSpiral() ? record.centre() : null);
             yaml.set(path + ".assigned-index", record.index());
             yaml.set(path + ".grid-u", record.gridU());
             yaml.set(path + ".grid-v", record.gridV());
@@ -725,25 +833,258 @@ public class YamlDataStorage implements DataStorage {
 
     @Override
     public int getCurrentIndex() {
-        return currentIndex.get();
+        synchronized (yamlLock) {
+            if (failure != null) {
+                return 0;
+            }
+            CentreState state = centres.get(activeCentre);
+            return state == null ? 0 : state.next;
+        }
+    }
+
+    @Override
+    public SpiralCentre getCentre(int id) {
+        synchronized (yamlLock) {
+            CentreState state = centres.get(id);
+            return state == null ? null : state.centre;
+        }
+    }
+
+    @Override
+    public SpiralCentre centreFor(int originX, int originZ, int cellSize) {
+        synchronized (yamlLock) {
+            throwIfFailed();
+            return resolveCentre(originX, originZ, cellSize);
+        }
+    }
+
+    @Override
+    public SpiralCell reserveCell(int originX, int originZ, int cellSize) {
+        List<String> skipped = new ArrayList<>();
+        SpiralCell cell;
+        synchronized (yamlLock) {
+            throwIfFailed();
+            SpiralCentre centre = resolveCentre(originX, originZ, cellSize);
+            cell = centre.cell(reserveLocked(centre.id(), skipped));
+        }
+        dirty.set(true);
+        logSkipped(skipped);
+        return cell;
+    }
+
+    @Override
+    public void releaseCell(SpiralCell cell) {
+        synchronized (yamlLock) {
+            inFlight.remove(new CellKey(cell.centre().id(), cell.index()));
+        }
     }
 
     @Override
     public int reserveNextIndex() {
-        // Under the lock the failure clears the counter under and a load restores it under.
-        // A reservation cannot then take an index from the zeroed counter of a failed load,
+        // Under the lock the failure is published under and a load restores the counters
+        // under. A reservation cannot then take an index from the state of a failed load,
         // which a scan could write after a later load succeeds, and every index it does take
         // is in the high-water mark that load restores the counter past.
+        List<String> skipped = new ArrayList<>();
         int reserved;
         synchronized (yamlLock) {
-            StorageFailure failed = failure;
-            if (failed != null) {
-                throw new IllegalStateException("data.yml could not be read: " + failed.error());
-            }
-            reserved = currentIndex.getAndIncrement();
-            highWater = Math.max(highWater, reserved + 1);
+            throwIfFailed();
+            reserved = reserveLocked(activeCentre, skipped);
         }
         dirty.set(true);
+        logSkipped(skipped);
         return reserved;
     }
+
+    /** Refuses a reservation while storage is failed. Called under {@link #yamlLock}. */
+    private void throwIfFailed() {
+        StorageFailure failed = failure;
+        if (failed != null) {
+            throw new IllegalStateException("data.yml could not be read: " + failed.error());
+        }
+    }
+
+    /**
+     * The centre with this geometry, recording it if there is none, and makes it the active
+     * one. Called under {@link #yamlLock}.
+     */
+    private SpiralCentre resolveCentre(int originX, int originZ, int cellSize) {
+        if (legacyCentrePending) {
+            // Every plot of a file written before centres had ids is on centre 0, and the
+            // geometry it was allocated at is taken to be the configured one.
+            legacyCentrePending = false;
+            state(0).centre = new SpiralCentre(0, originX, originZ, cellSize);
+            dirty.set(true);
+            activeCentre = 0;
+            return state(0).centre;
+        }
+        for (Map.Entry<Integer, CentreState> entry : centres.entrySet()) {
+            SpiralCentre known = entry.getValue().centre;
+            if (known != null && known.hasGeometry(originX, originZ, cellSize)) {
+                activeCentre = entry.getKey();
+                return known;
+            }
+        }
+        int id = centres.isEmpty() ? 0 : centres.lastKey() + 1;
+        SpiralCentre created = new SpiralCentre(id, originX, originZ, cellSize);
+        state(id).centre = created;
+        plugin.getLogger().info("Recorded spiral centre " + id + " at (" + originX + ", "
+                + originZ + ") with cell-size " + cellSize + ". New cells that overlap a plot"
+                + " of another centre are skipped.");
+        dirty.set(true);
+        activeCentre = id;
+        return created;
+    }
+
+    /**
+     * Claims the next index of centre {@code id} whose cell overlaps nothing it must not,
+     * and registers that cell as in flight. Called under {@link #yamlLock}.
+     *
+     * @param skipped collects a line for each index passed over
+     */
+    private int reserveLocked(int id, List<String> skipped) {
+        CentreState state = state(id);
+        while (true) {
+            int index = state.next++;
+            state.highWater = Math.max(state.highWater, index + 1);
+            if (state.centre == null) {
+                // Centre 0 of a file written before centres had ids, before anything has
+                // said where it is: there is no cell to test.
+                return index;
+            }
+            SpiralCell cell = state.centre.cell(index);
+            String blocker = overlapping(cell);
+            if (blocker == null) {
+                inFlight.put(new CellKey(id, index), cell);
+                return index;
+            }
+            skipped.add("Skipped plot " + cell.label() + ": its cell overlaps " + blocker + ".");
+        }
+    }
+
+    /**
+     * What a candidate cell overlaps, or {@code null} if nothing. Called under
+     * {@link #yamlLock}.
+     *
+     * <p>A plot is tested by its whole cell, and a point set by hand by its column. Plots
+     * of the candidate's own centre are not tested: two indices of one spiral never share a
+     * cell, and two cells side by side share no column (see {@link CellArea}).
+     */
+    private String overlapping(SpiralCell candidate) {
+        CellArea area = candidate.area();
+        int id = candidate.centre().id();
+        for (StoredSpawn record : spawnCache.values()) {
+            CellArea other;
+            if (!record.onSpiral()) {
+                other = CellArea.column((int) Math.floor(record.x()),
+                        (int) Math.floor(record.z()));
+            } else {
+                if (record.centre() == id) {
+                    continue;
+                }
+                CentreState state = centres.get(record.centre());
+                if (state == null || state.centre == null) {
+                    continue;
+                }
+                other = state.centre.cell(record.index()).area();
+            }
+            if (area.overlaps(other)) {
+                return "plot " + record.plotLabel() + " of " + record.playerName();
+            }
+        }
+        for (SpiralCell held : inFlight.values()) {
+            if (held.centre().id() != id && area.overlaps(held.area())) {
+                return "plot " + held.label() + ", which is still being allocated";
+            }
+        }
+        return null;
+    }
+
+    private void logSkipped(List<String> skipped) {
+        for (String line : skipped) {
+            plugin.getLogger().info(line);
+        }
+    }
+
+    /** The state of centre {@code id}, created empty if absent. Under {@link #yamlLock}. */
+    private CentreState state(int id) {
+        return centres.computeIfAbsent(id, key -> new CentreState());
+    }
+
+    /**
+     * Writes the centre table and the active centre's counter into {@link #yaml}. Called
+     * under {@link #yamlLock}.
+     *
+     * <p>A file with no centre placed yet is left as a version that predates centres wrote
+     * it, so it still reads as one.
+     */
+    private void writeCentres() {
+        CentreState active = centres.get(activeCentre);
+        yaml.set(COUNTER_KEY, active == null ? 0 : active.next);
+        yaml.set(CENTRES_KEY, null);
+        boolean anyPlaced = false;
+        for (Map.Entry<Integer, CentreState> entry : centres.entrySet()) {
+            SpiralCentre centre = entry.getValue().centre;
+            if (centre == null) {
+                continue;
+            }
+            anyPlaced = true;
+            String path = CENTRES_KEY + "." + entry.getKey();
+            yaml.set(path + ".x", centre.originX());
+            yaml.set(path + ".z", centre.originZ());
+            yaml.set(path + ".cell-size", centre.cellSize());
+            yaml.set(path + ".next-index", entry.getValue().next);
+        }
+        yaml.set(ACTIVE_CENTRE_KEY, anyPlaced ? activeCentre : null);
+    }
+
+    /**
+     * The counter of one centre, guarded by {@link #yamlLock}.
+     *
+     * <p>Kept per centre so that returning to a centre resumes its own spiral, and so that
+     * the restore rules below never carry one centre's maximum over to another.
+     */
+    private static final class CentreState {
+
+        /**
+         * Where this spiral is, or {@code null} for centre 0 of a file written before
+         * centres had ids, until something says where it is.
+         */
+        private SpiralCentre centre;
+
+        /** The next index this centre hands out. */
+        private int next;
+
+        /**
+         * The highest value {@link #next} has held in this process.
+         *
+         * <p>Every index below it has been handed to a scan or recorded, and a scan that
+         * reserved one may still write it after the load that follows. So a load never
+         * restores the counter below this, whatever the file says: the file can be older
+         * than the reservation, because the reservation was not flushed before the file
+         * became unreadable, or because it was made between the save and the load of a
+         * reload. Not cleared by a failed load, which is exactly the case it exists for.
+         */
+        private int highWater;
+
+        /**
+         * The highest index recorded in this process, from a file or a write. Like
+         * {@link #highWater}, not cleared by a failed load.
+         */
+        private int highestRecorded = -1;
+
+        /**
+         * Indices whose write was refused since the last successful load.
+         *
+         * <p>A refused index is never recorded and its scan is over, so it is the one
+         * reserved index nothing can still write. The next load lowers the high-water mark
+         * past those at its top, which hands them out again rather than burning them - but
+         * never past {@link #highestRecorded}, since a refused rewrite of a plot already
+         * recorded, such as an in-cell repair, names an index that is not free.
+         */
+        private final Set<Integer> refused = new HashSet<>();
+    }
+
+    /** A cell by centre id and index, as the in-flight table keys it. */
+    private record CellKey(int centre, int index) {}
 }

@@ -1,5 +1,7 @@
 package com.ninja6.spiralgenesis.storage;
 
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import org.bukkit.Location;
 
 import java.time.Instant;
@@ -107,14 +109,31 @@ public interface DataStorage {
     }
 
     /**
+     * Records a spawn assignment on centre 0, as {@link #setSpawn(UUID, Location, int, int,
+     * int, int, String, String, boolean)} does.
+     */
+    default boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                             String playerName, String clientType, boolean placementOwed) {
+        return setSpawn(uuid, location, 0, index, gridU, gridV, playerName, clientType,
+                placementOwed);
+    }
+
+    /**
      * Records a spawn assignment, as {@link #setSpawn(UUID, Location, int, int, int, String,
-     * String)} does, and whether its player is still owed a placement on it: set for a plot
-     * recorded after its player disconnected, so the mark survives a restart.
+     * String)} does, on spiral centre {@code centre}, and whether its player is still owed a
+     * placement on it: set for a plot recorded after its player disconnected, so the mark
+     * survives a restart.
      *
+     * <p>Written or refused, the cell {@code (centre, index)} is no longer in flight (see
+     * {@link #reserveCell}): once written the record stands for it, and once refused nothing
+     * will write it.
+     *
+     * @param centre the id of the spiral centre {@code index} was reserved on; ignored for a
+     *               point set by hand, whose index is -1
      * @return true if the record was written, false if it was refused because storage is
      *         failed, in which case nothing changed
      */
-    boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+    boolean setSpawn(UUID uuid, Location location, int centre, int index, int gridU, int gridV,
                      String playerName, String clientType, boolean placementOwed);
 
     /**
@@ -163,22 +182,73 @@ public interface DataStorage {
     Instant getInstalledAt();
 
     /**
-     * Reads the next index that would be handed out, without consuming it.
+     * Reads the next index that would be handed out on the active centre, without consuming
+     * it. The active centre is the one the last reservation was made on, or the one the
+     * file names as active; see {@link #reserveCell}.
      */
     int getCurrentIndex();
 
     /**
-     * Atomically claims the next global spiral sequence index.
+     * The spiral centre recorded under {@code id}, or {@code null} if none is, or if it is
+     * centre 0 of a file written before centres had ids and nothing has been reserved since
+     * to say where it is.
+     */
+    SpiralCentre getCentre(int id);
+
+    /**
+     * The spiral centre growing from {@code (originX, originZ)} with cells of
+     * {@code cellSize}, recorded under a new id if there is none yet, which becomes the
+     * active centre.
      *
-     * <p>Every caller receives a distinct value, so concurrent allocations can never be
+     * <p>Returning to a geometry used before returns its centre, with its counter where it
+     * was left. The first call after loading a file written before centres had ids records
+     * centre 0 at the geometry it is given, which is the configured one, and every record in
+     * that file is on centre 0.
+     *
+     * @throws IllegalStateException while storage is failed
+     */
+    SpiralCentre centreFor(int originX, int originZ, int cellSize);
+
+    /**
+     * Atomically claims the next free cell of the spiral growing from
+     * {@code (originX, originZ)} with cells of {@code cellSize}; see {@link #centreFor}.
+     *
+     * <p>Every caller receives a distinct index, so concurrent allocations can never be
      * mapped onto the same grid cell. Indices consumed by a rejected (for example ocean)
      * candidate are simply never reused.
      *
-     * <p>That holds across a load too, including one that recovers from a failure with a
-     * file older than the reservation: the scan that holds an index may still write it
-     * afterwards, so a load never restores the counter below it. The one index a load
-     * hands out again is one whose {@link #setSpawn} was refused, since nothing can still
-     * write it.
+     * <p>A cell of another centre's spiral can cover the same ground, so each index is
+     * tested before it is handed out, and skipped if its cell overlaps the cell of a plot
+     * recorded on another centre, the column of a point set by hand, or a cell of another
+     * centre that is still in flight. A skipped index is consumed like any other and is
+     * logged. The test, the index and the registration of the cell as in flight are one
+     * step under one lock, so two scans on different centres cannot both take the same
+     * ground. The cell stays in flight until {@link #releaseCell} or a {@link #setSpawn} for
+     * it, which a scan in flight across a reload or a centre move keeps.
+     *
+     * <p>The counter is per centre, and survives a load as {@link #reserveNextIndex} says.
+     *
+     * @return the claimed cell
+     * @throws IllegalStateException while storage is failed, since the counter it would
+     *                               advance is the one that could not be read
+     */
+    SpiralCell reserveCell(int originX, int originZ, int cellSize);
+
+    /**
+     * Ends the in-flight registration of a cell a scan gave up on, so it no longer blocks
+     * cells of other centres. Its index is not handed out again.
+     */
+    void releaseCell(SpiralCell cell);
+
+    /**
+     * Atomically claims the next index of the active centre, as {@link #reserveCell} does
+     * for its geometry.
+     *
+     * <p>Every caller receives a distinct value. That holds across a load too, including one
+     * that recovers from a failure with a file older than the reservation: the scan that
+     * holds an index may still write it afterwards, so a load never restores a centre's
+     * counter below it. The one index a load hands out again is one whose {@link #setSpawn}
+     * was refused, since nothing can still write it.
      *
      * @return the claimed index
      * @throws IllegalStateException while storage is failed, since the counter it would

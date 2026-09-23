@@ -7,6 +7,7 @@ import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
@@ -38,7 +39,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -126,15 +126,16 @@ class RefusedWriteTest {
         }
 
         @Override
-        public boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
-                                String playerName, String clientType, boolean placementOwed) {
+        public boolean setSpawn(UUID uuid, Location location, int centre, int index, int gridU,
+                                int gridV, String playerName, String clientType,
+                                boolean placementOwed) {
             Runnable hook = beforeNextWrite;
             beforeNextWrite = null;
             if (hook != null) {
                 hook.run();
             }
-            return super.setSpawn(uuid, location, index, gridU, gridV, playerName, clientType,
-                    placementOwed);
+            return super.setSpawn(uuid, location, centre, index, gridU, gridV, playerName,
+                    clientType, placementOwed);
         }
     }
 
@@ -143,13 +144,16 @@ class RefusedWriteTest {
 
         Location next;
 
+        private final PluginConfig config;
+
         private StubSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
+            this.config = config;
         }
 
         @Override
-        public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
-            int index = indexSupplier.getAsInt();
+        public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(CellReserver cells) {
+            int index = cells.reserve(config).index();
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     next, index, 0, 0, 63, 1, 1, false, Map.of()));
         }
@@ -185,8 +189,8 @@ class RefusedWriteTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
-            int index = indexSupplier.getAsInt();
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
+            int index = cells.reserve(getPluginConfig()).index();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16 + 0.5, 64, 0.5);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     where, index, 0, 0, 63, 1, 1, false, Map.of()));
@@ -331,7 +335,7 @@ class RefusedWriteTest {
         assertNull(newcomer.respawnPoint, "a refused write must not set a respawn point");
         assertEquals(standing, newcomer.getLocation(), "a refused write must not teleport");
         assertEquals(1, plugin.provider.reservations.size(), "a refused write must not claim");
-        List<LogRecord> said = loggedContaining("Plot #1 for Newcomer was not recorded");
+        List<LogRecord> said = loggedContaining("Plot #0,1 for Newcomer was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertEquals(Level.WARNING, said.get(0).getLevel());
         assertNull(said.get(0).getThrown(), "an expected refusal is plain text, not a trace");
@@ -445,7 +449,7 @@ class RefusedWriteTest {
         assertFalse(plugin.getDataStorage().hasSpawn(leaver.getUniqueId()));
         assertFalse(gate(plugin).isHeld(leaver.getUniqueId()),
                 "a disconnected player cannot be held");
-        List<LogRecord> said = loggedContaining("Plot #0 for Leaver was not recorded");
+        List<LogRecord> said = loggedContaining("Plot #0,0 for Leaver was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertTrue(said.get(0).getMessage().contains("they left before they could be held"),
                 "the line must say they left: " + said.get(0).getMessage());
@@ -498,7 +502,7 @@ class RefusedWriteTest {
         assertFalse(racer.isConnected(), "the fixture should have disconnected the player");
         assertTrue(gate(plugin).isHeld(racer.getUniqueId()),
                 "the fixture should leave the entry in place, as before the quit event runs");
-        List<LogRecord> said = loggedContaining("Plot #0 for Racer was not recorded");
+        List<LogRecord> said = loggedContaining("Plot #0,0 for Racer was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertTrue(said.get(0).getMessage().contains("will be allocated when they next join"),
                 "the line must say they left: " + said.get(0).getMessage());
@@ -516,7 +520,7 @@ class RefusedWriteTest {
         move(newcomer);
 
         assertTrue(gate(plugin).isHeld(newcomer.getUniqueId()));
-        List<LogRecord> said = loggedContaining("Plot #0 for Newcomer was not recorded");
+        List<LogRecord> said = loggedContaining("Plot #0,0 for Newcomer was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertTrue(said.get(0).getMessage().contains("they are held"),
                 "the line must report the hold: " + said.get(0).getMessage());
@@ -576,11 +580,11 @@ class RefusedWriteTest {
         assertEquals(standing, bob.getLocation(), "a refused write must not teleport");
         assertTrue(plugin.provider.reservations.isEmpty(), "the repaired point must not be claimed");
         assertTrue(plugin.provider.releases.isEmpty(), "the old claim must not be released");
-        List<LogRecord> said = loggedContaining("Repair of plot #3 for Bob was not recorded");
+        List<LogRecord> said = loggedContaining("Repair of plot #0,3 for Bob was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertEquals(Level.WARNING, said.get(0).getLevel());
         assertNull(said.get(0).getThrown(), "an expected refusal is plain text, not a trace");
-        assertTrue(loggedContaining("Repaired plot #3").isEmpty(),
+        assertTrue(loggedContaining("Repaired plot #0,3").isEmpty(),
                 "nothing may report success");
 
         writeData(plugin, healthy);

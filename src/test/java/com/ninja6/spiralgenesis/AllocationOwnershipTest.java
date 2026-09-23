@@ -5,6 +5,7 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -27,7 +28,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -154,10 +154,10 @@ class AllocationOwnershipTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             // Consumes an index exactly as a real scan does, so the supplier itself records
             // how many were burned.
-            int index = indexSupplier.getAsInt();
+            int index = cells.reserve(getPluginConfig()).index();
             whileAllocating.accept(this);
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16, 64, 0);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
@@ -186,7 +186,7 @@ class AllocationOwnershipTest {
         final AtomicInteger scans = new AtomicInteger();
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             scans.incrementAndGet();
             return CompletableFuture.completedFuture(new SpawnManager.BorderExhausted(
                     "Spawn allocation refused: nothing inside the world border.", 0));

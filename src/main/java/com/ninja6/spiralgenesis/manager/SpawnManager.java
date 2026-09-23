@@ -2,6 +2,8 @@ package com.ninja6.spiralgenesis.manager;
 
 import com.ninja6.spiralgenesis.config.PlacementStrategy;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.math.SpiralMath;
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
@@ -39,13 +41,14 @@ public class SpawnManager {
     private final PluginConfig config;
 
     /**
-     * The border geometry a scan has already given up against, or {@code null} if none has.
+     * The border and spiral a scan has already given up against, or {@code null} if none
+     * has.
      *
      * <p>Atomic because allocations resolve on whichever region thread owned the last
      * candidate, and the next one may start on another. Swapped rather than set, so that of
      * several scans in flight that exhaust against the same border, exactly one reports it.
      */
-    private final AtomicReference<BorderGeometry> exhaustedAgainst = new AtomicReference<>();
+    private final AtomicReference<ExhaustionKey> exhaustedAgainst = new AtomicReference<>();
 
     /**
      * The exhausted border the console was last told is the current one, or {@code null}
@@ -56,7 +59,7 @@ public class SpawnManager {
      * refused against the old record without scanning, and without this the operator would
      * have been told about it only once, before the border first moved.
      */
-    private final AtomicReference<BorderGeometry> announcedAgainst = new AtomicReference<>();
+    private final AtomicReference<ExhaustionKey> announcedAgainst = new AtomicReference<>();
 
     private static final Set<Material> HAZARD_MATERIALS = EnumSet.of(
             Material.WATER, Material.LAVA, Material.ICE, Material.PACKED_ICE,
@@ -177,19 +180,24 @@ public class SpawnManager {
      * by that scan, or, when the border has since moved away and back, by the first join
      * refused after it returned. The refusals in between add nothing.
      *
-     * @param indexSupplier atomic source of candidate spiral indices
+     * <p>Every cell the scan reserves and does not settle on is handed back to
+     * {@code cells} once the outcome is known, so it stops blocking other centres' cells.
+     * The one it settles on stays reserved until the caller records it.
+     *
+     * @param cells atomic source of candidate cells
      * @return CompletableFuture resolving to a {@link LocationResult} or a
      *         {@link BorderExhausted}
      */
-    public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
+    public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(CellReserver cells) {
         // Refused before a single index is claimed. A scan that has already walked its whole
         // budget outside this exact border will do it again for the same reason, and every
         // repeat would advance the spiral by another max-scan-attempts indices that no
         // player is ever recorded against - once per join, for every affected player, for
         // as long as the border stays where it is.
         //
-        // Held against the border's geometry rather than as a flag, so widening or moving
-        // the border makes the next join scan again with nothing for an operator to reset.
+        // Held against the border's geometry and the spiral's rather than as a flag, so
+        // widening or moving the border, or moving the spiral's centre or changing its cell
+        // size, makes the next join scan again with nothing for an operator to reset.
         //
         // Read-then-act, and deliberately not made atomic: allocations already in flight when
         // the first exhaustion is recorded each finish their own scan, so a join surge costs
@@ -202,14 +210,13 @@ public class SpawnManager {
         // scan gave up, which nothing has reported since it moved: the first join refused
         // on its return says so, and swapping the announcement means only one of several
         // joins arriving together does.
-        BorderGeometry current = BorderGeometry.of(world);
-        BorderGeometry gaveUpAgainst = exhaustedAgainst.get();
+        ExhaustionKey current = ExhaustionKey.of(world, config);
+        ExhaustionKey gaveUpAgainst = exhaustedAgainst.get();
         if (gaveUpAgainst != null && gaveUpAgainst.equals(current)) {
             String message = "Spawn allocation refused: an earlier scan found nothing inside "
                     + "the world border of world '" + world.getName() + "' at its current "
-                    + "centre and size. Widen the border or move its centre and the next join "
-                    + "scans again on its own; if you change origin.x, origin.z or cell-size "
-                    + "instead, run /sgen reload.";
+                    + "centre and size. Widen the border, move its centre, or change origin.x, "
+                    + "origin.z or cell-size, and the next join scans again on its own.";
             if (!current.equals(announcedAgainst.getAndSet(current))) {
                 plugin.getLogger().warning(message);
             }
@@ -220,8 +227,23 @@ public class SpawnManager {
         announcedAgainst.set(null);
 
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
-        nextCell(new Scan(indexSupplier, ScanPurpose.PLAYER_ALLOCATION, result));
+        Scan scan = new Scan(cells, ScanPurpose.PLAYER_ALLOCATION, result);
+        // Attached before the first cell is reserved, so no outcome, exceptional ones
+        // included, can leave a cell registered as in flight behind it. A reservation that
+        // throws has reserved nothing.
+        result.whenComplete((outcome, error) -> scan.releaseAllBut(
+                outcome instanceof LocationResult found ? found : null));
+        nextCell(scan);
         return result;
+    }
+
+    /**
+     * {@link #allocateNextSafeSpawn(CellReserver)} on cells numbered by
+     * {@code indexSupplier} at the configured geometry, recorded nowhere and tested against
+     * nothing.
+     */
+    public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
+        return allocateNextSafeSpawn(CellReserver.counting(indexSupplier));
     }
 
     /**
@@ -249,7 +271,7 @@ public class SpawnManager {
      */
     public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
-        nextCell(new Scan(indexSupplier, ScanPurpose.SIMULATION, result));
+        nextCell(new Scan(CellReserver.counting(indexSupplier), ScanPurpose.SIMULATION, result));
         return result;
     }
 
@@ -271,7 +293,7 @@ public class SpawnManager {
      */
     public CompletableFuture<LocationResult> findSafeSpawnInCell(int index) {
         CompletableFuture<AllocationOutcome> search = new CompletableFuture<>();
-        nextCell(new Scan(() -> index, ScanPurpose.REPAIR, search));
+        nextCell(new Scan(CellReserver.counting(() -> index), ScanPurpose.REPAIR, search));
         // A repair never leaves its cell, so it resolves to null in finishCell before the
         // exhaustion branch is reached; a BorderExhausted here is a defect, not an outcome.
         return search.thenApply(outcome -> switch (outcome) {
@@ -711,16 +733,37 @@ public class SpawnManager {
     }
 
     /**
-     * Claims the next spiral index and restarts the candidate search inside its cell.
+     * What a scan that gave up against the border gave up against: the border, and the
+     * spiral it was walking, since a different centre or cell size walks different cells.
+     * The spiral is keyed by its geometry, which is what its centre id stands for.
+     */
+    private record ExhaustionKey(BorderGeometry border, int originX, int originZ,
+                                 int cellSize) {
+
+        private static ExhaustionKey of(World world, PluginConfig config) {
+            return new ExhaustionKey(BorderGeometry.of(world), config.getOriginX(),
+                    config.getOriginZ(), config.getCellSize());
+        }
+    }
+
+    /**
+     * Claims the next cell and restarts the candidate search inside it.
+     *
+     * <p>A cell skipped because it overlaps another centre's plot is skipped inside the
+     * reservation, so it is not an attempt and does not count toward
+     * {@code max-scan-attempts}.
      */
     private void nextCell(Scan scan) {
         scan.attempt++;
-        scan.index = scan.indexSupplier.getAsInt();
-        int[] grid = SpiralMath.indexToGrid(scan.index);
+        SpiralCell cell = scan.cells.reserve(config);
+        scan.reserved.add(cell);
+        scan.centre = cell.centre();
+        scan.index = cell.index();
+        int[] grid = cell.grid();
         scan.gridU = grid[0];
         scan.gridV = grid[1];
-        scan.centreX = config.getOriginX() + (grid[0] * config.getCellSize());
-        scan.centreZ = config.getOriginZ() + (grid[1] * config.getCellSize());
+        scan.centreX = cell.centreX();
+        scan.centreZ = cell.centreZ();
         scan.candidate = -1;
         scan.bestInCell = null;
         nextCandidate(scan);
@@ -823,14 +866,15 @@ public class SpawnManager {
                     + " cells fell outside the world border of world '" + world.getName()
                     + "'. The spiral has outgrown the border; widen it, or move origin.x and "
                     + "origin.z so the spiral keeps growing inside it. This scan claimed "
-                    + scan.attempt + " spiral indices, the last of them " + scan.index
+                    + scan.attempt + " spiral indices, the last of them "
+                    + SpiralCentre.label(scan.centre.id(), scan.index)
                     + ", and none of them holds a plot.";
             if (scan.purpose.recordsExhaustion()) {
                 // Recorded before the outcome is published, so the next join is refused
                 // without claiming an index rather than repeating this scan and burning
                 // another max-scan-attempts of them. Never recorded for a diagnostic run,
                 // whose cells say nothing about where the live spiral has reached.
-                BorderGeometry border = BorderGeometry.of(world);
+                ExhaustionKey border = ExhaustionKey.of(world, config);
                 message += " Further allocations are refused without claiming an index until "
                         + "the border changes.";
                 // Reported once per border, here: not by the refusals that follow, and not
@@ -852,7 +896,8 @@ public class SpawnManager {
         Candidate fallback = scan.bestOverall;
         plugin.getLogger().warning("Reached maximum scan attempts ("
                 + config.getMaxScanAttempts() + "); falling back to the best candidate seen, "
-                + "index " + fallback.index() + " at surface Y=" + fallback.surfaceY() + ".");
+                + "plot " + SpiralCentre.label(fallback.centre(), fallback.index())
+                + " at surface Y=" + fallback.surfaceY() + ".");
         scan.result.complete(scan.resultFor(fallback, true));
     }
 
@@ -863,9 +908,14 @@ public class SpawnManager {
      * <p>{@link SpiralMath#indexToGrid} fills the {@code (2r+1) x (2r+1)} box around the
      * origin within its first {@code (2r+1)^2} indices, so bounding the index bounds the
      * offset.
+     *
+     * <p>The bound is {@code (cell-size - 1) / 2} rather than {@code cell-size / 2}, which
+     * keeps every candidate inside {@link SpiralCell#area}. With an even cell size the
+     * larger bound let a cell probe the first column of the next cell over, the one column
+     * two neighbouring cells could both place a player in.
      */
     private int candidateBudget() {
-        int ringsThatFit = (config.getCellSize() / 2) / config.getStride();
+        int ringsThatFit = ((config.getCellSize() - 1) / 2) / config.getStride();
         int fitsInCell = (2 * ringsThatFit + 1) * (2 * ringsThatFit + 1);
         return Math.min(config.getMaxCandidates(), fitsInCell);
     }
@@ -934,7 +984,7 @@ public class SpawnManager {
         }
 
         Location location = new Location(world, x + 0.5, surfaceY + 1.0, z + 0.5);
-        return new Candidate(location, scan.index, scan.gridU, scan.gridV,
+        return new Candidate(location, scan.centre.id(), scan.index, scan.gridU, scan.gridV,
                 surfaceY, roughness, badness, reasons);
     }
 
@@ -1139,11 +1189,18 @@ public class SpawnManager {
      * makes the previous probe's writes visible to the next.
      */
     private static final class Scan {
-        private final IntSupplier indexSupplier;
+        private final CellReserver cells;
         private final ScanPurpose purpose;
         private final CompletableFuture<AllocationOutcome> result;
 
+        /**
+         * Every cell this scan has reserved. Written only by the probe in flight; read by
+         * the completion, which the future's own completion orders after the last write.
+         */
+        private final List<SpiralCell> reserved = new ArrayList<>();
+
         private int attempt;
+        private SpiralCentre centre;
         private int index;
         private int gridU;
         private int gridV;
@@ -1155,22 +1212,33 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(IntSupplier indexSupplier, ScanPurpose purpose,
+        private Scan(CellReserver cells, ScanPurpose purpose,
                      CompletableFuture<AllocationOutcome> result) {
-            this.indexSupplier = indexSupplier;
+            this.cells = cells;
             this.purpose = purpose;
             this.result = result;
+        }
+
+        /** Hands back every reserved cell but the one {@code kept} is in, if any. */
+        private void releaseAllBut(LocationResult kept) {
+            for (SpiralCell cell : reserved) {
+                if (kept == null || cell.centre().id() != kept.centre()
+                        || cell.index() != kept.index()) {
+                    cells.release(cell);
+                }
+            }
         }
 
         private LocationResult resultFor(Candidate winner, boolean fallback) {
             return new LocationResult(winner.location(), winner.index(),
                     winner.gridU(), winner.gridV(), winner.surfaceY(),
-                    attempt, candidatesProbed, fallback, Map.copyOf(rejections));
+                    attempt, candidatesProbed, fallback, Map.copyOf(rejections),
+                    winner.centre());
         }
     }
 
     /** One scored candidate point. */
-    private record Candidate(Location location, int index, int gridU, int gridV,
+    private record Candidate(Location location, int centre, int index, int gridU, int gridV,
                              int surfaceY, int roughness, int badness,
                              Set<RejectionReason> reasons) {
 
@@ -1186,9 +1254,26 @@ public class SpawnManager {
      * cellsProbed} is the number of spiral indices consumed, so a ratio well above 1 across
      * many allocations means the safety rules are rejecting more terrain than the world
      * actually warrants.
+     *
+     * @param centre id of the spiral centre {@code index} is on
      */
     public record LocationResult(Location location, int index, int gridU, int gridV,
                                  int surfaceY, int cellsProbed, int candidatesProbed,
-                                 boolean fallback, Map<RejectionReason, Integer> rejections)
-            implements AllocationOutcome {}
+                                 boolean fallback, Map<RejectionReason, Integer> rejections,
+                                 int centre)
+            implements AllocationOutcome {
+
+        /** A result on centre 0. */
+        public LocationResult(Location location, int index, int gridU, int gridV,
+                              int surfaceY, int cellsProbed, int candidatesProbed,
+                              boolean fallback, Map<RejectionReason, Integer> rejections) {
+            this(location, index, gridU, gridV, surfaceY, cellsProbed, candidatesProbed,
+                    fallback, rejections, 0);
+        }
+
+        /** How this plot is named in commands and logs; see {@link SpiralCentre#label}. */
+        public String plotLabel() {
+            return SpiralCentre.label(centre, index);
+        }
+    }
 }

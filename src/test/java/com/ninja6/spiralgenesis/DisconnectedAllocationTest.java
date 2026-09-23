@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
@@ -32,7 +33,6 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.LogRecord;
 
@@ -104,12 +104,12 @@ class DisconnectedAllocationTest {
         private int unfinishedIndex;
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             if (!deferNextScan) {
-                return super.allocateSpawn(indexSupplier);
+                return super.allocateSpawn(cells);
             }
             deferNextScan = false;
-            unfinishedIndex = indexSupplier.getAsInt();
+            unfinishedIndex = cells.reserve(getPluginConfig()).index();
             unfinished = new CompletableFuture<>();
             return unfinished;
         }
@@ -258,7 +258,7 @@ class DisconnectedAllocationTest {
         assertEquals(standing, leaver.getLocation(), "no teleport for a player who is gone");
         assertTrue(plugin.provider.reservations.isEmpty(),
                 "no claim is made off the player's thread");
-        assertEquals(1, loggedContaining("Leaver disconnected before plot #0").size(),
+        assertEquals(1, loggedContaining("Leaver disconnected before plot #0,0").size(),
                 "the deferred placement is logged once");
         return record;
     }
@@ -276,7 +276,7 @@ class DisconnectedAllocationTest {
                 "they keep the index reserved for them");
         assertEquals(1, plugin.getDataStorage().getCurrentIndex(),
                 "returning does not reserve a second index");
-        assertEquals(1, loggedContaining("Teleported returning player Leaver to plot #0").size());
+        assertEquals(1, loggedContaining("Teleported returning player Leaver to plot #0,0").size());
     }
 
     @Test
@@ -611,7 +611,7 @@ class DisconnectedAllocationTest {
         assertNull(returning.respawnPoint, "a refused clear must not set a respawn point");
         assertEquals(standing, returning.getLocation(), "a refused clear must not teleport");
         assertTrue(plugin.provider.reservations.isEmpty(), "a refused clear must not claim");
-        assertEquals(1, loggedContaining("Plot #0 for Leaver was not placed").size());
+        assertEquals(1, loggedContaining("Plot #0,0 for Leaver was not placed").size());
 
         // The mark is still in the file, so the placement is made once storage reads again.
         writeData(plugin, marked);
@@ -724,11 +724,11 @@ class DisconnectedAllocationTest {
         assertNull(leaver.respawnPoint, "a refused write must not set a respawn point");
         assertEquals(standing, leaver.getLocation(), "a refused write must not teleport");
         assertTrue(plugin.provider.reservations.isEmpty(), "a refused write must not claim");
-        List<LogRecord> said = loggedContaining("Plot #0 for Leaver was not recorded");
+        List<LogRecord> said = loggedContaining("Plot #0,0 for Leaver was not recorded");
         assertEquals(1, said.size(), "the refusal is logged once: " + said);
         assertTrue(said.get(0).getMessage().contains("they left before they could be held"),
                 "the line must say they left: " + said.get(0).getMessage());
-        assertTrue(loggedContaining("Leaver disconnected before plot #0").isEmpty(),
+        assertTrue(loggedContaining("Leaver disconnected before plot #0,0").isEmpty(),
                 "a refused write must not be reported as recorded");
 
         // Storage recovers, and the player returns to an ordinary first allocation. The

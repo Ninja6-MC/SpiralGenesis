@@ -8,6 +8,7 @@ import com.ninja6.spiralgenesis.config.AllocationTrigger;
 import com.ninja6.spiralgenesis.listeners.AuthMeHookListener;
 import com.ninja6.spiralgenesis.listeners.PlayerActionGateListener;
 import com.ninja6.spiralgenesis.listeners.PlayerSpawnListener;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
@@ -34,7 +35,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
-import java.util.function.IntSupplier;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -337,9 +337,33 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 return;
             }
             unresolvedWorldReported.set(null);
+            recordConfiguredCentre(config);
             this.spawnManager = new SpawnManager(this, world, config);
             getLogger().info("SpawnManager bound to world '" + world.getName()
                     + "' (origin.world: '" + configured + "').");
+        }
+    }
+
+    /**
+     * Records the configured spiral centre, so that a file written before centres had ids
+     * has its plots placed on centre 0 at the origin and cell size configured when it is
+     * first loaded, rather than wherever the centre has been moved to by the first
+     * allocation after it.
+     *
+     * <p>Skipped while storage is failed; the reservation that follows the reload which
+     * reads it does the same.
+     */
+    private void recordConfiguredCentre(PluginConfig config) {
+        DataStorage storage = dataStorage;
+        if (storage == null || storage.isFailed()) {
+            return;
+        }
+        try {
+            storage.centreFor(config.getOriginX(), config.getOriginZ(), config.getCellSize());
+        } catch (IllegalStateException e) {
+            // A reload that failed to read the file in between; the next reservation after
+            // one that succeeds records it.
+            getLogger().fine("Spiral centre not recorded: " + e.getMessage());
         }
     }
 
@@ -440,7 +464,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // there escapes before exceptionally() below is ever attached. That would leave the
         // guard held for the lifetime of the process, and a player permanently unallocatable.
         try {
-            allocateSpawn(dataStorage::reserveNextIndex).thenAccept(outcome -> {
+            allocateSpawn(CellReserver.of(dataStorage)).thenAccept(outcome -> {
                 SpawnManager.LocationResult res;
                 switch (outcome) {
                     case SpawnManager.LocationResult found -> res = found;
@@ -475,13 +499,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                         // own answer is what everything after it is gated on. A refused write
                         // records nothing, so the respawn point, teleport and claim below
                         // would point the player at a plot nobody holds.
-                        if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(),
-                                res.gridV(), player.getName(), clientType)) {
+                        if (!dataStorage.setSpawn(uuid, res.location(), res.centre(),
+                                res.index(), res.gridU(), res.gridV(), player.getName(),
+                                clientType, false)) {
                             applied.complete(null);
-                            holdRefusedAllocation(player, clientType, res.index());
+                            holdRefusedAllocation(player, clientType, res.plotLabel());
                             return;
                         }
-                        sendToPlot(player, res.location(), res.index(), false);
+                        sendToPlot(player, res.location(), res.plotLabel(), false);
                     } finally {
                         // Inside the task, so the guard outlives the write that makes
                         // hasSpawn() true rather than being released before it.
@@ -630,7 +655,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the region schedulers, and this method builds its own SpawnManager, so those seams
      * cannot be reached from outside.
      */
-    CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+    CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
         // Read once. The caller's guard is no longer proof that the field is still set: a
         // reload onto an unresolvable world unbinds it, and it can land between that guard
         // and this line. Failing the future rather than dereferencing null keeps the
@@ -640,7 +665,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "no world is bound; origin.world names no loaded world"));
         }
-        return manager.allocateNextSafeSpawn(indexSupplier);
+        return manager.allocateNextSafeSpawn(cells);
     }
 
     /**
@@ -682,11 +707,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private void recordForAbsentPlayer(Player player, String clientType,
                                        SpawnManager.LocationResult res) {
         UUID uuid = player.getUniqueId();
-        if (!dataStorage.setSpawn(uuid, res.location(), res.index(), res.gridU(), res.gridV(),
-                player.getName(), clientType, true)) {
+        if (!dataStorage.setSpawn(uuid, res.location(), res.centre(), res.index(), res.gridU(),
+                res.gridV(), player.getName(), clientType, true)) {
             Player current = Bukkit.getPlayer(uuid);
             if (current == null || !current.isConnected()) {
-                holdRefusedAllocation(player, clientType, res.index());
+                holdRefusedAllocation(player, clientType, res.plotLabel());
                 return;
             }
             // Rejoined. Decided on the new session's own thread, as the placement task is,
@@ -694,14 +719,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // the gate. If it is not retired first, the retired callback reports the
             // departure the same way.
             boolean scheduled = runForPlayer(current,
-                    () -> refuseForRejoined(current, clientType, res.index()),
-                    () -> holdRefusedAllocation(current, clientType, res.index()));
+                    () -> refuseForRejoined(current, clientType, res.plotLabel()),
+                    () -> holdRefusedAllocation(current, clientType, res.plotLabel()));
             if (!scheduled) {
-                holdRefusedAllocation(current, clientType, res.index());
+                holdRefusedAllocation(current, clientType, res.plotLabel());
             }
             return;
         }
-        getLogger().info(player.getName() + " disconnected before plot #" + res.index()
+        getLogger().info(player.getName() + " disconnected before plot " + res.plotLabel()
                 + " could be applied; it is recorded at (" + res.location().getBlockX() + ", "
                 + res.location().getBlockY() + ", " + res.location().getBlockZ()
                 + ") and they will be placed there when they return.");
@@ -726,15 +751,15 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * holds them then. Any other session is held as the entity now connected, so a reload
      * that recovers storage allocates them.
      */
-    private void refuseForRejoined(Player current, String clientType, int index) {
+    private void refuseForRejoined(Player current, String clientType, String plot) {
         if (actionGate != null && actionGate.isPending(current.getUniqueId())) {
-            getLogger().warning("Plot #" + index + " for " + current.getName()
+            getLogger().warning("Plot " + plot + " for " + current.getName()
                     + " was not recorded, because data.yml could not be read when it was"
                     + " written. They have rejoined and will be allocated after their"
                     + " first uncancelled action.");
             return;
         }
-        holdRefusedAllocation(current, clientType, index);
+        holdRefusedAllocation(current, clientType, plot);
     }
 
     /**
@@ -790,13 +815,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 return;
             }
             if (!dataStorage.clearPlacementOwed(uuid)) {
-                getLogger().warning("Plot #" + record.index() + " for " + player.getName()
+                getLogger().warning("Plot " + record.plotLabel() + " for " + player.getName()
                         + " was not placed, because data.yml could not be read when the"
                         + " placement was recorded. They were not moved; they will be placed"
                         + " once /sgen reload reads it and they rejoin.");
                 return;
             }
-            sendToPlot(player, plot, record.index(), true);
+            sendToPlot(player, plot, record.plotLabel(), true);
         }, null);
     }
 
@@ -808,12 +833,12 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * @param returning whether the plot was recorded while the player was away, which only
      *                  changes the line logged on arrival
      */
-    private void sendToPlot(Player player, Location plot, int index, boolean returning) {
+    private void sendToPlot(Player player, Location plot, String label, boolean returning) {
         player.setRespawnLocation(plot, true);
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
-                        + player.getName() + " to plot #" + index
+                        + player.getName() + " to plot " + label
                         + (returning ? ", recorded while they were away," : "")
                         + " at (" + plot.getBlockX() + ", " + plot.getBlockY() + ", " + plot.getBlockZ() + ")");
                 return;
@@ -824,7 +849,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // login plugin cancelling teleports for unauthenticated players is the likeliest
             // cause, and that action is the signal it let go.
             markUnreached(player);
-            getLogger().warning("Assigned " + player.getName() + " to plot #" + index
+            getLogger().warning("Assigned " + player.getName() + " to plot " + label
                     + " but the teleport did not complete; they are recorded at ("
                     + plot.getBlockX() + ", " + plot.getBlockY() + ", "
                     + plot.getBlockZ() + ") without having been moved there. "
@@ -833,8 +858,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // thenAccept above runs only on normal completion, so without this a teleport
             // that fails outright is exactly as silent as the case the warning was added for.
             markUnreached(player);
-            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot #"
-                    + index + " but the teleport failed; they are recorded there "
+            getLogger().log(Level.WARNING, "Assigned " + player.getName() + " to plot "
+                    + label + " but the teleport failed; they are recorded there "
                     + "without having been moved. Will retry on their next "
                     + "uncancelled action.", ex);
             return null;
@@ -897,7 +922,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         manager.revalidate(stored).whenComplete((safe, ex) -> {
             if (ex != null) {
                 repairing.remove(uuid);
-                getLogger().log(Level.WARNING, "Could not re-check plot #" + record.index()
+                getLogger().log(Level.WARNING, "Could not re-check plot " + record.plotLabel()
                         + " for " + player.getName() + "; leaving it as recorded.", ex);
                 return;
             }
@@ -911,7 +936,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     /** Announces the repair and hands off to the in-cell search. */
     private void startRepairSearch(Player player, StoredSpawn record, Location stored) {
-        getLogger().warning("Plot #" + record.index() + " is no longer safe for "
+        getLogger().warning("Plot " + record.plotLabel() + " is no longer safe for "
                 + player.getName() + " at (" + stored.getBlockX() + ", "
                 + stored.getBlockY() + ", " + stored.getBlockZ()
                 + "); searching that cell for a replacement point.");
@@ -923,7 +948,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // chunk - so a throw there escapes before whenComplete is attached, and would
             // otherwise hold the guard for the life of the process.
             repairing.remove(player.getUniqueId());
-            getLogger().log(Level.SEVERE, "In-cell search for plot #" + record.index()
+            getLogger().log(Level.SEVERE, "In-cell search for plot " + record.plotLabel()
                     + " failed before it could start.", t);
         }
     }
@@ -982,8 +1007,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         UUID uuid = player.getUniqueId();
         if (error != null) {
             repairing.remove(uuid);
-            getLogger().log(Level.SEVERE, "In-cell search failed while repairing plot #"
-                    + record.index() + " for " + player.getName() + ".", error);
+            getLogger().log(Level.SEVERE, "In-cell search failed while repairing plot "
+                    + record.plotLabel() + " for " + player.getName() + ".", error);
             return;
         }
 
@@ -997,8 +1022,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 if (res == null) {
                     World world = Bukkit.getWorld(record.worldName());
                     getLogger().warning("No safe point found among the "
-                            + pluginConfig.getMaxCandidates() + " sampled candidates in plot #"
-                            + record.index() + "; sending " + player.getName()
+                            + pluginConfig.getMaxCandidates() + " sampled candidates in plot "
+                            + record.plotLabel() + "; sending " + player.getName()
                             + " to world spawn. Their plot assignment is unchanged.");
                     if (player.isDead()) {
                         // Still on the death screen, so there is nothing to teleport, and on
@@ -1035,9 +1060,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // since then has cleared it, on this same thread, and must stay cleared.
                 StoredSpawn latest = dataStorage.getRecord(uuid);
                 boolean owed = latest != null && latest.placementOwed();
-                if (!dataStorage.setSpawn(uuid, res.location(), record.index(), record.gridU(),
-                        record.gridV(), player.getName(), record.clientType(), owed)) {
-                    getLogger().warning("Repair of plot #" + record.index() + " for "
+                if (!dataStorage.setSpawn(uuid, res.location(), record.centre(), record.index(),
+                        record.gridU(), record.gridV(), player.getName(), record.clientType(),
+                        owed)) {
+                    getLogger().warning("Repair of plot " + record.plotLabel() + " for "
                             + player.getName() + " was not recorded, because data.yml could not"
                             + " be read; nothing was moved.");
                     return;
@@ -1051,7 +1077,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     if (!player.isDead()) {
                         player.teleportAsync(res.location());
                     }
-                    getLogger().info("Repaired plot #" + record.index() + " for "
+                    getLogger().info("Repaired plot " + record.plotLabel() + " for "
                             + player.getName() + "; moved within the same cell to ("
                             + res.location().getBlockX() + ", " + res.location().getBlockY()
                             + ", " + res.location().getBlockZ() + ").");
@@ -1060,7 +1086,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     // respawns, so neither it nor the player is moved: the repair only
                     // changes where the plot is recorded. A bed that stops working is
                     // handled when the server clears the point on respawn.
-                    getLogger().info("Repaired plot #" + record.index() + " for "
+                    getLogger().info("Repaired plot " + record.plotLabel() + " for "
                             + player.getName() + "; recorded at ("
                             + res.location().getBlockX() + ", " + res.location().getBlockY()
                             + ", " + res.location().getBlockZ() + "). Their respawn point is"
@@ -1275,7 +1301,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * the counter from the file, so the index is either handed out again to whoever is
      * allocated next or skipped, and never held by two players.
      */
-    private void holdRefusedAllocation(Player player, String clientType, int index) {
+    private void holdRefusedAllocation(Player player, String clientType, String plot) {
         boolean held = false;
         if (actionGate != null) {
             actionGate.hold(player, clientType);
@@ -1284,7 +1310,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             // hold, or by the quit that follows it, so only a connected one is held.
             held = player.isConnected() && actionGate.isHeld(player.getUniqueId());
         }
-        String refused = "Plot #" + index + " for " + player.getName() + " was not recorded,"
+        String refused = "Plot " + plot + " for " + player.getName() + " was not recorded,"
                 + " because data.yml could not be read when it was written. They were not"
                 + " moved and their respawn point is unchanged; ";
         if (held) {
