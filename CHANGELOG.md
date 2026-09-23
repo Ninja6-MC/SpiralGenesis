@@ -280,7 +280,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   counter. A file written by an earlier version loads with all of its plots on centre 0,
   recorded at the `origin` and `cell-size` configured when it is first loaded; a centre
   moved under an earlier alpha is not detected. `current-spiral-index` remains the active
-  centre's counter, so an earlier version still loads the file. With an even `cell-size`
+  centre's counter, so an earlier version still loads the file. A plot that earlier
+  version records writes no `centre` key and reads back as centre 0, so one it allocates
+  on another centre is not protected against later centres. With an even `cell-size`
   the in-cell search no longer reaches the first column of the neighbouring cell, so every
   candidate stays inside its own cell.
 
