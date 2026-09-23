@@ -33,7 +33,8 @@ A player joins for the first time. SpiralGenesis:
 2. Loads that cell's chunks asynchronously and probes **candidate points inside the cell**,
    spiralling outward from its centre.
 3. Accepts the first (or best, depending on strategy) candidate that passes every terrain
-   rule in §3 and, where GriefPrevention is installed, is clear of existing claims (section 6).
+   rule in §3 and, where GriefPrevention is installed, is clear of existing claims
+   (section 6).
 4. If every candidate in the cell fails, claims another index and starts again — up to
    `safety.max-scan-attempts` cells. A cell whose every candidate is inside an existing
    claim is skipped and does not count toward that limit.
@@ -385,8 +386,8 @@ arrive. It is **off by default**, it needs
 [GriefPrevention](https://github.com/TechFortress/GriefPrevention) installed, and turning
 it on or off changes nothing about allocation: a player gets the same plot, the same index
 and the same teleport whether the claim succeeds, fails or is never attempted. Allocation
-does keep new spawns off claims that already exist, but it does so whenever GriefPrevention
-is installed, protection on or off; see
+does keep new spawns off claims that already exist, but it does so whenever
+GriefPrevention is installed, protection on or off; see
 [existing claims and allocation](#existing-claims-and-allocation).
 
 The claim is deliberately much smaller than the plot. See
@@ -1058,11 +1059,12 @@ does not move anyone already allocated.
    would overlap any claim is not chosen, with protection on or off (section 6). It does
    not look for builds nobody has claimed, so a spot on top of an unclaimed house is
    accepted if the ground passes the rules in section 3, and the new player respawns
-   there. Without GriefPrevention, and on Folia, claims are not checked either. Cells
-   skipped because they are claimed also use up indices. Plot #0,0 is centred on the origin and each plot is `cell-size`
-   blocks across. The first 9 plots fill a 3 x 3 block of cells centred on the origin, the
-   first 25 a 5 x 5 block, the first 49 a 7 x 7 block, and so on outward. Skipped cells
-   use up indices too, so the spiral reaches further than the player count alone suggests.
+   there. Without GriefPrevention, and on Folia, claims are not checked either. Plot #0,0
+   is centred on the origin and each plot is `cell-size` blocks across. The first 9 plots
+   fill a 3 x 3 block of cells centred on the origin, the first 25 a 5 x 5 block, the
+   first 49 a 7 x 7 block, and so on outward. Skipped cells, whether for terrain or for
+   claims, use up indices too, so the spiral reaches further than the player count alone
+   suggests.
    Plan from the radius in section 9 and keep that whole square clear of anything you want
    left alone.
 3. **Measure and pregenerate around the new origin.** With the origin set and the server

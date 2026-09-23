@@ -87,8 +87,8 @@ allocation:
 # so their bed and first chest are covered the moment they arrive. The rest of the plot is
 # left unclaimed and is theirs to claim normally.
 protection:
-  # Off by default, and off is genuinely off for claiming: nothing is claimed, and a server
-  # with no protection plugin behaves exactly as it did before this block existed.
+  # Off by default, and off is genuinely off for claiming: nothing is claimed, and a
+  # server with no protection plugin behaves exactly as it did before this block existed.
   # Turning it on with the provider below missing is also harmless: nothing is claimed and
   # the plugin carries on as if this were false.
   #
