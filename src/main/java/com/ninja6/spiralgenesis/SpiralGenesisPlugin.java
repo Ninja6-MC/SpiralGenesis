@@ -591,7 +591,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             getLogger().info(player.getName() + " played on this server before SpiralGenesis"
                     + " was installed (" + dataStorage.getInstalledAt() + "), so no plot is"
                     + " allocated and they are not moved. Run /sgen reassign "
-                    + player.getName() + " to give them one.");
+                    + player.getName() + " to give them one; it replaces their bed or"
+                    + " respawn anchor with the new plot.");
         }
         return true;
     }

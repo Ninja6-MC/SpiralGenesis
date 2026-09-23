@@ -40,7 +40,12 @@ operator gives them one with `/sgen reassign`.
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
 3. Start the server. `plugins/SpiralGenesis/config.yml` is generated on first run.
 4. Stand where you want the spiral to begin and run `/sgen setcenter`.
-5. That's it. The next player to join gets plot #1.
+5. That's it. The next player to join gets plot #0, centred on that spot.
+
+Installing on a server people already play on? Read
+[Installing on an existing server](docs/ADMIN_GUIDE.md#10-installing-on-an-existing-server)
+before the first start: a new player who joins before step 4 is placed around `(0, 0)`,
+and the origin should be chosen away from existing builds and claims.
 
 Optional: install **Floodgate** if you run Bedrock cross-play. If your Java players log in
 with a password, any login plugin works (AuthMe, nLogin, LibreLogin and the rest) with no
@@ -140,7 +145,7 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 
 | Command | What it does |
 | :--- | :--- |
-| `/sgen setcenter` | Set the centre of the spiral to where you're standing. |
+| `/sgen setcenter` | Set the centre's X and Z to where you're standing. The world is always `origin.world`. |
 | `/sgen setcenter <x> <z>` | Set the centre to explicit coordinates. |
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |

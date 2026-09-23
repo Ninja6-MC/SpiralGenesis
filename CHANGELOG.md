@@ -249,6 +249,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   respawn headed for the plot's block column, or one whose point failed and fell back to
   world spawn, and leaves a working bed, anchor or forced point and a location another
   plugin set alone on every version.
+- **The pre-install log line warns that `/sgen reassign` replaces a bed.** The line that
+  recommends reassigning a player from before the install now says that it replaces
+  their bed or respawn anchor with the new plot, as `/sgen setspawn` also does. The admin
+  guide has a new section on installing onto a server people already play on: writing
+  `config.yml` before the first start, choosing an origin away from existing builds and
+  claims, and what happens to the players already there. The README quick start said the
+  first player gets plot #1; the first plot is #0.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 
