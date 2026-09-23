@@ -1064,9 +1064,8 @@ does not move anyone already allocated.
    fill a 3 x 3 block of cells centred on the origin, the first 25 a 5 x 5 block, the
    first 49 a 7 x 7 block, and so on outward. Skipped cells, whether for terrain or for
    claims, use up indices too, so the spiral reaches further than the player count alone
-   suggests.
-   Plan from the radius in section 9 and keep that whole square clear of anything you want
-   left alone.
+   suggests. Plan from the radius in section 9 and keep that whole square clear of
+   anything you want left alone.
 3. **Measure and pregenerate around the new origin.** With the origin set and the server
    still closed, `/sgen simulate` (section 8) reports how many indices each spawn uses on
    your terrain, which is the headroom to add. Pregenerate the area with, for example,
