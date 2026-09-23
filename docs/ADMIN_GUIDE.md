@@ -966,7 +966,7 @@ Set things up before that start rather than after it.
 
 That is why the quick start's order - start the server, then run `/sgen setcenter` -
 leaves a gap on a live server. A new player who joins between the first start and
-`setcenter` is allocated plot #0 around `(0, 0)`, and keeps it: moving the centre later
+`setcenter` is allocated plot #0,0 around `(0, 0)`, and keeps it: moving the centre later
 does not move anyone already allocated.
 
 ### Before the first start
@@ -986,7 +986,7 @@ does not move anyone already allocated.
 2. **Put the origin away from existing builds and claims.** Allocation checks terrain
    only. It does not look for builds, claims or anybody's base, so a spot on top of
    someone's house is accepted if the ground passes the rules in section 3, and the new
-   player respawns there. Plot #0 is centred on the origin and each plot is `cell-size`
+   player respawns there. Plot #0,0 is centred on the origin and each plot is `cell-size`
    blocks across. The first 9 plots fill a 3 x 3 block of cells centred on the origin, the
    first 25 a 5 x 5 block, the first 49 a 7 x 7 block, and so on outward. Skipped cells
    use up indices too, so the spiral reaches further than the player count alone suggests.
@@ -1013,7 +1013,7 @@ does not move anyone already allocated.
   respawn anchor is kept, and they are not moved or gated. The console says so once per
   player per run, at info. When one of them dies with no bed or anchor, they respawn
   wherever the server would have sent them before the plugin was installed.
-* **New players are placed as usual**, starting at plot #0.
+* **New players are placed as usual**, starting at plot #0,0.
 * **`/sgen reassign <player>` gives an existing player a plot.** They must be online. It
   reserves a fresh index, teleports them to the new plot and claims the spawn square if
   protection is on. It also **replaces their respawn point with the plot, including a bed

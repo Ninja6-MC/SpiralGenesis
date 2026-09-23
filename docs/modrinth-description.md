@@ -24,7 +24,7 @@ operator gives them one with `/sgen reassign`.
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
 3. Start the server. `plugins/SpiralGenesis/config.yml` is generated on first run.
 4. Stand where you want the spiral to begin and run `/sgen setcenter`.
-5. That's it. The next player to join gets plot #0, centred on that spot.
+5. That's it. The next player to join gets plot #0,0, centred on that spot.
 
 Installing on a server people already play on? Read
 [Installing on an existing server](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#10-installing-on-an-existing-server)
@@ -153,8 +153,9 @@ and exactly which safety rule did the rejecting.
 
 ## How the spiral works
 
-Plot 1 lands on the centre. Each following plot moves one cell along an expanding clockwise
-square spiral, so plot *n* is always `cell-size` blocks from its neighbours:
+The first plot, #0,0, lands on the centre. Each following plot moves one cell along an
+expanding clockwise square spiral, so plot *n* is always `cell-size` blocks from its
+neighbours:
 
 ```
         (-1,-1) ───> (0,-1) ───> (1,-1) ───> (2,-1)
