@@ -147,6 +147,37 @@ class SpiralCentreStorageTest {
     }
 
     @Test
+    @DisplayName("the overlap test costs the same per cell however many plots are recorded")
+    void overlapWorkIsBoundedByTheCandidateNotThePlotCount() {
+        YamlDataStorage storage = loaded();
+        storage.centreFor(0, 0, CELL);
+        for (int i = 0; i < 2000; i++) {
+            SpiralCell cell = new SpiralCentre(0, 0, 0, CELL).cell(i);
+            int[] grid = cell.grid();
+            storage.setSpawn(UUID.randomUUID(), new Location(world, cell.centreX() + 0.5, 64,
+                            cell.centreZ() + 0.5), 0, i, grid[0], grid[1], "P" + i, "TEST",
+                    false);
+        }
+
+        // Moved half a cell, so every cell of the new centre overlaps plots until the new
+        // spiral grows past the 2000 already recorded.
+        long before = storage.overlapProbes();
+        SpiralCell moved = storage.reserveCell(250, 250, CELL);
+        long probes = storage.overlapProbes() - before;
+
+        int examined = moved.index() + 1;
+        assertTrue(examined > 1000, "the fixture must skip a long run: " + examined);
+        // A 500-block candidate over a grid of 500-block cells touches at most a 2x2 block
+        // of positions, plus the in-flight and hand-set lists, both empty here.
+        assertTrue(probes <= 4L * examined,
+                probes + " probes for " + examined + " candidate cells");
+        assertNoTwoOverlap(recordedCells(storage));
+        for (SpiralCell cell : recordedCells(storage)) {
+            assertFalse(moved.area().overlaps(cell.area()), cell.label());
+        }
+    }
+
+    @Test
     @DisplayName("changing the cell size mid-spiral skips every cell that would land on a plot")
     void changedCellSizeSkipsOverlappingCells() {
         YamlDataStorage storage = loaded();
@@ -200,7 +231,7 @@ class SpiralCentreStorageTest {
         assertFalse(other.area().overlaps(held.area()),
                 "the in-flight cell must be skipped: " + other.label());
 
-        storage.releaseCell(held);
+        storage.releaseCell(held.centre().id(), held.index());
         SpiralCentre third = storage.centreFor(0, 250, CELL);
         SpiralCell after = storage.reserveCell(0, 250, CELL);
         assertEquals(third, after.centre());

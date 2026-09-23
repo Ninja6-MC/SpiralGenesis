@@ -3,6 +3,7 @@ package com.ninja6.spiralgenesis.storage;
 import com.ninja6.spiralgenesis.math.CellArea;
 import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
+import com.ninja6.spiralgenesis.math.SpiralMath;
 import org.bukkit.Location;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.InvalidConfigurationException;
@@ -145,6 +146,19 @@ public class YamlDataStorage implements DataStorage {
      * {@link #yamlLock}. Not cleared by any load: the scan holding one may write it after.
      */
     private final Map<CellKey, SpiralCell> inFlight = new HashMap<>();
+
+    /**
+     * Spiral records by centre, then by grid position, guarded by {@link #yamlLock}. The
+     * grid position is the index's, which does not depend on where the centre is, so the
+     * index stays right when a centre's geometry becomes known.
+     */
+    private final Map<Integer, Map<Long, StoredSpawn>> plotsByCell = new HashMap<>();
+
+    /** Points set by hand, which are tested by their column, guarded by {@link #yamlLock}. */
+    private final Map<UUID, StoredSpawn> manualPoints = new HashMap<>();
+
+    /** See {@link #overlapProbes()}; guarded by {@link #yamlLock}. */
+    private long overlapProbes;
 
     private final AtomicBoolean dirty = new AtomicBoolean();
 
@@ -430,6 +444,7 @@ public class YamlDataStorage implements DataStorage {
                 }
             }
             activeCentre = storedActive;
+            reindexPlots();
             this.yaml = loaded;
         }
         for (String warning : warnings) {
@@ -493,6 +508,8 @@ public class YamlDataStorage implements DataStorage {
             installedAt = null;
             spawnCache.clear();
             nameIndex.clear();
+            plotsByCell.clear();
+            manualPoints.clear();
             dirty.set(false);
         }
 
@@ -748,7 +765,8 @@ public class YamlDataStorage implements DataStorage {
                 }
                 return false;
             }
-            spawnCache.put(uuid, record);
+            unindexPlot(uuid, spawnCache.put(uuid, record));
+            indexPlot(uuid, record);
             if (record.onSpiral()) {
                 CentreState state = state(centre);
                 state.highestRecorded = Math.max(state.highestRecorded, index);
@@ -790,7 +808,10 @@ public class YamlDataStorage implements DataStorage {
             if (record == null || !record.placementOwed()) {
                 return true;
             }
-            spawnCache.put(uuid, record.withPlacementOwed(false));
+            StoredSpawn cleared = record.withPlacementOwed(false);
+            spawnCache.put(uuid, cleared);
+            unindexPlot(uuid, record);
+            indexPlot(uuid, cleared);
             if (yaml == null) {
                 return true;
             }
@@ -807,6 +828,7 @@ public class YamlDataStorage implements DataStorage {
                 return;
             }
             StoredSpawn removed = spawnCache.remove(uuid);
+            unindexPlot(uuid, removed);
             if (removed != null && removed.playerName() != null) {
                 nameIndex.remove(removed.playerName().toLowerCase(Locale.ROOT), uuid);
             }
@@ -873,9 +895,9 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
-    public void releaseCell(SpiralCell cell) {
+    public void releaseCell(int centre, int index) {
         synchronized (yamlLock) {
-            inFlight.remove(new CellKey(cell.centre().id(), cell.index()));
+            inFlight.remove(new CellKey(centre, index));
         }
     }
 
@@ -973,31 +995,124 @@ public class YamlDataStorage implements DataStorage {
     private String overlapping(SpiralCell candidate) {
         CellArea area = candidate.area();
         int id = candidate.centre().id();
-        for (StoredSpawn record : spawnCache.values()) {
-            CellArea other;
-            if (!record.onSpiral()) {
-                other = CellArea.column((int) Math.floor(record.x()),
-                        (int) Math.floor(record.z()));
-            } else {
-                if (record.centre() == id) {
-                    continue;
-                }
-                CentreState state = centres.get(record.centre());
-                if (state == null || state.centre == null) {
-                    continue;
-                }
-                other = state.centre.cell(record.index()).area();
+        for (Map.Entry<Integer, Map<Long, StoredSpawn>> byCentre : plotsByCell.entrySet()) {
+            if (byCentre.getKey() == id) {
+                continue;
             }
-            if (area.overlaps(other)) {
-                return "plot " + record.plotLabel() + " of " + record.playerName();
+            CentreState state = centres.get(byCentre.getKey());
+            if (state == null || state.centre == null) {
+                continue;
+            }
+            StoredSpawn blocker = overlappingPlot(area, state.centre, byCentre.getValue());
+            if (blocker != null) {
+                return "plot " + blocker.plotLabel() + " of " + blocker.playerName();
+            }
+        }
+        for (StoredSpawn point : manualPoints.values()) {
+            overlapProbes++;
+            if (area.contains((int) Math.floor(point.x()), (int) Math.floor(point.z()))) {
+                return "plot " + point.plotLabel() + " of " + point.playerName();
             }
         }
         for (SpiralCell held : inFlight.values()) {
+            overlapProbes++;
             if (held.centre().id() != id && area.overlaps(held.area())) {
                 return "plot " + held.label() + ", which is still being allocated";
             }
         }
         return null;
+    }
+
+    /**
+     * The plot of {@code centre} whose cell overlaps {@code area}, or {@code null}. Called
+     * under {@link #yamlLock}.
+     *
+     * <p>The cells of one centre are a grid, so the ones {@code area} can touch are a block
+     * of grid positions found by arithmetic, and each is looked up rather than every plot
+     * of the centre tested. When that block has more positions than the centre has plots,
+     * as for a large candidate over a centre of small cells, the plots are tested instead.
+     * Either way the work is bounded by the smaller of the two.
+     */
+    private StoredSpawn overlappingPlot(CellArea area, SpiralCentre centre,
+                                        Map<Long, StoredSpawn> plots) {
+        long size = centre.cellSize();
+        long base = (long) centre.originX() - size / 2;
+        long baseZ = (long) centre.originZ() - size / 2;
+        long uMin = Math.floorDiv(area.minX() - base, size);
+        long uMax = Math.floorDiv(area.maxX() - 1L - base, size);
+        long vMin = Math.floorDiv(area.minZ() - baseZ, size);
+        long vMax = Math.floorDiv(area.maxZ() - 1L - baseZ, size);
+        long positions = (uMax - uMin + 1) * (vMax - vMin + 1);
+        if (positions > plots.size()) {
+            for (StoredSpawn plot : plots.values()) {
+                overlapProbes++;
+                if (area.overlaps(centre.cell(plot.index()).area())) {
+                    return plot;
+                }
+            }
+            return null;
+        }
+        for (long u = uMin; u <= uMax; u++) {
+            for (long v = vMin; v <= vMax; v++) {
+                overlapProbes++;
+                StoredSpawn plot = plots.get(gridKey((int) u, (int) v));
+                if (plot != null) {
+                    return plot;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Adds a record to the overlap index. Called under {@link #yamlLock}. */
+    private void indexPlot(UUID uuid, StoredSpawn record) {
+        if (!record.onSpiral()) {
+            manualPoints.put(uuid, record);
+            return;
+        }
+        int[] grid = SpiralMath.indexToGrid(record.index());
+        plotsByCell.computeIfAbsent(record.centre(), id -> new HashMap<>())
+                .put(gridKey(grid[0], grid[1]), record);
+    }
+
+    /** Removes a record from the overlap index, if it is there. Under {@link #yamlLock}. */
+    private void unindexPlot(UUID uuid, StoredSpawn record) {
+        if (record == null) {
+            return;
+        }
+        if (!record.onSpiral()) {
+            manualPoints.remove(uuid, record);
+            return;
+        }
+        Map<Long, StoredSpawn> plots = plotsByCell.get(record.centre());
+        if (plots != null) {
+            int[] grid = SpiralMath.indexToGrid(record.index());
+            plots.remove(gridKey(grid[0], grid[1]), record);
+        }
+    }
+
+    /** Rebuilds the overlap index from every record. Called under {@link #yamlLock}. */
+    private void reindexPlots() {
+        plotsByCell.clear();
+        manualPoints.clear();
+        for (Map.Entry<UUID, StoredSpawn> entry : spawnCache.entrySet()) {
+            indexPlot(entry.getKey(), entry.getValue());
+        }
+    }
+
+    private static long gridKey(int u, int v) {
+        return ((long) u << 32) | (v & 0xFFFFFFFFL);
+    }
+
+    /**
+     * Grid positions looked up and areas tested by reservations so far. A test seam: it
+     * shows the overlap test does work bounded by the ground a candidate covers, not by the
+     * number of plots recorded.
+     */
+    long overlapProbes() {
+        synchronized (yamlLock) {
+            return overlapProbes;
+        }
     }
 
     private void logSkipped(List<String> skipped) {

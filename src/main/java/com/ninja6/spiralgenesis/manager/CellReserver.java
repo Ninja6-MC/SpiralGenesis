@@ -42,7 +42,7 @@ public interface CellReserver {
 
             @Override
             public void release(SpiralCell cell) {
-                storage.releaseCell(cell);
+                storage.releaseCell(cell.centre().id(), cell.index());
             }
         };
     }

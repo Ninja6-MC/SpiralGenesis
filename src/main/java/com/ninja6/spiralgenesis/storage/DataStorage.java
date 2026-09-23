@@ -235,10 +235,11 @@ public interface DataStorage {
     SpiralCell reserveCell(int originX, int originZ, int cellSize);
 
     /**
-     * Ends the in-flight registration of a cell a scan gave up on, so it no longer blocks
-     * cells of other centres. Its index is not handed out again.
+     * Ends the in-flight registration of cell {@code (centre, index)}, reserved and then
+     * given up on or never written, so it no longer blocks cells of other centres. Its index
+     * is not handed out again.
      */
-    void releaseCell(SpiralCell cell);
+    void releaseCell(int centre, int index);
 
     /**
      * Atomically claims the next index of the active centre, as {@link #reserveCell} does

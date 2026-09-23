@@ -68,4 +68,21 @@ class SpiralMathTest {
         // Cell (-1, 1) -> (-500, +500)
         assertArrayEquals(new int[]{500, -1500}, SpiralMath.gridToWorld(originX, originZ, -1, 1, cellSize));
     }
+
+    @Test
+    void closedFormMatchesTheWalk() {
+        // Every index up to the far edge of a 450x450 spiral, then a few near the int
+        // limit, where the walk is too slow to run and the square root least exact.
+        for (int index = 0; index <= 200_000; index++) {
+            assertArrayEquals(SpiralMath.walkToGrid(index), SpiralMath.indexToGrid(index),
+                    "index " + index);
+        }
+        for (int index : new int[]{2_000_000_000, Integer.MAX_VALUE - 1, Integer.MAX_VALUE}) {
+            int[] grid = SpiralMath.indexToGrid(index);
+            // Ring r holds (2r - 1)^2 .. (2r + 1)^2 - 1, so the ring bounds both coordinates.
+            long ring = (long) Math.ceil((Math.sqrt(index + 1.0) - 1.0) / 2.0);
+            assertEquals(ring, Math.max(Math.abs((long) grid[0]), Math.abs((long) grid[1])),
+                    "index " + index);
+        }
+    }
 }
