@@ -70,7 +70,7 @@ class SpawnClaimReleaseTest {
         records.put(first, at("world", 100, "Ann"));
         records.put(second, at("world", 900, "Bob"));
 
-        SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(provider), records, line -> { });
+        SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(provider), records, line -> { }, () -> null);
         drive(job);
 
         assertEquals(2, provider.releases.size());
@@ -104,7 +104,7 @@ class SpawnClaimReleaseTest {
                 });
         List<String> listed = new ArrayList<>();
 
-        SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(provider), records, listed::add);
+        SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(provider), records, listed::add, () -> null);
         drive(job);
 
         assertEquals(5, provider.releases.size(), "an unloaded world is never asked about");
@@ -116,7 +116,7 @@ class SpawnClaimReleaseTest {
         assertEquals(1, job.unloaded());
         String summary = job.summary();
         assertTrue(summary.contains("1 released, 1 not ours, 1 with no claim, 1 with no "
-                + "GriefPrevention, 1 in unloaded worlds, 1 failed, out of 6"), summary);
+                + "GriefPrevention, 1 in unloaded worlds, 1 failed, 0 skipped, out of 6"), summary);
         assertTrue(summary.contains("GriefPrevention threw."), summary);
 
         assertEquals(2, listed.size(), listed.toString());
@@ -131,7 +131,7 @@ class SpawnClaimReleaseTest {
         Map<UUID, StoredSpawn> records = new HashMap<>();
         records.put(UUID.randomUUID(), at("world", 1, "Ann"));
         SpawnClaimRelease job = new SpawnClaimRelease(
-                protectorFor(new RecordingProvider().throwing()), records, line -> { });
+                protectorFor(new RecordingProvider().throwing()), records, line -> { }, () -> null);
 
         drive(job);
 
@@ -147,10 +147,33 @@ class SpawnClaimReleaseTest {
             records.put(UUID.randomUUID(), at("world", i * 32, "p" + i));
         }
         SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(new RecordingProvider()),
-                records, line -> { });
+                records, line -> { }, () -> null);
 
         assertFalse(job.runBatch(), "one tick must not take the whole store");
         drive(job);
         assertEquals(records.size(), job.released());
+    }
+
+    @Test
+    @DisplayName("a halt reason stops the run before the next entry and skips the rest")
+    void stopsWhenTheHaltReasonAppears() {
+        Map<UUID, StoredSpawn> records = new HashMap<>();
+        for (int i = 0; i < 5; i++) {
+            records.put(UUID.randomUUID(), at("world", i * 32, "p" + i));
+        }
+        RecordingProvider provider = new RecordingProvider();
+        // Stands in for a /sgen reload to PLAYER_CLAIM landing after the second release.
+        SpawnClaimRelease job = new SpawnClaimRelease(protectorFor(provider), records,
+                line -> { }, () -> provider.releases.size() >= 2 ? "claim-as changed" : null);
+
+        assertTrue(job.runBatch(), "a halted run is finished");
+
+        assertEquals(2, provider.releases.size(), "nothing may be released after the halt");
+        assertEquals(2, job.released());
+        assertEquals(3, job.skipped());
+        assertEquals("claim-as changed", job.haltedBecause());
+        assertTrue(job.summary().startsWith("Spawn claim release stopped because claim-as changed"),
+                job.summary());
+        assertTrue(job.summary().contains("3 skipped"), job.summary());
     }
 }

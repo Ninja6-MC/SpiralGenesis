@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 /**
  * Releases the spawn claim around every stored plot, for {@code /sgen release-all confirm}.
@@ -74,16 +75,35 @@ public final class SpawnClaimRelease {
     private String firstFailure;
 
     /**
+     * Asked before every entry: {@code null} to carry on, or why the run has to stop.
+     *
+     * <p>The command checks that protection is active and not {@code PLAYER_CLAIM} before it
+     * starts, but the job outlives that check by as many ticks as {@code data.yml} is long,
+     * and {@code /sgen reload} rebuilds the provider from the new configuration in between.
+     * The provider is resolved per call, so without this a reload to {@code PLAYER_CLAIM}
+     * mid-run would have the remaining releases match on owner and square alone and delete
+     * claims players made themselves - the exact case the refusal exists for.
+     */
+    private final Supplier<String> haltReason;
+
+    /** Entries never looked at because the run stopped, and why it did. */
+    private int skipped;
+    private String haltedBecause;
+
+    /**
      * Takes a snapshot of every stored spawn.
      *
      * @param protector    the shared protector, which owns the provider call
      * @param records      every stored assignment, as {@code data.yml} has it right now
      * @param leftStanding receives one line per claim that was found and not released
+     * @param haltReason   asked before every entry; {@code null} to carry on, otherwise why
+     *                     the rest of the run is skipped
      */
     public SpawnClaimRelease(SpawnProtector protector, Map<UUID, StoredSpawn> records,
-                             Consumer<String> leftStanding) {
+                             Consumer<String> leftStanding, Supplier<String> haltReason) {
         this.protector = protector;
         this.leftStanding = leftStanding;
+        this.haltReason = haltReason;
         this.queue = new ArrayList<>(records.size());
         for (Map.Entry<UUID, StoredSpawn> entry : records.entrySet()) {
             if (entry.getKey() != null && entry.getValue() != null) {
@@ -132,6 +152,16 @@ public final class SpawnClaimRelease {
         return failed;
     }
 
+    /** Entries skipped because the run stopped part way. */
+    public int skipped() {
+        return skipped;
+    }
+
+    /** Why the run stopped part way, or {@code null} if it did not. */
+    public String haltedBecause() {
+        return haltedBecause;
+    }
+
     /**
      * Does up to one tick's worth of work, with the bounds {@link SpawnProtectionBackfill}
      * uses.
@@ -142,6 +172,13 @@ public final class SpawnClaimRelease {
         long deadline = System.nanoTime() + SpawnProtectionBackfill.BUDGET_NANOS;
         int done = 0;
         while (!isFinished() && done < SpawnProtectionBackfill.MAX_PER_TICK) {
+            String reason = haltReason.get();
+            if (reason != null) {
+                haltedBecause = reason;
+                skipped += queue.size() - cursor;
+                cursor = queue.size();
+                break;
+            }
             step();
             done++;
             if (System.nanoTime() >= deadline) {
@@ -186,10 +223,12 @@ public final class SpawnClaimRelease {
 
     /** The line an operator reads when it is over. */
     public String summary() {
-        String line = "Spawn claim release finished: " + released + " released, " + notOurs
+        String line = (haltedBecause == null ? "Spawn claim release finished: "
+                : "Spawn claim release stopped because " + haltedBecause + ": ")
+                + released + " released, " + notOurs
                 + " not ours, " + notFound + " with no claim, " + unavailable
                 + " with no GriefPrevention, " + unloaded + " in unloaded worlds, " + failed
-                + " failed, out of " + total() + " stored spawns.";
+                + " failed, " + skipped + " skipped, out of " + total() + " stored spawns.";
         if (failed > 0 && firstFailure != null) {
             line += " The first failure was: " + firstFailure;
         }

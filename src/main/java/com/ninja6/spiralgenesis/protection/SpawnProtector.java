@@ -202,9 +202,11 @@ public final class SpawnProtector {
      * by the time anybody reassigns anybody. Deleting it silently as a side effect of an
      * unrelated command is not recoverable, and an operator who did want it gone has all
      * the time in the world to say so; an operator who did not cannot get it back. So the
-     * old square is left standing and named, and {@code releaseOld} is the only path that
-     * can delete anything - reached from {@code /sgen reassign <player> release} and from
-     * nowhere else.
+     * old square is left standing and named, and {@code releaseOld} is the only way this
+     * method deletes anything - reached from {@code /sgen reassign <player> release} and
+     * from nowhere else. The one other delete path in the plugin is
+     * {@code /sgen release-all confirm}, which calls {@link #releaseQuietly} directly and
+     * never comes through here.
      *
      * @param owner      the player whose spawn moved
      * @param ownerName  what to call them in the line, since an operator typed a name and

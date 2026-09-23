@@ -1076,13 +1076,16 @@ permission and adds no new permission node.
 * **It refuses to run under `PLAYER_CLAIM`.** There each spawn claim belongs to its player
   and cannot be told apart from a claim they made themselves over the same square. Players
   can remove their own with `/abandonclaim`.
+* **It stops if either of those changes while it runs.** Both are checked again before
+  every entry, so a `/sgen reload` that switches to `PLAYER_CLAIM` or turns protection off
+  part way ends the run; the entries it had not reached are counted as skipped.
 
 The report counts every outcome, and each claim left standing is also listed in the server
 log with its coordinates and owner:
 
 ```
 Spawn claim release finished: 131 released, 4 not ours, 5 with no claim, 0 with no
-GriefPrevention, 0 in unloaded worlds, 0 failed, out of 140 stored spawns.
+GriefPrevention, 0 in unloaded worlds, 0 failed, 0 skipped, out of 140 stored spawns.
 ```
 
 "Not ours" is a claim that no longer matches, most often because its owner resized it over
@@ -1160,7 +1163,7 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | GriefPrevention claims | `protection/GriefPreventionProtectionProvider.java` | Creates and releases the spawn claim | §6 |
 | Provider selection | `protection/ProtectionProviders.java` | Picks the provider, or the no-op | §6 |
 | Protection backfill | `protection/SpawnProtectionBackfill.java` | `/sgen protect`, a bounded slice per tick | §6 |
-| Claim release | `protection/SpawnClaimRelease.java` | `/sgen release-all`, a bounded slice per tick | 11 |
+| Claim release | `protection/SpawnClaimRelease.java` | `/sgen release-all`, a bounded slice per tick | §11 |
 | Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
 | Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |
 

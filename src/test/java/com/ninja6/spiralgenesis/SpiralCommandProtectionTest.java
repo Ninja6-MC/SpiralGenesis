@@ -13,6 +13,7 @@ import com.ninja6.spiralgenesis.protection.RecordingProvider;
 import com.ninja6.spiralgenesis.protection.ReleaseOutcome;
 import com.ninja6.spiralgenesis.protection.ReleaseResult;
 import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
+import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -134,9 +135,29 @@ class SpiralCommandProtectionTest {
             return getSpawnManager().findSafeSpawnInCell(index);
         }
 
+        /**
+         * When set, jobs are accepted and never driven, so they stay "running" for a test
+         * of what else is refused meanwhile.
+         */
+        boolean holdJobs;
+
         /** Drives the release inline, since MockBukkit has no global region scheduler. */
         @Override
         void driveClaimRelease(SpawnClaimRelease job, Runnable onFinish) {
+            if (holdJobs) {
+                return;
+            }
+            while (!job.runBatch()) {
+                // One iteration stands in for one tick.
+            }
+            onFinish.run();
+        }
+
+        @Override
+        void driveBackfill(SpawnProtectionBackfill job, Runnable onFinish) {
+            if (holdJobs) {
+                return;
+            }
             while (!job.runBatch()) {
                 // One iteration stands in for one tick.
             }
@@ -454,5 +475,79 @@ class SpiralCommandProtectionTest {
                 server.getConsoleSender(), "sgen", new String[] {"release-all", "con"}));
         assertTrue(plugin.getCommand("sgen").tabComplete(server.getConsoleSender(), "sgen",
                 new String[] {"rel"}).contains("release-all"));
+    }
+
+    @Test
+    @DisplayName("a reload to PLAYER_CLAIM mid-run stops release-all before the next claim")
+    void releaseAllStopsWhenAReloadSwitchesToPlayerClaim() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        provider.releasing(r -> {
+            // The operator's reload lands between two entries of the running job.
+            File file = new File(plugin.getDataFolder(), "config.yml");
+            YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+            yaml.set("protection.claim-as", "PLAYER_CLAIM");
+            try {
+                yaml.save(file);
+            } catch (IOException e) {
+                throw new UncheckedIOException(e);
+            }
+            plugin.reload();
+            return ReleaseResult.of(ReleaseOutcome.RELEASED);
+        });
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+
+        server.executeConsole("sgen", "release-all", "confirm").assertSucceeded();
+        List<String> said = drain();
+
+        assertEquals(1, provider.releases.size(),
+                "no claim may be released once claim-as is PLAYER_CLAIM: " + said);
+        assertTrue(saidSomethingContaining(said, "stopped because protection.claim-as was "
+                + "changed to PLAYER_CLAIM"), said.toString());
+        assertTrue(saidSomethingContaining(said, "1 skipped"), said.toString());
+        assertFalse(plugin.isClaimReleaseRunning());
+    }
+
+    @Test
+    @DisplayName("protect is refused while release-all runs")
+    void protectIsRefusedWhileReleaseAllRuns() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+        plugin.holdJobs = true;
+
+        server.executeConsole("sgen", "release-all", "confirm").assertSucceeded();
+        assertTrue(plugin.isClaimReleaseRunning());
+        drain();
+
+        server.executeConsole("sgen", "protect").assertSucceeded();
+        List<String> said = drain();
+
+        assertFalse(plugin.isProtectionBackfillRunning(), said.toString());
+        assertTrue(provider.reservations.isEmpty(), said.toString());
+        assertTrue(saidSomethingContaining(said, "spawn claim release is running"), said.toString());
+    }
+
+    @Test
+    @DisplayName("release-all is refused while a protect backfill runs")
+    void releaseAllIsRefusedWhileProtectRuns() {
+        CommandPlugin plugin = load();
+        RecordingProvider provider = new RecordingProvider();
+        plugin.provider = provider;
+        storeTwoPlots(plugin);
+        plugin.holdJobs = true;
+
+        server.executeConsole("sgen", "protect").assertSucceeded();
+        assertTrue(plugin.isProtectionBackfillRunning());
+        drain();
+
+        server.executeConsole("sgen", "release-all", "confirm").assertSucceeded();
+        List<String> said = drain();
+
+        assertFalse(plugin.isClaimReleaseRunning(), said.toString());
+        assertTrue(provider.releases.isEmpty(), said.toString());
+        assertTrue(saidSomethingContaining(said, "backfill is running"), said.toString());
     }
 }

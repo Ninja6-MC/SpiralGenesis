@@ -13,6 +13,7 @@ import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProviders;
+import com.ninja6.spiralgenesis.config.ClaimOwnership;
 import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
@@ -1498,7 +1499,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return null;
         }
         SpawnClaimRelease job = new SpawnClaimRelease(getSpawnProtector(),
-                dataStorage.getAllRecords(), line -> getLogger().info(line));
+                dataStorage.getAllRecords(), line -> getLogger().info(line),
+                this::claimReleaseHaltReason);
         if (!claimRelease.compareAndSet(null, job)) {
             return null;
         }
@@ -1523,6 +1525,22 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return null;
         }
         return job;
+    }
+
+    /**
+     * Why a running {@code /sgen release-all} has to stop, or {@code null} to carry on.
+     *
+     * <p>The two refusals the command makes before starting, asked again before every
+     * entry, because {@code /sgen reload} can change either while the job runs.
+     */
+    String claimReleaseHaltReason() {
+        if (!getSpawnProtector().isActive()) {
+            return "spawn protection stopped being active";
+        }
+        if (getPluginConfig().getClaimOwnership() == ClaimOwnership.PLAYER_CLAIM) {
+            return "protection.claim-as was changed to PLAYER_CLAIM";
+        }
+        return null;
     }
 
     /** Whether a {@code /sgen release-all} job is running right now. */
