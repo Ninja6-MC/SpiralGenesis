@@ -67,8 +67,9 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 * **Skips bad ground.** Oceans, lava, ice, deep water, ravines, sinkholes, cliff edges and
   jagged peaks are all rejected. The plugin searches *inside* a plot for a good landing
   spot before giving up on it.
-* **Respawns at home.** Die without a bed or anchor and you return to your own plot, not to
-  world spawn.
+* **Respawns at home.** Die and you return to your own plot, not to world spawn - unless
+  a bed, a respawn anchor, a `/spawnpoint` set elsewhere or another plugin's respawn
+  location says otherwise.
 * **Cross-play aware.** Bedrock players (Geyser/Floodgate) are placed the moment they join.
   Java players behind any login plugin are held until they authenticate, so nobody burns a
   plot before proving who they are. This works without naming a login plugin, so it covers

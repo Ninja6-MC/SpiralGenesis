@@ -260,10 +260,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own startup, and nothing ordered the two, so an `origin.world` that Multiverse loads could
   still be missing when SpiralGenesis bound it: the log said no spawn would be allocated,
   and the world was only bound on a later join. Multiverse-Core is now a soft dependency,
-  and an optional dependency on Hangar and Modrinth. The admin guide's respawn section now
-  names every respawn that outranks the plot, a point forced elsewhere and a location
-  another plugin sets included, and it and the respawn re-check no longer say the plugin
-  has no claim or protection system.
+  and an optional dependency on Hangar and Modrinth. The error for a world that is not
+  loaded now says allocation starts once it is, and that a wrong name needs correcting and
+  `/sgen reload`, rather than that no spawn will be allocated. The README's respawn line
+  and the admin guide's respawn section now name every respawn that outranks the plot, a
+  point forced elsewhere and a location another plugin sets included, and the guide and
+  the respawn re-check no longer say the plugin has no claim or protection system.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

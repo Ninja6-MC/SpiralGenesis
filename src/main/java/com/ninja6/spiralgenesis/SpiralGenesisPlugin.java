@@ -325,10 +325,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 if (!configured.equals(unresolvedWorldReported.getAndSet(configured))) {
                     String loaded = Bukkit.getWorlds().stream().map(World::getName)
                             .collect(Collectors.joining(", "));
-                    getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded, "
-                            + "so no spawn will be allocated. Loaded worlds: "
+                    getLogger().severe("Configured world '" + configured + "' (origin.world) is not loaded "
+                            + "yet. Allocation starts as soon as it is: a world loaded later is picked "
+                            + "up on the next join, with no reload. Loaded worlds: "
                             + (loaded.isEmpty() ? "(none)" : loaded)
-                            + ". Correct origin.world and run /sgen reload.");
+                            + ". If the name is wrong, correct origin.world and run /sgen reload.");
                 }
                 // Cleared as well as left unset: a reload that breaks the name must not leave
                 // the previous world still bound behind a config that no longer names it.

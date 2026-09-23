@@ -202,6 +202,14 @@ class WorldBindingTest {
         // already contains it, so a message that dropped the list would still pass.
         assertTrue(severe.get(0).contains("Loaded worlds: world"),
                 "the loaded worlds must be listed: " + severe.get(0));
+        // A world a manager loads after enable is still bound on the next join, so the
+        // report must not say nothing will ever be allocated.
+        assertFalse(severe.get(0).contains("no spawn will be allocated"),
+                "the report must not claim allocation is off for good: " + severe.get(0));
+        assertTrue(severe.get(0).contains("picked up on the next join"),
+                "the report must say a later load is picked up: " + severe.get(0));
+        assertTrue(severe.get(0).contains("correct origin.world and run /sgen reload"),
+                "the report must say how to fix a wrong name: " + severe.get(0));
     }
 
     @Test

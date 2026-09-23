@@ -345,8 +345,9 @@ public class PlayerSpawnListener implements Listener {
      * survivable.
      *
      * <p>A plot is validated once, when it is allocated, and 500-block cells are wide open:
-     * spawn protection claims at most a few blocks around the spawn point, and only when
-     * GriefPrevention is installed, so anyone can flood a spawn, pour lava on it or dig out
+     * spawn protection claims only a {@code protection.size} square around the spawn point,
+     * and only when {@code protection.enabled} is true (off by default) and GriefPrevention
+     * is present, so never on Folia. Anyone can flood a spawn, pour lava on it or dig out
      * the ground under it. Without a re-check the owner respawns into it, dies, and respawns
      * into it again.
      *
