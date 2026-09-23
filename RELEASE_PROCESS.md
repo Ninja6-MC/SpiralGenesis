@@ -203,6 +203,7 @@ dependencies of the Paper platform, set in the `hangarPublish` block of `build.g
 | Floodgate | Hangar project `Floodgate` (GeyserMC/Floodgate) |
 | GriefPrevention | Hangar project `GriefPrevention` (GriefPrevention/GriefPrevention) |
 | AuthMeReloaded | External link `https://modrinth.com/plugin/authmereloaded` (not on Hangar) |
+| Multiverse-Core | Hangar project `Multiverse-Core` (Multiverse/Multiverse-Core) |
 
 Hangar resolves a project dependency by slug alone, not `owner/slug`, and rejects the
 whole upload if the slug matches no project. Keep this list in step with `plugin.yml` and

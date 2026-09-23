@@ -407,4 +407,20 @@ class WorldBindingTest {
         assertEquals(1, messagesAt(Level.SEVERE).size(),
                 "a retry per join must not repeat the error: " + messagesAt(Level.SEVERE));
     }
+
+    @Test
+    @DisplayName("plugin.yml soft-depends on Multiverse-Core, so its worlds exist at enable")
+    void softDependsOnMultiverseCore() {
+        // Multiverse-Core creates its worlds in its own onEnable. Only a softdepend entry
+        // matching its plugin.yml `name:` exactly - the same in 4.x and 5.x - orders that
+        // before the bind above; a misspelled one is ignored without a word.
+        File descriptor = new File("src/main/resources/plugin.yml");
+        assertTrue(descriptor.isFile(), "plugin.yml should be where this test expects it");
+
+        List<String> softdepend = YamlConfiguration.loadConfiguration(descriptor)
+                .getStringList("softdepend");
+
+        assertTrue(softdepend.contains("Multiverse-Core"),
+                "softdepend must name Multiverse-Core exactly, and it reads " + softdepend);
+    }
 }

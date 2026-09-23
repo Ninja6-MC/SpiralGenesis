@@ -256,6 +256,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `config.yml` before the first start, choosing an origin away from existing builds and
   claims, and what happens to the players already there. The README quick start said the
   first player gets plot #1; the first plot is #0.
+- **SpiralGenesis loads after Multiverse-Core.** Multiverse-Core creates its worlds in its
+  own startup, and nothing ordered the two, so an `origin.world` that Multiverse loads could
+  still be missing when SpiralGenesis bound it: the log said no spawn would be allocated,
+  and the world was only bound on a later join. Multiverse-Core is now a soft dependency,
+  and an optional dependency on Hangar and Modrinth. The admin guide's respawn section now
+  names every respawn that outranks the plot, a point forced elsewhere and a location
+  another plugin sets included, and it and the respawn re-check no longer say the plugin
+  has no claim or protection system.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

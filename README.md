@@ -223,7 +223,8 @@ logs `Configured world '...' (origin.world) is not loaded` at SEVERE, lists the 
 that are, and allocates nothing. New players are held where they joined and allocated as
 soon as the world is bound: correct `origin.world` and run `/sgen reload`. A world that a
 world manager loads after SpiralGenesis starts needs no reload; it is picked up the next
-time a player without a plot passes the gate or a held player acts.
+time a player without a plot passes the gate or a held player acts. Multiverse-Core is
+always enabled first, so its worlds are already loaded when SpiralGenesis starts.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.
