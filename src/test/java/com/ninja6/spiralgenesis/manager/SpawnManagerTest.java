@@ -12,6 +12,7 @@ import org.bukkit.block.Biome;
 import org.bukkit.block.Block;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.BoundingBox;
 import org.bukkit.util.VoxelShape;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -1086,6 +1087,110 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 8));
 
         assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    /*
+     * The drop measured to a floor that is not a full block, and from feet that are not on
+     * a whole block. /sgen setspawn with no coordinates stores the sender's own location,
+     * so a point set while standing on a slab, a carpet or snow has a fractional height.
+     *
+     * The stored point stands on {@code footing}, placed in its own feet block (air means
+     * it stands on the ground below), with a chest over it. On the chest is
+     * {@code landing}, and on that a stack of {@code openings} open trapdoors. The lift
+     * ends on top of the stack, its feet as far above the whole block as the stored
+     * point's, and the player falls through onto the top of {@code landing}: a drop of
+     * 1 + openings + (top of footing) - (top of landing).
+     */
+
+    private Location storedOnFooting(Material footing, BlockShapes.Shape footingShape,
+                                     Material landing, BlockShapes.Shape landingShape,
+                                     int openings) {
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0), footing, footingShape);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0), landing, landingShape);
+        for (int i = 0; i < openings; i++) {
+            shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 4 + i, 0),
+                    Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        }
+        return new Location(world, 0.5, MOCK_SURFACE_Y + 1.0 + topOf(footingShape), 0.5,
+                90f, 10f);
+    }
+
+    /** The top of the shape, or 0 for an empty one, which is stood on from below. */
+    private static double topOf(BlockShapes.Shape shape) {
+        return shape.boxes().stream().mapToDouble(BoundingBox::getMaxY).max().orElse(0);
+    }
+
+    /** From the feet at the top of the stack down to where the player comes to rest. */
+    private static double dropOf(Location stored, BlockShapes.Shape landingShape,
+                                 int openings) {
+        return stored.getY() + 3 + openings - (MOCK_SURFACE_Y + 3 + topOf(landingShape));
+    }
+
+    /**
+     * Each a drop of exactly 3.0 once both fractional heights are counted, with the height
+     * above the mock surface the player is lifted to.
+     */
+    static Stream<Arguments> exactlyThreeBlockDrops() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.OAK_PLANKS, BlockShapes.FULL, 3, 7.0),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB,
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2, 6.5),
+                Arguments.of(Material.SNOW, BlockShapes.snow(5),
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2, 6.5),
+                Arguments.of(Material.WHITE_CARPET, BlockShapes.CARPET,
+                        Material.WHITE_CARPET, BlockShapes.CARPET, 2, 6.0625),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8),
+                        Material.SNOW, BlockShapes.snow(8), 2, 6.875));
+    }
+
+    /** Each a drop just over 3.0, between 3.0625 and 3.5. */
+    static Stream<Arguments> justOverThreeBlockDrops() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 3),
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.SNOW, BlockShapes.snow(8), 3),
+                Arguments.of(Material.SNOW, BlockShapes.snow(2),
+                        Material.WHITE_CARPET, BlockShapes.CARPET, 2),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8),
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB,
+                        Material.OAK_PLANKS, BlockShapes.FULL, 3));
+    }
+
+    @ParameterizedTest(name = "from {1} onto {3} through {4} openings")
+    @MethodSource("exactlyThreeBlockDrops")
+    @DisplayName("A drop of exactly three blocks, measured in fractions, is kept")
+    void exactlyThreeBlockFractionalDropIsKept(Material footing, BlockShapes.Shape footingShape,
+                                               Material landing, BlockShapes.Shape landingShape,
+                                               int openings, double standingAbove)
+            throws Exception {
+        Location stored = storedOnFooting(footing, footingShape, landing, landingShape, openings);
+        assertEquals(3.0, dropOf(stored, landingShape, openings), 1e-9);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+
+        // Lifted to the top of the stack, at the stored point's own offset into the block.
+        assertEquals(MOCK_SURFACE_Y + standingAbove, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "from {1} onto {3} through {4} openings")
+    @MethodSource("justOverThreeBlockDrops")
+    @DisplayName("A drop just over three blocks, measured in fractions, is refused")
+    void justOverThreeBlockFractionalDropIsRefused(Material footing,
+                                                   BlockShapes.Shape footingShape,
+                                                   Material landing,
+                                                   BlockShapes.Shape landingShape,
+                                                   int openings) throws Exception {
+        Location stored = storedOnFooting(footing, footingShape, landing, landingShape, openings);
+        double drop = dropOf(stored, landingShape, openings);
+        assertTrue(drop > 3.0 && drop <= 3.5, "drop " + drop);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
     }
 
     // --- Where a player stands on a plot that has been built over --------------------
