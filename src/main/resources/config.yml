@@ -18,6 +18,8 @@ cell-size: 500
 
 # NOTE: the live spiral progression index is persisted in data.yml
 # (`current-spiral-index`), not here. Editing it in this file has no effect.
+# Changing origin.x, origin.z or cell-size starts a new spiral centre: plots already
+# allocated stay where they are, and new cells that overlap them are skipped.
 
 # Where inside an allocated cell the player is placed.
 placement:

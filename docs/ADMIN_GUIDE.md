@@ -798,12 +798,20 @@ spiral position.
 # data.yml
 current-spiral-index: 12
 installed-at: "2026-08-17T01:58:12.402Z"
+active-centre: 0
+centres:
+  '0':
+    x: 0
+    z: 0
+    cell-size: 500
+    next-index: 12
 
 players:
   # Bedrock player (Floodgate)
   00000000-0000-0000-0009-01f4c3a2b100:
     name: "*BedrockWarrior"
     client: "BEDROCK"
+    centre: 0
     assigned-index: 0
     grid-u: 0
     grid-v: 0
@@ -817,6 +825,7 @@ players:
   a1b2c3d4-e5f6-7890-abcd-ef1234567890:
     name: "JavaCrafter"
     client: "JAVA"
+    centre: 0
     assigned-index: 1
     grid-u: 1
     grid-v: 0
@@ -833,6 +842,21 @@ have not been placed on it yet. They are placed when a new player would be alloc
 under the default `FIRST_ACTION`, on their first uncancelled action after they next join,
 and at once on joining under `ON_JOIN` and for Bedrock players. The key is then removed.
 It is absent from every other record, and a record without it is not owed anything.
+
+`centres` records every spiral the server has allocated on. Moving `origin.x` or
+`origin.z` (including with `/sgen setcenter`) or changing `cell-size` does not move the
+plots already handed out, so it starts a new centre with the next free id and its own
+counter, and each record's `centre` names the spiral its `assigned-index` is on. Plots are
+named `#centre,index` in commands and logs, for example `#1,4`; a point set with
+`/sgen setspawn` is `#-1`. Going back to a geometry used before resumes that centre where
+it left off. Before a new cell is used it is tested against every recorded plot of another
+centre, by that plot's whole cell, and against every point set by hand, by its column; a
+cell that overlaps one is skipped, logged as `Skipped plot #1,9: its cell overlaps plot
+#0,7 of <player>.`, and does not count toward `max-scan-attempts`. `current-spiral-index`
+is the counter of `active-centre`, the centre allocated on last. A file written before
+centres were recorded has no `centres` and no `centre` keys: its records are all on centre
+0, which is recorded at the `origin` and `cell-size` configured when the file is first
+loaded.
 
 `installed-at` is when the plugin first recorded anything on this server, and is what
 decides which players are left alone as having played before it was installed (section 5).
@@ -942,7 +966,7 @@ Set things up before that start rather than after it.
 
 That is why the quick start's order - start the server, then run `/sgen setcenter` -
 leaves a gap on a live server. A new player who joins between the first start and
-`setcenter` is allocated plot #0 around `(0, 0)`, and keeps it: moving the centre later
+`setcenter` is allocated plot #0,0 around `(0, 0)`, and keeps it: moving the centre later
 does not move anyone already allocated.
 
 ### Before the first start
@@ -962,7 +986,7 @@ does not move anyone already allocated.
 2. **Put the origin away from existing builds and claims.** Allocation checks terrain
    only. It does not look for builds, claims or anybody's base, so a spot on top of
    someone's house is accepted if the ground passes the rules in section 3, and the new
-   player respawns there. Plot #0 is centred on the origin and each plot is `cell-size`
+   player respawns there. Plot #0,0 is centred on the origin and each plot is `cell-size`
    blocks across. The first 9 plots fill a 3 x 3 block of cells centred on the origin, the
    first 25 a 5 x 5 block, the first 49 a 7 x 7 block, and so on outward. Skipped cells
    use up indices too, so the spiral reaches further than the player count alone suggests.
@@ -989,7 +1013,7 @@ does not move anyone already allocated.
   respawn anchor is kept, and they are not moved or gated. The console says so once per
   player per run, at info. When one of them dies with no bed or anchor, they respawn
   wherever the server would have sent them before the plugin was installed.
-* **New players are placed as usual**, starting at plot #0.
+* **New players are placed as usual**, starting at plot #0,0.
 * **`/sgen reassign <player>` gives an existing player a plot.** They must be online. It
   reserves a fresh index, teleports them to the new plot and claims the spawn square if
   protection is on. It also **replaces their respawn point with the plot, including a bed
@@ -1003,10 +1027,12 @@ does not move anyone already allocated.
 ### Moving the centre after opening
 
 `/sgen setcenter`, or a changed `origin` or `cell-size` followed by `/sgen reload`, takes
-effect from the next allocation. Players already allocated keep their spawns, and the
-spiral counter carries on from where it was, so the next plot is that index's cell on the
-new grid. Nothing keeps it clear of plots allocated around the old centre. Choose the
-origin and cell size before the first new player joins and leave them alone after that.
+effect from the next allocation. Players already allocated keep their spawns. The new
+geometry is a new spiral centre with its own counter, starting at index 0 around the new
+origin, and any of its cells that overlaps a plot allocated around an earlier centre is
+skipped (section 7), so new plots stay clear of old ones, at the cost of the skipped
+cells. Choosing the origin and cell size before the first new player joins still keeps
+the spiral in one piece.
 
 ---
 

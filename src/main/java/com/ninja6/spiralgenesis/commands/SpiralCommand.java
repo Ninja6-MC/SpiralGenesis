@@ -1,7 +1,10 @@
 package com.ninja6.spiralgenesis.commands;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
+import com.ninja6.spiralgenesis.manager.CellReserver;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
@@ -322,7 +325,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
         sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
 
-        spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(outcome -> {
+        spawnManager.allocateNextSafeSpawn(CellReserver.of(plugin.getDataStorage())).thenAccept(outcome -> {
             SpawnManager.LocationResult res;
             switch (outcome) {
                 case SpawnManager.LocationResult found -> res = found;
@@ -337,9 +340,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             }
             // Player state must be touched on the thread owning that player: the entity
             // scheduler on Folia, the main thread on Paper.
-            target.getScheduler().run(plugin, task -> {
+            ScheduledTask scheduled = target.getScheduler().run(plugin, task -> {
                 if (!target.isOnline()) {
-                    sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
+                    abandonReassignment(sender, target, res);
                     return;
                 }
                 // A reload that failed to read data.yml can land during the scan, or between
@@ -347,9 +350,10 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 // everything after it. A refused write records nothing: the old plot is still
                 // the player's, so neither claim is touched, and nothing is moved.
                 if (!plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(),
-                        res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN")) {
-                    plugin.getLogger().warning("Reassignment of " + target.getName() + " to plot #"
-                            + res.index() + " by " + sender.getName() + " was not recorded, because"
+                        res.centre(), res.index(), res.gridU(), res.gridV(), target.getName(),
+                        "REASSIGN", false)) {
+                    plugin.getLogger().warning("Reassignment of " + target.getName() + " to plot "
+                            + res.plotLabel() + " by " + sender.getName() + " was not recorded, because"
                             + " data.yml could not be read when it was written. Nothing was"
                             + " changed.");
                     reply(sender, () -> sender.sendMessage(ChatColor.RED + "Reassignment of "
@@ -397,23 +401,41 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
                 target.setRespawnLocation(res.location(), true);
                 target.teleportAsync(res.location()).thenAccept(success -> {
-                    sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to index #" +
-                            res.index() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                    sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to plot " +
+                            res.plotLabel() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                     // Logged after the teleport resolves so the line reflects what actually
                     // happened; the spawn itself is already recorded either way.
                     plugin.getLogger().info(sender.getName() + " reassigned " + target.getName()
-                            + " to plot #" + res.index() + " (grid " + res.gridU() + ", " + res.gridV()
+                            + " to plot " + res.plotLabel() + " (grid " + res.gridU() + ", " + res.gridV()
                             + ") at (" + res.location().getBlockX() + ", " + res.location().getBlockY()
                             + ", " + res.location().getBlockZ() + ")"
                             + (Boolean.TRUE.equals(success) ? "" : " - spawn recorded, but the teleport did not complete"));
                 });
-            }, () -> sender.sendMessage(ChatColor.RED + target.getName()
-                    + " went offline before reassignment completed."));
+            }, () -> abandonReassignment(sender, target, res));
+            // A refused task runs neither callback, and the scheduler refuses only an entity
+            // already retired, which is the same departure.
+            if (scheduled == null) {
+                abandonReassignment(sender, target, res);
+            }
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Failed to reassign " + target.getName(), ex);
             sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");
             return null;
         });
+    }
+
+    /**
+     * Drops a reassignment whose player left before it could be applied.
+     *
+     * <p>The plot it found is never written, so nothing else ends the cell's reservation:
+     * left in flight, it would keep other centres off that ground until a restart. Released
+     * here, and the player keeps the plot they had.
+     */
+    private void abandonReassignment(CommandSender sender, Player target,
+                                     SpawnManager.LocationResult res) {
+        plugin.getDataStorage().releaseCell(res.centre(), res.index());
+        reply(sender, () -> sender.sendMessage(ChatColor.RED + target.getName()
+                + " went offline before reassignment completed."));
     }
 
     /**
@@ -605,8 +627,19 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Info: " + args[1] + " ===");
         sender.sendMessage(ChatColor.YELLOW + "UUID: " + ChatColor.WHITE + uuid);
         sender.sendMessage(ChatColor.YELLOW + "Client: " + ChatColor.WHITE + record.clientType());
-        sender.sendMessage(ChatColor.YELLOW + "Spiral Index: " + ChatColor.WHITE + record.index()
-                + ChatColor.GRAY + " (grid " + record.gridU() + ", " + record.gridV() + ")");
+        if (record.onSpiral()) {
+            SpiralCentre centre = plugin.getDataStorage().getCentre(record.centre());
+            sender.sendMessage(ChatColor.YELLOW + "Plot: " + ChatColor.WHITE + record.plotLabel()
+                    + ChatColor.GRAY + " (grid " + record.gridU() + ", " + record.gridV() + ")");
+            sender.sendMessage(ChatColor.YELLOW + "Spiral Centre: " + ChatColor.WHITE
+                    + record.centre() + ChatColor.GRAY + (centre == null
+                            ? " (origin not recorded)"
+                            : " (origin " + centre.originX() + ", " + centre.originZ()
+                                    + ", cell-size " + centre.cellSize() + ")"));
+        } else {
+            sender.sendMessage(ChatColor.YELLOW + "Plot: " + ChatColor.WHITE
+                    + "none; set by hand with setspawn");
+        }
         sender.sendMessage(ChatColor.YELLOW + "Spawn Location: " + ChatColor.WHITE +
                 (int) record.x() + ", " + (int) record.y() + ", " + (int) record.z()
                 + " (" + record.worldName() + ")");

@@ -5,6 +5,7 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import io.papermc.paper.entity.TeleportFlag;
 import org.bukkit.Bukkit;
@@ -28,7 +29,6 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -266,14 +266,14 @@ class WorldBindingTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             if (unbindNext) {
                 unbindNext = false;
                 unbind.run();
                 // The real seam, which is what has to cope with the field having gone null.
-                return super.allocateSpawn(indexSupplier);
+                return super.allocateSpawn(cells);
             }
-            int index = indexSupplier.getAsInt();
+            int index = cells.reserve(getPluginConfig()).index();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16, 64, 0);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     where, index, 0, 0, 63, 1, 1, false, Map.of()));

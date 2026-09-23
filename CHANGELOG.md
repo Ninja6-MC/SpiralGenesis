@@ -266,6 +266,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the admin guide's respawn section now name every respawn that outranks the plot, a
   point forced elsewhere and a location another plugin sets included, and the guide and
   the respawn re-check no longer say the plugin has no claim or protection system.
+- **Moving the spiral centre or changing `cell-size` no longer puts new plots on top of
+  existing ones.** A plot's cell was the configured origin plus its index's grid position
+  times the configured cell size, with one running index, so after `/sgen setcenter` or an
+  edit to `origin` or `cell-size` the next indices landed in cells other players already
+  held. Each geometry is now its own spiral centre, recorded in a `centres` table in
+  `data.yml` with its own counter, and every record carries the `centre` its index is on.
+  Plots are named `#centre,index` in commands and logs, and `/sgen info` shows the centre's
+  origin and cell size. Before a cell is used it is tested against the whole cell of every
+  plot on another centre, every point set with `/sgen setspawn`, and every cell another
+  scan is still searching; one that overlaps is skipped and logged, and does not count
+  toward `max-scan-attempts`. Returning to an earlier geometry resumes its centre's
+  counter. A file written by an earlier version loads with all of its plots on centre 0,
+  recorded at the `origin` and `cell-size` configured when it is first loaded; a centre
+  moved under an earlier alpha is not detected. `current-spiral-index` remains the active
+  centre's counter, so an earlier version still loads the file. A plot that earlier
+  version records writes no `centre` key and reads back as centre 0, so one it allocates
+  on another centre is not protected against later centres. With an even `cell-size`
+  the in-cell search no longer reaches the first column of the neighbouring cell, so every
+  candidate stays inside its own cell.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

@@ -1,5 +1,6 @@
 package com.ninja6.spiralgenesis.storage;
 
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -15,6 +16,10 @@ import org.bukkit.World;
  *                      have not been placed on it since. Stored as the optional
  *                      {@code placement-owed} key, which a file written before it existed
  *                      does not have, and which reads as false
+ * @param centre        id of the spiral centre {@code index} belongs to. Stored as the
+ *                      optional {@code centre} key; a record written before centres had ids
+ *                      has none, and reads as centre 0. Meaningless for a point set by hand,
+ *                      whose index is -1
  */
 public record StoredSpawn(
         String worldName,
@@ -26,13 +31,14 @@ public record StoredSpawn(
         int gridV,
         String playerName,
         String clientType,
-        boolean placementOwed
+        boolean placementOwed,
+        int centre
 ) {
 
-    /** A record whose player is not owed a placement, which is every record but one. */
+    /** A record on centre 0 whose player is not owed a placement. */
     public StoredSpawn(String worldName, double x, double y, double z, int index, int gridU,
                        int gridV, String playerName, String clientType) {
-        this(worldName, x, y, z, index, gridU, gridV, playerName, clientType, false);
+        this(worldName, x, y, z, index, gridU, gridV, playerName, clientType, false, 0);
     }
 
     /**
@@ -45,16 +51,27 @@ public record StoredSpawn(
         return world == null ? null : new Location(world, x, y, z);
     }
 
+    /** Whether this record is a spiral plot rather than a point set by {@code setspawn}. */
+    public boolean onSpiral() {
+        return index >= 0;
+    }
+
+    /** How this plot is named in commands and logs; see {@link SpiralCentre#label}. */
+    public String plotLabel() {
+        return SpiralCentre.label(centre, index);
+    }
+
     /** The same record with the placement mark set or cleared. */
     public StoredSpawn withPlacementOwed(boolean owed) {
         return new StoredSpawn(worldName, x, y, z, index, gridU, gridV, playerName, clientType,
-                owed);
+                owed, centre);
     }
 
-    public static StoredSpawn of(Location location, int index, int gridU, int gridV,
-                                 String playerName, String clientType, boolean placementOwed) {
+    public static StoredSpawn of(Location location, int centre, int index, int gridU,
+                                 int gridV, String playerName, String clientType,
+                                 boolean placementOwed) {
         String worldName = location.getWorld() != null ? location.getWorld().getName() : "world";
         return new StoredSpawn(worldName, location.getX(), location.getY(), location.getZ(),
-                index, gridU, gridV, playerName, clientType, placementOwed);
+                index, gridU, gridV, playerName, clientType, placementOwed, centre);
     }
 }

@@ -4,6 +4,7 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.destroystokyo.paper.event.player.PlayerSetSpawnEvent;
@@ -33,7 +34,6 @@ import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.IntSupplier;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -97,9 +97,9 @@ class StorageFailureTest {
         final AtomicInteger searches = new AtomicInteger();
 
         @Override
-        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             allocations.incrementAndGet();
-            int index = indexSupplier.getAsInt();
+            int index = cells.reserve(getPluginConfig()).index();
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16, 64, 0);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     where, index, 0, 0, 63, 1, 1, false, Map.of()));
@@ -340,9 +340,11 @@ class StorageFailureTest {
         assertFalse(plugin.getDataStorage().isFailed());
         assertNull(plugin.storageFailureNotice());
         assertTrue(drain(console).stream().anyMatch(m -> m.contains("reloaded successfully")));
-        // The load that follows records an install time in a file that has none, and adds
-        // nothing else.
-        assertEquals("current-spiral-index: 3\n",
+        // The load that follows records an install time in a file that has none, and the
+        // rebind records the configured centre as centre 0 with the file's counter; nothing
+        // else is added.
+        assertEquals("current-spiral-index: 3\ncentres:\n  '0':\n    x: 0\n    z: 0\n"
+                        + "    cell-size: 500\n    next-index: 3\nactive-centre: 0\n",
                 Files.readString(dataFile(plugin), StandardCharsets.UTF_8)
                         .replaceAll("(?m)^installed-at: .*\n", ""),
                 "the reload's save must not have written over the repaired file first");

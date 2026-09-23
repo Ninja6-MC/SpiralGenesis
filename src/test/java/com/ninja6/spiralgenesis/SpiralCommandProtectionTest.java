@@ -6,6 +6,7 @@ import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.command.ConsoleCommandSenderMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.RecordingProvider;
@@ -27,7 +28,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
-import java.util.function.IntSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -83,8 +83,11 @@ class SpiralCommandProtectionTest {
         private Location next;
         private int index = 7;
 
+        private final PluginConfig config;
+
         private StubSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
+            this.config = config;
         }
 
         private SpawnManager.LocationResult result() {
@@ -92,8 +95,8 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(IntSupplier indexSupplier) {
-            index = indexSupplier.getAsInt();
+        public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(CellReserver cells) {
+            index = cells.reserve(config).index();
             return CompletableFuture.completedFuture(result());
         }
 
