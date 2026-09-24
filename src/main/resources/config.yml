@@ -83,9 +83,10 @@ allocation:
   # while choosing a password should never trip it. Clamped to 15-3600.
   action-timeout-seconds: 300
 
-# Claim a small square around each player's spawn point through a land protection plugin,
-# so their bed and first chest are covered the moment they arrive. The rest of the plot is
-# left unclaimed and is theirs to claim normally.
+# Optional, for servers running GriefPrevention; nothing else in SpiralGenesis needs a
+# claim plugin. Claims a small square around each player's spawn point, so their bed and
+# first chest are covered the moment they arrive. The rest of the plot is left unclaimed,
+# free for the player to claim through the server's own claim plugin if it uses one.
 protection:
   # Off by default, and off is genuinely off for claiming: nothing is claimed, and a
   # server with no protection plugin behaves exactly as it did before this block existed.

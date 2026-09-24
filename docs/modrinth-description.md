@@ -61,22 +61,33 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 * **Doesn't stall the server.** Chunks load through Paper's async API and each candidate
   spot is checked on its own tick. Saves are batched off the main thread.
 * **Runs on Folia.** The same jar uses region, entity and async schedulers throughout.
-* **Can protect the spawn point.** Optional, off by default, and needs GriefPrevention:
-  switch it on and every player gets a small claim around their spawn that only they can
-  build in, so their bed and first chest are covered the moment they arrive. It never costs
-  anyone their plot when it cannot be created. See the
-  [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#6-spawn-protection) for the settings and the two
-  GriefPrevention numbers worth checking first.
+* **Can protect the spawn point.** An optional extra, off by default, for servers running
+  GriefPrevention; nothing else in the plugin needs it. Switch it on and every player gets
+  a small claim around their spawn that only they can build in, so their bed and first
+  chest are covered the moment they arrive. It never costs anyone their plot when it
+  cannot be created. See the [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#6-spawn-protection) for
+  the settings and the two GriefPrevention numbers worth checking first.
 
 ## What it does *not* do
 
-SpiralGenesis gives each player **space**, and at most a few blocks of **ownership**.
-With `protection:` switched on it claims a small square around each player's spawn point
-through GriefPrevention, and that is the whole of it - the rest of the 500x500 plot is
-unclaimed, and players are expected to claim it themselves in the normal way. Left off,
-which is the default, it protects nothing at all and nothing stops another player walking
-over and breaking things. Either way, pair it with a claim plugin such as GriefPrevention
-or Lands for anything beyond the spawn square - the spiral layout gives those plugins
+SpiralGenesis is about **distribution**: it decides where each player starts and spaces
+them out so that no two share a plot. Apart from the optional spawn square below, it does
+not protect land, and it needs no claim plugin to do its job. How it deals with claims
+depends on what the server runs:
+
+* **Without GriefPrevention, or on Folia** (where GriefPrevention cannot run), nothing is
+  claimed and allocation looks at terrain only. This is a complete setup, not a reduced
+  one.
+* **With GriefPrevention installed**, allocation also keeps new spawns off existing
+  claims, whoever owns them. Nothing is claimed by SpiralGenesis unless `protection:` is
+  switched on, and it is off by default.
+* **With `protection:` switched on as well**, it claims a small square around each
+  player's spawn point, and that is the whole of it - the rest of the 500x500 plot stays
+  unclaimed.
+
+Beyond that square, nothing in SpiralGenesis stops another player walking onto someone
+else's plot and building or breaking things there. If your server uses land claiming, a
+plugin such as GriefPrevention or Lands covers that, and the spiral layout gives it
 clean, non-overlapping regions to work with.
 
 ---
@@ -135,9 +146,9 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
-| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. |
-| `/sgen protect` | Claim the spawn square for players allocated before spawn protection was switched on. Safe to run twice. |
-| `/sgen release-all confirm` | Release the spawn claim around every player's current plot, for uninstalling. Refused under `PLAYER_CLAIM`. See [Uninstalling](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#11-uninstalling). |
+| `/sgen reassign <player> release` | The same, and release the spawn claim around their old spawn. Spawn protection only: without it, `release` does nothing. |
+| `/sgen protect` | Spawn protection only. Claim the spawn square for players allocated before protection was switched on. Safe to run twice. |
+| `/sgen release-all confirm` | Spawn protection only. Release the spawn claim around every player's current plot, when uninstalling from a server that has had protection on. Refused under `PLAYER_CLAIM`. See [Uninstalling](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#11-uninstalling). |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
 | `/sgen simulate <count>` | Dry-run 1-500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
@@ -145,6 +156,10 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 
 `setspawn` and `reassign` act on the live player, so the target has to be online. `tp` and
 `info` read from storage and work for offline players too.
+
+The three marked *spawn protection only* are for servers running GriefPrevention with
+`protection.enabled` switched on, and act only while it is. A server that never switches
+it on has no spawn claims and needs none of them.
 
 `/sgen simulate 50` is the fastest way to check your settings against your world before
 players arrive - it reports how many plots were skipped, how often the search fell back,
