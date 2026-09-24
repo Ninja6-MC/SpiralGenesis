@@ -32,6 +32,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -107,7 +108,7 @@ class StorageFailureTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner) {
             searches.incrementAndGet();
             return new CompletableFuture<>();
         }

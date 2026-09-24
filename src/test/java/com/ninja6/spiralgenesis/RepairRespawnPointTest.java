@@ -18,6 +18,7 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -68,7 +69,7 @@ class RepairRespawnPointTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
             return CompletableFuture.completedFuture(new LocationResult(
                     replacement, cell.index(), 0, 0, 63, 1, 1, false, Map.of()));
         }

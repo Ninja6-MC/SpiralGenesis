@@ -5,6 +5,7 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.math.CellArea;
 import me.ryanhamshire.GriefPrevention.Claim;
+import me.ryanhamshire.GriefPrevention.ClaimPermission;
 import me.ryanhamshire.GriefPrevention.TestClaims;
 import org.bukkit.plugin.Plugin;
 import org.junit.jupiter.api.AfterEach;
@@ -32,9 +33,10 @@ import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * The claim lookup allocation steers around, against real GriefPrevention {@link Claim}
- * objects in an index laid out the way GriefPrevention lays out its own: each top-level
- * claim listed under every chunk it touches.
+ * The claim lookup allocation and repair steer around, against real GriefPrevention
+ * {@link Claim} objects in an index laid out the way GriefPrevention lays out its own: each
+ * top-level claim listed under every chunk it touches, and each subdivision only in its
+ * parent's children.
  */
 class GriefPreventionClaimLookupTest {
 
@@ -234,5 +236,202 @@ class GriefPreventionClaimLookupTest {
         // This stand-in never published GriefPrevention's API, so there is nothing to read
         // and the answer is "not claimed", without a throw.
         assertFalse(lookup.overlapsClaim(world, square(0, 0)));
+    }
+
+    // Repair: whose claim a candidate's square reaches into.
+
+    private final UUID player = UUID.randomUUID();
+
+    /** A subdivision of {@code parent}, with no owner of its own, as GriefPrevention keeps one. */
+    private Claim subdivide(Claim parent, int lesserX, int lesserZ, int greaterX, int greaterZ,
+                            long id) {
+        Claim child = TestClaims.claim(world, lesserX, lesserZ, greaterX, greaterZ, null,
+                List.of(), id);
+        child.parent = parent;
+        parent.children.add(child);
+        return child;
+    }
+
+    @Test
+    @DisplayName("repair: the player's own spawn claim under ADMIN_CLAIM is theirs")
+    void ownAdminSpawnClaimIsNotForeign() {
+        // What claim-as: ADMIN_CLAIM makes: no owner, the player trusted with Build and
+        // Manage, as GriefPreventionProtectionProvider grants them.
+        Claim spawn = TestClaims.claim(world, 96, 96, 104, 104, null, List.of(), 10);
+        spawn.setPermission(player.toString(), ClaimPermission.Build);
+        spawn.setPermission(player.toString(), ClaimPermission.Manage);
+
+        assertTrue(spawn.isAdminClaim());
+        assertFalse(lookup(new Index(spawn)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: the player's own spawn claim under PLAYER_CLAIM is theirs")
+    void ownPlayerSpawnClaimIsNotForeign() {
+        Claim spawn = TestClaims.claim(world, 96, 96, 104, 104, player, List.of(), 11);
+
+        assertFalse(lookup(new Index(spawn)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: another player's claim is foreign")
+    void anotherPlayersClaimIsForeign() {
+        Claim neighbour = TestClaims.claim(world, 90, 90, 130, 130, UUID.randomUUID(),
+                List.of(), 12);
+
+        GriefPreventionClaimLookup lookup = lookup(new Index(neighbour));
+
+        assertTrue(lookup.overlapsForeignClaim(world, square(100, 100), player));
+        // Only the columns it covers: a square clear of it is not affected.
+        assertFalse(lookup.overlapsForeignClaim(world, square(80, 80), player));
+    }
+
+    @Test
+    @DisplayName("repair: a foreign claim trusting the player by name at any level is theirs")
+    void namedTrustAtAnyLevelIsNotForeign() {
+        for (ClaimPermission level : List.of(ClaimPermission.Access,
+                ClaimPermission.Inventory, ClaimPermission.Build, ClaimPermission.Manage)) {
+            Claim neighbour = TestClaims.claim(world, 90, 90, 130, 130, UUID.randomUUID(),
+                    List.of(), 13);
+            neighbour.setPermission(player.toString(), level);
+
+            assertFalse(lookup(new Index(neighbour)).overlapsForeignClaim(world,
+                    square(100, 100), player), "trusted with " + level);
+        }
+    }
+
+    @Test
+    @DisplayName("repair: trust in a foreign claim granted to someone else does not count")
+    void someoneElsesTrustIsForeign() {
+        Claim neighbour = TestClaims.claim(world, 90, 90, 130, 130, UUID.randomUUID(),
+                List.of(UUID.randomUUID().toString()), 14);
+
+        assertTrue(lookup(new Index(neighbour)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: a claim trusting public is foreign, at every level")
+    void publicTrustIsForeign() {
+        for (ClaimPermission level : List.of(ClaimPermission.Access,
+                ClaimPermission.Inventory, ClaimPermission.Build, ClaimPermission.Manage)) {
+            Claim town = TestClaims.claim(world, -200, -200, 200, 200, null, List.of(), 15);
+            town.setPermission("public", level);
+
+            assertTrue(lookup(new Index(town)).overlapsForeignClaim(world, square(0, 0),
+                    player), "public trusted with " + level);
+        }
+    }
+
+    @Test
+    @DisplayName("repair: a subdivision trusting the player decides for itself in a foreign claim")
+    void trustedSubdivisionInForeignParent() {
+        Claim town = TestClaims.claim(world, -200, -200, 200, 200, null, List.of(), 16);
+        Claim lot = subdivide(town, 80, 80, 120, 120, 17);
+        lot.setPermission(player.toString(), ClaimPermission.Build);
+
+        GriefPreventionClaimLookup lookup = lookup(new Index(town));
+
+        assertFalse(lookup.overlapsForeignClaim(world, square(100, 100), player),
+                "a square wholly inside the trusted subdivision");
+        assertTrue(lookup.overlapsForeignClaim(world, square(118, 100), player),
+                "a square reaching past it into the town");
+        assertTrue(lookup.overlapsForeignClaim(world, square(0, 0), player),
+                "a square in the town outside any subdivision");
+    }
+
+    @Test
+    @DisplayName("repair: a square covered by two trusted subdivisions side by side is theirs")
+    void squareSplitAcrossTrustedSubdivisions() {
+        Claim town = TestClaims.claim(world, -200, -200, 200, 200, null, List.of(), 18);
+        subdivide(town, 80, 80, 99, 120, 19)
+                .setPermission(player.toString(), ClaimPermission.Access);
+        subdivide(town, 100, 80, 120, 120, 20)
+                .setPermission(player.toString(), ClaimPermission.Build);
+
+        assertFalse(lookup(new Index(town)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: a one-column gap between trusted subdivisions is foreign")
+    void gapBetweenTrustedSubdivisions() {
+        // Column x = 100 belongs to the town alone.
+        Claim town = TestClaims.claim(world, -200, -200, 200, 200, null, List.of(), 27);
+        subdivide(town, 80, 80, 99, 120, 28)
+                .setPermission(player.toString(), ClaimPermission.Access);
+        subdivide(town, 101, 80, 120, 120, 29)
+                .setPermission(player.toString(), ClaimPermission.Build);
+
+        GriefPreventionClaimLookup lookup = lookup(new Index(town));
+
+        assertTrue(lookup.overlapsForeignClaim(world, square(100, 100), player),
+                "a square spanning the gap");
+        assertFalse(lookup.overlapsForeignClaim(world, square(94, 100), player),
+                "a square ending at x = 98, inside the western subdivision");
+        assertFalse(lookup.overlapsForeignClaim(world, square(105, 100), player),
+                "a square starting at x = 101, inside the eastern subdivision");
+    }
+
+    @Test
+    @DisplayName("repair: a restricted subdivision inside a claim trusting the player is foreign")
+    void restrictedSubdivisionInTrustedParent() {
+        Claim base = TestClaims.claim(world, 0, 0, 200, 200, UUID.randomUUID(), List.of(), 21);
+        base.setPermission(player.toString(), ClaimPermission.Build);
+        subdivide(base, 90, 90, 110, 110, 22).setSubclaimRestrictions(true);
+
+        GriefPreventionClaimLookup lookup = lookup(new Index(base));
+
+        assertTrue(lookup.overlapsForeignClaim(world, square(100, 100), player),
+                "a subdivision that inherits nothing does not trust the player");
+        assertFalse(lookup.overlapsForeignClaim(world, square(50, 50), player),
+                "the rest of the claim still does");
+    }
+
+    @Test
+    @DisplayName("repair: a subdivision inherits its parent's trust unless it restricts it")
+    void unrestrictedSubdivisionInheritsTrust() {
+        Claim base = TestClaims.claim(world, 0, 0, 200, 200, UUID.randomUUID(), List.of(), 23);
+        base.setPermission(player.toString(), ClaimPermission.Access);
+        subdivide(base, 90, 90, 110, 110, 24);
+
+        assertFalse(lookup(new Index(base)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: the owner of a claim owns its subdivisions, restricted or not")
+    void ownerOwnsRestrictedSubdivision() {
+        Claim base = TestClaims.claim(world, 0, 0, 200, 200, player, List.of(), 25);
+        subdivide(base, 90, 90, 110, 110, 26).setSubclaimRestrictions(true);
+
+        assertFalse(lookup(new Index(base)).overlapsForeignClaim(world, square(100, 100),
+                player));
+    }
+
+    @Test
+    @DisplayName("repair: without GriefPrevention no claim is foreign")
+    void noClaimPluginMeansNothingForeign() {
+        Plugin plugin = MockBukkit.createMockPlugin("SpiralGenesisTest");
+
+        assertSame(ClaimLookup.NONE, ProtectionProviders.createClaimLookup(plugin));
+        assertFalse(ClaimLookup.NONE.overlapsForeignClaim(world, square(0, 0), player));
+        assertFalse(new GriefPreventionClaimLookup(logger, () -> null)
+                .overlapsForeignClaim(world, square(0, 0), player));
+    }
+
+    @Test
+    @DisplayName("repair: a lookup that throws fails open and is reported once")
+    void aFailingForeignLookupFailsOpenOnce() {
+        GriefPreventionClaimLookup broken = new GriefPreventionClaimLookup(logger, () -> {
+            throw new NoSuchMethodError("Claim.hasExplicitPermission");
+        });
+
+        assertFalse(broken.overlapsForeignClaim(world, square(0, 0), player));
+        assertFalse(broken.overlapsForeignClaim(world, square(0, 0), player));
+
+        assertEquals(1, logged.size(), "one line, not one per candidate: " + logged);
     }
 }
