@@ -36,6 +36,10 @@ import java.util.logging.Logger;
  * 255-block one - plus a rectangle test per claim listed there. It does not grow with the
  * number of claims on the server, only with how many sit in those few chunks. The index is
  * keyed by chunk position alone, not world, so each claim's world is compared as well.
+ * {@link #overlapsForeignClaim} also walks the subdivisions of each claim listed there,
+ * once per chunk the claim is listed under, as {@code getClaimAt} walks them for a single
+ * point: its cost grows with how many subdivisions those claims hold, still not with the
+ * claims elsewhere on the server.
  *
  * <h2>Whose a claim is</h2>
  *

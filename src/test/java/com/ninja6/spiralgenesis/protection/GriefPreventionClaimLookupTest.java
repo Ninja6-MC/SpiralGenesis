@@ -356,6 +356,26 @@ class GriefPreventionClaimLookupTest {
     }
 
     @Test
+    @DisplayName("repair: a one-column gap between trusted subdivisions is foreign")
+    void gapBetweenTrustedSubdivisions() {
+        // Column x = 100 belongs to the town alone.
+        Claim town = TestClaims.claim(world, -200, -200, 200, 200, null, List.of(), 27);
+        subdivide(town, 80, 80, 99, 120, 28)
+                .setPermission(player.toString(), ClaimPermission.Access);
+        subdivide(town, 101, 80, 120, 120, 29)
+                .setPermission(player.toString(), ClaimPermission.Build);
+
+        GriefPreventionClaimLookup lookup = lookup(new Index(town));
+
+        assertTrue(lookup.overlapsForeignClaim(world, square(100, 100), player),
+                "a square spanning the gap");
+        assertFalse(lookup.overlapsForeignClaim(world, square(94, 100), player),
+                "a square ending at x = 98, inside the western subdivision");
+        assertFalse(lookup.overlapsForeignClaim(world, square(105, 100), player),
+                "a square starting at x = 101, inside the eastern subdivision");
+    }
+
+    @Test
     @DisplayName("repair: a restricted subdivision inside a claim trusting the player is foreign")
     void restrictedSubdivisionInTrustedParent() {
         Claim base = TestClaims.claim(world, 0, 0, 200, 200, UUID.randomUUID(), List.of(), 21);
