@@ -113,8 +113,30 @@ Tagging by hand still works and CI still gates it, but the failures then happen 
 tag is public, when undoing them means deleting a tag that two registries have already
 seen.
 
-### Step 3: Automated CI Actions
-GitHub Actions (`.github/workflows/release.yml`) will:
+### Step 3: Approve the Release
+
+Pushing the tag starts the `Publish Release` run, but the run does not start its job. The
+publish job runs in the `release` environment, which has a required reviewer, so the run
+stops at `Waiting` until that reviewer approves it. Nothing is built, tested or published
+before then.
+
+1. Open the run. It is the newest run on the release workflow's page,
+   `https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/release.yml`, or under
+   the Actions tab. The reviewer is also notified by GitHub.
+2. The run page shows that the run is waiting for `release` to be approved. Select
+   **Review deployments**, tick `release`, and select **Approve and deploy**.
+3. The job then starts and runs the steps in Step 4.
+
+Approve only in the browser, and only after checking that the run page names the tag you
+just pushed. **Reject** fails the run before the job starts, so nothing is published; the
+tag is still on origin and has to be deleted before the version can be cut again. A run
+nobody reviews fails on its own after 30 days.
+
+The environment only accepts tags matching `v*`. A run from any other ref cannot deploy to
+it, whoever approves.
+
+### Step 4: Automated CI Actions
+Once approved, GitHub Actions (`.github/workflows/release.yml`) will:
 1. Reject the tag unless it matches `vMAJOR.MINOR.PATCH` with an optional `-alpha.N`,
    `-beta.N` or `-rc.N` suffix. The tag decides the tier, so it has to be exact.
 2. Require a `## [MAJOR.MINOR.PATCH]` section in `CHANGELOG.md` for a stable release, and
@@ -127,7 +149,11 @@ GitHub Actions (`.github/workflows/release.yml`) will:
 8. Sync the Hangar resource page from `docs/modrinth-description.md`, and read it back to
    confirm Hangar holds exactly that text. See [Hangar Resource Page](#hangar-resource-page).
 
-### Repository Secrets
+### Environment Secrets
+
+The registry tokens are environment secrets on the `release` environment, not repository
+secrets. Only a job that runs in `release`, and has therefore been approved, can read them;
+no other workflow in the repository can.
 
 | Secret | Used by | Required permissions | Publishing is skipped if absent |
 | :--- | :--- | :--- | :--- |
@@ -144,6 +170,24 @@ the tests never see either token.
 
 A Hangar key holding `create_version` alone uploads the version, but Hangar rejects the
 page sync that follows, and the job fails at the read-back.
+
+To set or rotate a token, run the command without a value. `gh` prompts for it without
+echo, so it never appears on a command line or in shell history:
+
+```bash
+gh secret set MODRINTH_TOKEN --env release -R Ninja6-MC/SpiralGenesis
+gh secret set HANGAR_API_TOKEN --env release -R Ninja6-MC/SpiralGenesis
+```
+
+The same can be done under Settings, Environments, `release`, Environment secrets. To
+check which are set, list the names:
+
+```bash
+gh secret list --env release -R Ninja6-MC/SpiralGenesis
+```
+
+Do not add a repository secret with either name. The job would still read the environment
+one, but every other workflow could then read the repository copy.
 
 ### Hangar Resource Page
 

@@ -179,7 +179,8 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-echo "Pushing this tag publishes to GitHub Releases, Modrinth and Hangar."
+echo "Pushing this tag publishes to GitHub Releases, Modrinth and Hangar once the"
+echo "release run is approved."
 echo "Unpublishing from those is considerably harder than deleting a tag."
 echo
 read -r -p "Type the tag to confirm: " CONFIRM
@@ -195,6 +196,10 @@ ok "created $TAG at ${LOCAL:0:7}"
 git push origin "$TAG"
 ok "pushed $TAG"
 
+# The publish job runs in the `release` environment, which has a required reviewer, so
+# the run this push starts waits there until it is approved. Say so, or it reads as stuck.
 echo
-echo "Publishing now. Watch it here:"
+echo "The release run is waiting for approval. Nothing is published until it is approved."
+echo "Open the newest run here, select 'Review deployments', tick 'release' and approve:"
 echo "  https://github.com/Ninja6-MC/SpiralGenesis/actions/workflows/release.yml"
+echo "RELEASE_PROCESS.md, 'Step 3: Approve the Release', has the detail."
