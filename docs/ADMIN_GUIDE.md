@@ -27,15 +27,16 @@ its own section, [section 10](#10-installing-on-an-existing-server).
 
 A player joins for the first time. SpiralGenesis:
 
-1. Claims the next **spiral index** — a global counter, shared across all players, that
-   maps to a grid cell. Claiming is atomic, so two players joining at the same moment can
-   never land in the same cell.
+1. Reserves the next **spiral index** - a global counter, shared across all players, that
+   maps to a grid cell. The reservation is atomic, so two players joining at the same
+   moment can never land in the same cell. The counter is SpiralGenesis' own, stored in
+   `data.yml` (section 7); reserving an index is not a land claim.
 2. Loads that cell's chunks asynchronously and probes **candidate points inside the cell**,
    spiralling outward from its centre.
 3. Accepts the first (or best, depending on strategy) candidate that passes every terrain
    rule in §3 and, where GriefPrevention is installed, is clear of existing claims
    (section 6).
-4. If every candidate in the cell fails, claims another index and starts again — up to
+4. If every candidate in the cell fails, reserves another index and starts again - up to
    `safety.max-scan-attempts` cells. A cell whose every candidate is inside an existing
    claim is skipped and does not count toward that limit.
 5. If all attempts are exhausted, settles on the best candidate seen anywhere during the
@@ -389,6 +390,21 @@ and the same teleport whether the claim succeeds, fails or is never attempted. A
 does keep new spawns off claims that already exist, but it does so whenever
 GriefPrevention is installed, protection on or off; see
 [existing claims and allocation](#existing-claims-and-allocation).
+
+SpiralGenesis needs no claim plugin, and a server without one is fully supported. The
+three setups, and what each one does with claims:
+
+| Setup | Spawn claims created | Allocation avoids existing claims |
+| :--- | :--- | :--- |
+| No GriefPrevention, or Folia | No | No: terrain only |
+| GriefPrevention, `protection.enabled: false` (the default) | No | Yes, whoever owns them |
+| GriefPrevention, `protection.enabled: true` | Yes | Yes, whoever owns them |
+
+[Existing claims and allocation](#existing-claims-and-allocation) covers the second and
+third rows, and [without GriefPrevention](#without-griefprevention-and-on-folia) the
+first. Apart from those two subsections, the rest of this section concerns only the
+last row, and so do `/sgen protect`, `/sgen release-all` and the `release` argument on
+`/sgen reassign`: without spawn protection active they have nothing to act on.
 
 The claim is deliberately much smaller than the plot. See
 [the claim is small on purpose](#the-claim-is-small-on-purpose) below, which is the part
@@ -1113,12 +1129,27 @@ the spiral in one piece.
 
 ## 11. Uninstalling
 
-Removing the jar stops new allocations and nothing else. Two things SpiralGenesis created
-outlive it: the spawn claims in GriefPrevention, and each player's respawn point. Deal
-with the claims before you remove the jar, because the command that releases them is part
-of the plugin.
+Removing the jar stops new allocations and nothing else. The respawn point of each player
+it placed outlives it on every server. Spawn claims in GriefPrevention outlive it too, but
+they exist only if `protection.enabled` was switched on with GriefPrevention running at
+some point (section 6). A server that never did that, including one that has only ever
+run on Folia or without GriefPrevention, has no spawn claims: skip to
+[respawn points](#respawn-points).
+
+If protection was on at any point, deal with the claims before you remove the jar,
+because the command that releases them is part of the plugin.
 
 ### Releasing the spawn claims
+
+**If protection is off now but was on earlier, switch it back on first.**
+`/sgen release-all` refuses to run unless spawn protection is active at the moment it is
+used, and says there are no spawn claims to release - even though the claims made while
+it was on are still standing. Set `protection.enabled: true` again, with the same
+`protection.size` the claims were made with, and run `/sgen reload`; switching it on does
+not claim anything for existing players by itself. A claim is released only when it still
+matches the configured square exactly (see below), so a different size leaves every one of
+them standing. Claims made under `protection.claim-as: PLAYER_CLAIM` are not released at
+all, whatever the setting is now.
 
 Under the default `protection.claim-as: ADMIN_CLAIM` every spawn claim is an
 administrative claim, and players cannot abandon one. Without help an uninstall would be
@@ -1189,7 +1220,7 @@ Players who first joined before SpiralGenesis was installed were never given a p
 
 ### Removing the plugin
 
-With the claims released, stop the server, remove the jar, and start it again.
+With any spawn claims released, stop the server, remove the jar, and start it again.
 `plugins/SpiralGenesis/`, holding `config.yml` and `data.yml`, is not read by anything else
 and can be deleted or kept. Keeping it means a later reinstall picks up the same plots and
 the same `installed-at`.
