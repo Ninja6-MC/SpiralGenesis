@@ -1280,6 +1280,28 @@ class SpawnManagerTest {
     }
 
     @Test
+    @DisplayName("World spawn moved while its chunk loads is searched where the chunk was chosen")
+    void worldSpawnMovedDuringTheLoadKeepsTheChosenColumn() throws Exception {
+        CompletableFuture<Object> load = new CompletableFuture<>();
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+                return load;
+            }
+        };
+        world.setSpawnLocation(0, MOCK_SURFACE_Y, 0);
+
+        CompletableFuture<Location> standing = manager.worldSpawnPoint();
+        // A /setworldspawn into another chunk before the load completes.
+        world.setSpawnLocation(100, MOCK_SURFACE_Y, 100);
+        load.complete(null);
+
+        Location found = standing.get(10, TimeUnit.SECONDS);
+        assertEquals(0.5, found.getX(), 1e-9);
+        assertEquals(0.5, found.getZ(), 1e-9);
+    }
+
+    @Test
     @DisplayName("A world spawn over lava has no standing point")
     void worldSpawnOverLavaHasNoStandingPoint() throws Exception {
         // Solid below, lava in the spawn block: every clear position above has lava

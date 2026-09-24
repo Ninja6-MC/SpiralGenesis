@@ -289,7 +289,7 @@ public class PlayerSpawnListener implements Listener {
                             + player.getName() + "'s plot; leaving them "
                             + (onPlot ? "at world spawn." : "where they respawned."));
                     if (onPlot) {
-                        plugin.sendToWorldSpawn(player, plot.getWorld(), null);
+                        plugin.sendToWorldSpawn(player, plot.getWorld());
                     }
                     return;
                 }
@@ -443,10 +443,17 @@ public class PlayerSpawnListener implements Listener {
      * <p>This event cannot await anything, so the position is found inline only when this
      * thread already owns the chunk world spawn is in. Otherwise the respawn goes to the
      * stored block and the player is moved once placed, unless something has moved them
-     * off it by then - the repair started alongside this, when it finds a point.
+     * off it by then - the repair started alongside this, when it finds a point; see
+     * {@link SpiralGenesisPlugin#settleAtWorldSpawn}.
+     *
+     * <p>Only the bound world's spawn can be checked. A plot in any other world respawns
+     * the player at that world's spawn as stored, as before.
      */
     private Location worldSpawnFor(Player player, SpawnManager manager, World world) {
         Location stored = world.getSpawnLocation();
+        if (!world.equals(manager.getWorld())) {
+            return stored;
+        }
         if (manager.ownsWorldSpawn()) {
             Location standing = manager.worldSpawnPointNow();
             if (standing != null) {
@@ -457,8 +464,9 @@ public class PlayerSpawnListener implements Listener {
                     + " block is used. Move world spawn with /setworldspawn.");
             return stored;
         }
-        player.getScheduler().run(plugin,
-                task -> plugin.sendToWorldSpawn(player, world, stored), null);
+        int repairMovesSeen = plugin.repairMoves(player.getUniqueId());
+        player.getScheduler().run(plugin, task -> plugin.settleAtWorldSpawn(player, world,
+                stored, repairMovesSeen), null);
         return stored;
     }
 

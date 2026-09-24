@@ -33,6 +33,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -157,6 +158,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * storage under the others.
      */
     private final Set<UUID> repairing = ConcurrentHashMap.newKeySet();
+
+    /**
+     * How many times a repair has moved each player onto a repaired plot; see
+     * {@link #repairMoves}. Written and compared on the player's own thread. Holds only
+     * players whose plot was repaired while they stood in the world, so it is left to grow
+     * with them rather than cleared on quit.
+     */
+    private final Map<UUID, Integer> repairMoves = new ConcurrentHashMap<>();
 
     /**
      * Players already reported as having played here before the plugin was installed, so
@@ -1102,7 +1111,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                             player.setRespawnLocation(null, false);
                         }
                     } else {
-                        sendToWorldSpawn(player, world, null);
+                        sendToWorldSpawn(player, world);
                     }
                     return;
                 }
@@ -1137,6 +1146,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     // is also the only lever that works on Folia, whose respawn never
                     // consults a plugin. Anyone already back in the world is moved directly.
                     if (!player.isDead()) {
+                        repairMoves.merge(uuid, 1, Integer::sum);
                         player.teleportAsync(res.location());
                     }
                     getLogger().info("Repaired plot " + record.plotLabel() + " for "
@@ -1187,24 +1197,58 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      *
      * <p>Safe to call from any thread. The position is found on the thread owning world
      * spawn and the move is made on the player's own. When nothing in the spawn's column
-     * passes, the stored block is used anyway, as it always was, unless the player is
-     * already there.
+     * passes, the stored block is used anyway, as it always was.
      *
-     * @param world    the world whose spawn is used unchecked when no world is bound, and
-     *                 so there is no manager to check it with
-     * @param onlyFrom when set, the move is dropped unless the player is still in this
-     *                 block column by then: the repair, among others, may have moved them
-     *                 on while the position was being found
+     * <p>Only the bound world's spawn can be checked, since the manager reads no other
+     * world. For any other world, a record left behind by a change of {@code origin.world}
+     * among them, the player goes to that world's spawn as stored, as before, rather than
+     * across worlds to the bound one.
+     *
+     * @param world the world whose spawn the player is sent to; nothing is done when it is
+     *              null, which is a record whose world is not loaded
      */
-    public void sendToWorldSpawn(Player player, World world, Location onlyFrom) {
+    public void sendToWorldSpawn(Player player, World world) {
+        moveToWorldSpawn(player, world, null, 0);
+    }
+
+    /**
+     * {@link #sendToWorldSpawn} for a player a respawn has just placed at the stored world
+     * spawn block, to move them clear of it. Dropped unless they are still in that block's
+     * column when the position is known, and unless no repair has moved them since
+     * {@code repairMovesSeen} was read from {@link #repairMoves}. The second test is the
+     * one that decides a race with the repair: its teleport is issued on the player's
+     * thread, as this move is, but on Folia it lands later, so the player can still read
+     * as in the column after the repair has sent them to their plot.
+     *
+     * @param from            the stored world spawn block the respawn placed them at
+     * @param repairMovesSeen {@link #repairMoves} for the player, read when the respawn
+     *                        placed them there
+     */
+    public void settleAtWorldSpawn(Player player, World world, Location from,
+                                   int repairMovesSeen) {
+        moveToWorldSpawn(player, world, from, repairMovesSeen);
+    }
+
+    /**
+     * How many times a repair has moved this player onto a repaired plot this session. Only
+     * compared with itself, by {@link #settleAtWorldSpawn}.
+     */
+    public int repairMoves(UUID uuid) {
+        return repairMoves.getOrDefault(uuid, 0);
+    }
+
+    private void moveToWorldSpawn(Player player, World world, Location from,
+                                  int repairMovesSeen) {
+        if (world == null) {
+            return;
+        }
         // Read once, for the reason allocateSpawn does.
         SpawnManager manager = spawnManager;
         CompletableFuture<Location> target;
-        if (manager != null) {
+        if (manager != null && world.equals(manager.getWorld())) {
             target = manager.worldSpawnPoint();
         } else {
-            target = CompletableFuture.completedFuture(
-                    world == null ? null : world.getSpawnLocation());
+            target = CompletableFuture.completedFuture(world.getSpawnLocation());
         }
         target.whenComplete((safe, error) -> {
             if (error != null) {
@@ -1215,7 +1259,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 if (!player.isOnline() || player.isDead()) {
                     return;
                 }
-                if (onlyFrom != null && !isPlotColumn(player.getLocation(), onlyFrom)) {
+                if (from != null && (repairMoves(player.getUniqueId()) != repairMovesSeen
+                        || !isPlotColumn(player.getLocation(), from))) {
                     return;
                 }
                 Location destination = safe;
@@ -1226,8 +1271,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                                 + " the stored block is used. Move world spawn with"
                                 + " /setworldspawn.");
                     }
-                    if (onlyFrom != null || world == null) {
-                        return;
+                    if (from != null) {
+                        return; // Already there.
                     }
                     destination = world.getSpawnLocation();
                 }

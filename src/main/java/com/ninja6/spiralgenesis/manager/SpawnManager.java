@@ -649,7 +649,9 @@ public class SpawnManager {
      */
     public CompletableFuture<Location> worldSpawnPoint() {
         CompletableFuture<Location> result = new CompletableFuture<>();
-        Location spawn = world.getSpawnLocation();
+        // Copied, so the chunk chosen here and the column searched below cannot come
+        // apart even where the world hands back an instance it later updates.
+        Location spawn = world.getSpawnLocation().clone();
         int chunkX = spawn.getBlockX() >> 4;
         int chunkZ = spawn.getBlockZ() >> 4;
         loadChunk(chunkX, chunkZ).whenComplete((chunk, error) -> {
@@ -657,7 +659,10 @@ public class SpawnManager {
                 result.completeExceptionally(error);
                 return;
             }
-            runOnRegion(result, chunkX, chunkZ, () -> result.complete(worldSpawnPointNow()));
+            // The spawn read above, not a fresh one: a /setworldspawn in between would
+            // move the search into a chunk this task does not own.
+            runOnRegion(result, chunkX, chunkZ,
+                    () -> result.complete(worldSpawnPointAt(spawn)));
         });
         return result;
     }
@@ -667,7 +672,11 @@ public class SpawnManager {
      * inline. {@link #ownsWorldSpawn} says whether the caller does.
      */
     public Location worldSpawnPointNow() {
-        Location spawn = world.getSpawnLocation();
+        return worldSpawnPointAt(world.getSpawnLocation());
+    }
+
+    /** The search behind {@link #worldSpawnPoint}, in the column of {@code spawn}. */
+    private Location worldSpawnPointAt(Location spawn) {
         int x = spawn.getBlockX();
         int z = spawn.getBlockZ();
         // Two blocks of room at each end: the floor is looked for up to two below the
@@ -702,6 +711,11 @@ public class SpawnManager {
         }
         Location at = new Location(world, x + 0.5, y, z + 0.5, spawn.getYaw(), spawn.getPitch());
         return isSafeNow(at) ? at : null;
+    }
+
+    /** The world this manager allocates in and whose spawn it checks. */
+    public World getWorld() {
+        return world;
     }
 
     /**

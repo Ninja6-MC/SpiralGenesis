@@ -112,6 +112,12 @@ class RespawnFallbackTest {
         boolean foreignRegion;
         /** On the death screen: set by a death, cleared once a respawn places them. */
         boolean dead;
+        /**
+         * Whether a teleport has moved the player by the time it returns. Cleared to stand
+         * for Folia, where {@code teleportAsync} is issued on the player's thread and lands
+         * on a later tick.
+         */
+        boolean teleportsLand = true;
         /** Tasks for the player's own thread, run by {@link #place} as the server would. */
         private final java.util.ArrayDeque<Runnable> queued = new java.util.ArrayDeque<>();
 
@@ -204,6 +210,9 @@ class RespawnFallbackTest {
                 org.bukkit.event.player.PlayerTeleportEvent.TeleportCause cause,
                 io.papermc.paper.entity.TeleportFlag... flags) {
             teleports.add(location.clone());
+            if (!teleportsLand) {
+                return new CompletableFuture<>();
+            }
             return super.teleportAsync(location, cause, flags);
         }
     }
@@ -255,6 +264,8 @@ class RespawnFallbackTest {
         boolean noStandingPoint;
         /** The in-cell search finds nothing, rather than staying in flight. */
         boolean cellHasNoPoint;
+        /** The in-cell search while it is in flight, for a test to finish. */
+        final CompletableFuture<LocationResult> cellSearch = new CompletableFuture<>();
         /**
          * Where a player held at world spawn can stand; null means world spawn itself is
          * clear. Answered without reading a block, like everything else here.
@@ -315,8 +326,7 @@ class RespawnFallbackTest {
 
         @Override
         public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
-            return cellHasNoPoint ? CompletableFuture.completedFuture(null)
-                    : new CompletableFuture<>();
+            return cellHasNoPoint ? CompletableFuture.completedFuture(null) : cellSearch;
         }
     }
 
@@ -1153,6 +1163,68 @@ class RespawnFallbackTest {
         player.place();
 
         assertEquals(List.of(clear), player.teleports);
+    }
+
+    @Test
+    @DisplayName("a repair teleport still in flight is not overtaken by the move off world spawn")
+    void repairInFlightWinsOverTheWorldSpawnMove() {
+        SpiralGenesisPlugin plugin = load();
+        // Unsafe at death, so the repair searches the cell and is still searching when
+        // the player clicks respawn.
+        manager.plotSafe = false;
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        manager.ownsWorldSpawn = false;
+        clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+        player.teleportsLand = false;
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.setLocation(respawn.getRespawnLocation());
+        // The search finishes before the player's next tick. The repair's teleport is
+        // issued then but has not landed, so the player still reads as at world spawn.
+        Location repaired = new Location(world, 30.5, 64, 30.5);
+        manager.cellSearch.complete(new SpawnManager.LocationResult(repaired, 3, 0, 0, 64,
+                1, 1, false, java.util.Map.of(), 0));
+        player.place();
+
+        assertEquals(List.of(repaired), player.teleports);
+    }
+
+    @Test
+    @DisplayName("a plot in a world other than the bound one is held at that world's spawn, not the bound one's")
+    void plotInAnotherWorldIsHeldAtItsOwnWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        World other = server.addSimpleWorld("other");
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, new Location(other, 10.5, 64, 10.5));
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.place();
+
+        assertEquals(other, respawn.getRespawnLocation().getWorld());
+        assertSameBlock(other.getSpawnLocation(), respawn.getRespawnLocation());
+    }
+
+    @Test
+    @DisplayName("a failed repair of a plot in another world sends the player to that world's spawn")
+    void failedRepairInAnotherWorldStaysInThatWorld() {
+        SpiralGenesisPlugin plugin = load();
+        World other = server.addSimpleWorld("other");
+        manager.plotSafe = false;
+        manager.cellHasNoPoint = true;
+        clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, new Location(other, 10.5, 64, 10.5));
+
+        plugin.repairSpawn(player, plugin.getDataStorage().getRecord(player.getUniqueId()),
+                true);
+        player.tick();
+
+        assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
+        assertEquals(other, player.teleports.get(0).getWorld());
+        assertSameBlock(other.getSpawnLocation(), player.teleports.get(0));
     }
 
     /** The listener's record of routed respawns, which has no accessor to read it by. */
