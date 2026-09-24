@@ -23,6 +23,7 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.IntSupplier;
@@ -43,8 +44,9 @@ public class SpawnManager {
     private final PluginConfig config;
 
     /**
-     * Existing claims a new spawn must stay off; {@link ClaimLookup#NONE} without a claim
-     * plugin. See {@link #nextCandidate}.
+     * Existing claims a new spawn must stay off, and those a repaired one must stay off
+     * because they are not the player's; {@link ClaimLookup#NONE} without a claim plugin.
+     * See {@link #nextCandidate}.
      */
     private final ClaimLookup claims;
 
@@ -170,7 +172,7 @@ public class SpawnManager {
     }
 
     /**
-     * @param claims the existing claims allocation steers around, whatever
+     * @param claims the existing claims allocation and repair steer around, whatever
      *               {@code protection.enabled} says; {@link ClaimLookup#NONE} for none
      */
     public SpawnManager(JavaPlugin plugin, World world, PluginConfig config,
@@ -250,7 +252,7 @@ public class SpawnManager {
         announcedAgainst.set(null);
 
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
-        Scan scan = new Scan(cells, ScanPurpose.PLAYER_ALLOCATION, result);
+        Scan scan = new Scan(cells, ScanPurpose.PLAYER_ALLOCATION, null, result);
         // Attached before the first cell is reserved, so no outcome, exceptional ones
         // included, can leave a cell registered as in flight behind it. A reservation that
         // throws has reserved nothing.
@@ -294,7 +296,8 @@ public class SpawnManager {
      */
     public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
-        nextCell(new Scan(CellReserver.counting(indexSupplier), ScanPurpose.SIMULATION, result));
+        nextCell(new Scan(CellReserver.counting(indexSupplier), ScanPurpose.SIMULATION, null,
+                result));
         return result;
     }
 
@@ -312,17 +315,26 @@ public class SpawnManager {
      * reserved and nothing is registered in storage; the record already stands for the
      * cell.
      *
+     * <p>A candidate whose square reaches into a claim that is not the owner's is passed
+     * over, as allocation passes over any claim: a neighbour's claim can reach into the
+     * cell, and a point inside it would leave the player respawning where they cannot
+     * build. Claims that are the owner's own or trust them by name, the spawn claim around
+     * the builds included, do not; see {@link ClaimLookup#overlapsForeignClaim}.
+     *
      * <p>Unlike allocation there is no least-bad fallback. A cell where every candidate
      * fails resolves to {@code null}, because putting the player back on a point already
      * known to be lethal is worse than sending them somewhere unremarkable.
      *
      * @param cell the cell the player already holds
+     * @param owner the player the cell is held by, whose own claims do not count against
+     *              a candidate
      * @return a future resolving to a safe point in that cell, or {@code null} if the
      *         sampled candidates all failed
      */
-    public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+    public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
         CompletableFuture<AllocationOutcome> search = new CompletableFuture<>();
-        nextCell(new Scan((originX, originZ, cellSize) -> cell, ScanPurpose.REPAIR, search));
+        nextCell(new Scan((originX, originZ, cellSize) -> cell, ScanPurpose.REPAIR, owner,
+                search));
         // A repair never leaves its cell, so it resolves to null in finishCell before the
         // exhaustion branch is reached; a BorderExhausted here is a defect, not an outcome.
         return search.thenApply(outcome -> switch (outcome) {
@@ -972,14 +984,18 @@ public class SpawnManager {
         }
 
         // Existing claims, whoever owns them: a player's base, an administrative claim, or a
-        // spawn claim this plugin made earlier and left behind. The square tested is the one
-        // a spawn claim here would cover, protection.size across, and it is tested whether or
-        // not protection is enabled - see ClaimLookup. Like the border test it needs only x
-        // and z, so it comes before the chunk request and a claimed candidate costs no chunk.
-        // Never scored, so never the least-bad fallback: settling a player inside someone
-        // else's claim is the outcome this exists to prevent.
-        if (scan.purpose.avoidsClaims()
-                && claims.overlapsClaim(world, CellArea.square(x, z, config.getProtectionSize()))) {
+        // spawn claim this plugin made earlier and left behind. A repair skips only those
+        // that are not its owner's, since the owner's spawn claim and base are what it is
+        // keeping them beside. The square tested is the one a spawn claim here would cover,
+        // protection.size across, and it is tested whether or not protection is enabled -
+        // see ClaimLookup. Like the border test it needs only x and z, so it comes before
+        // the chunk request and a claimed candidate costs no chunk. Never scored, so never
+        // the least-bad fallback: settling a player inside someone else's claim is the
+        // outcome this exists to prevent.
+        CellArea square = CellArea.square(x, z, config.getProtectionSize());
+        if (scan.purpose.avoidsEveryClaim()
+                ? claims.overlapsClaim(world, square)
+                : claims.overlapsForeignClaim(world, square, scan.owner)) {
             scan.candidatesProbed++;
             scan.claimedInCell++;
             scan.rejections.merge(RejectionReason.CLAIMED, 1, Integer::sum);
@@ -1405,12 +1421,13 @@ public class SpawnManager {
         }
 
         /**
-         * Whether candidates inside existing claims are rejected. Not for a repair: the
-         * cell is already the player's, and the claim most likely to cover its candidates
-         * is their own spawn claim, around the builds the repair is keeping them beside.
-         * A simulation does, so it previews what allocation would reject.
+         * Whether candidates inside any existing claim are rejected, rather than only those
+         * inside a claim that is not the scan's owner's. Not for a repair: the cell is
+         * already the player's, and the claim most likely to cover its candidates is their
+         * own spawn claim, around the builds the repair is keeping them beside. A
+         * simulation does, so it previews what allocation would reject.
          */
-        boolean avoidsClaims() {
+        boolean avoidsEveryClaim() {
             return this != REPAIR;
         }
     }
@@ -1425,6 +1442,8 @@ public class SpawnManager {
     private static final class Scan {
         private final CellReserver cells;
         private final ScanPurpose purpose;
+        /** The player a repair is for, whose own claims it may use; {@code null} otherwise. */
+        private final UUID owner;
         private final CompletableFuture<AllocationOutcome> result;
 
         /**
@@ -1450,10 +1469,11 @@ public class SpawnManager {
         private Candidate bestOverall;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
-        private Scan(CellReserver cells, ScanPurpose purpose,
+        private Scan(CellReserver cells, ScanPurpose purpose, UUID owner,
                      CompletableFuture<AllocationOutcome> result) {
             this.cells = cells;
             this.purpose = purpose;
+            this.owner = owner;
             this.result = result;
         }
 

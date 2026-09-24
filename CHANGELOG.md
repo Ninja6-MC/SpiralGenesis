@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged: their plot is cleared as their respawn point and the server's own world
   spawn search places them, on Paper and Folia alike. Nothing here depends on
   GriefPrevention.
+- **A repaired plot no longer lands inside a neighbour's claim.** A revalidation repair
+  searched the player's own cell without the claim check allocation gained in
+  1.0.0-alpha.2, so a claim reaching into the cell from outside could receive the
+  replacement point and the player's respawn point with it. A repair now rejects a
+  candidate whose `protection.size` square reaches into a GriefPrevention claim the player
+  neither owns nor is trusted on by name at any level; trust given to `public` does not
+  count, administrative claims follow the same rule so an `ADMIN_CLAIM` spawn claim stays
+  usable, and inside a subdivision the subdivision decides. When no candidate is left the
+  repair fails as before. Without GriefPrevention, and on Folia, repairs are unchanged.
 
 ## [1.0.0-alpha.2] - 2026-09-24
 

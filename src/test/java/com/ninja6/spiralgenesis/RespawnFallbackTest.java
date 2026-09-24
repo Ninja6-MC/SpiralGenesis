@@ -325,7 +325,7 @@ class RespawnFallbackTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
             return cellHasNoPoint ? CompletableFuture.completedFuture(null) : cellSearch;
         }
     }

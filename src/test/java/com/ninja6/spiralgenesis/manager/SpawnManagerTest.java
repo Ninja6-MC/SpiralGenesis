@@ -30,6 +30,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.io.StringReader;
 import java.util.List;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -71,6 +72,8 @@ class SpawnManagerTest {
     /** Odd, so two rings of candidates at {@link #STRIDE} fit inside a cell; see makeCellOcean. */
     private static final int CELL = 65;
     private static final int STRIDE = 16;
+    /** The player an in-cell repair is run for. */
+    private static final UUID OWNER = UUID.randomUUID();
 
     private ServerMock server;
     private JavaPlugin plugin;
@@ -1439,7 +1442,7 @@ class SpawnManagerTest {
         AtomicInteger indices = new AtomicInteger();
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the spiral index must not advance");
         assertEquals(1, res.gridU());
@@ -1467,7 +1470,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
 
         assertEquals(CELL + 0.5, res.location().getX(), 1e-9,
                 "the repair must stay on the record's own centre, not index 1 of the moved one");
@@ -1483,7 +1486,7 @@ class SpawnManagerTest {
         world.getBlockAt(small.centreX(), MOCK_SURFACE_Y, small.centreZ()).setType(Material.LAVA);
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(small).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(small, OWNER).get(10, TimeUnit.SECONDS),
                 "a candidate outside the 17-block cell must never be probed");
     }
 
@@ -1571,7 +1574,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
     }
 
@@ -2055,7 +2058,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS),
                 "a cell outside the border holds no usable point");
     }
 
@@ -2140,7 +2143,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
-        assertNull(manager.findSafeSpawnInCell(originCell(0)).join(),
+        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER).join(),
                 "the repair must not return a point outside the border or outside the cell");
 
         borderAround(0, 0, 1000);
@@ -2162,7 +2165,7 @@ class SpawnManagerTest {
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the repair must stay in the owner's cell");
         assertTrue(world.getWorldBorder().isInside(res.location()),
@@ -2297,16 +2300,80 @@ class SpawnManagerTest {
         assertNull(res.rejections().get(RejectionReason.CLAIMED));
     }
 
+    /**
+     * A claim plugin holding exactly one claim, over {@code claim}, that is not the repair
+     * owner's, recording every square and player it is asked about for a repair.
+     */
+    private static final class OneForeignClaim implements ClaimLookup {
+        private final CellArea claim;
+        private final List<UUID> askedFor = new CopyOnWriteArrayList<>();
+
+        OneForeignClaim(CellArea claim) {
+            this.claim = claim;
+        }
+
+        @Override
+        public boolean overlapsClaim(World in, CellArea area) {
+            return claim.overlaps(area);
+        }
+
+        @Override
+        public boolean overlapsForeignClaim(World in, CellArea area, UUID player) {
+            askedFor.add(player);
+            return claim.overlaps(area);
+        }
+    }
+
     @Test
-    @DisplayName("An in-cell repair ignores claims, since the cell and its spawn claim are the owner's")
-    void aRepairIgnoresClaims() throws Exception {
-        // Every square anywhere is claimed. A repair that avoided claims would find nothing,
-        // since the owner's own spawn claim sits on the cell's first candidates.
-        ClaimLookup everything = (in, area) -> true;
-        SpawnManager manager = managerAvoiding(config(0, 8), everything);
+    @DisplayName("An in-cell repair uses claims that are the owner's, since its spawn claim is one")
+    void aRepairUsesTheOwnersClaims() throws Exception {
+        // Every square anywhere is claimed, and none of it by anyone else. A repair that
+        // avoided every claim would find nothing, since the owner's own spawn claim sits on
+        // the cell's first candidates.
+        ClaimLookup ownEverywhere = (in, area) -> true;
+        SpawnManager manager = managerAvoiding(config(0, 8), ownEverywhere);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(0)).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.CLAIMED));
+    }
+
+    @Test
+    @DisplayName("An in-cell repair passes over a candidate inside a claim that is not the owner's")
+    void aRepairAvoidsAForeignClaim() throws Exception {
+        // A neighbour's claim over the cell centre: the centre's 9x9 square reaches it, the
+        // next candidate's, 16 blocks east, does not.
+        OneForeignClaim claims = new OneForeignClaim(CellArea.inclusive(-2, -2, 2, 2));
+        SpawnManager manager = managerAvoiding(config(0, 8), claims);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
+
+        assertEquals(STRIDE + 0.5, res.location().getX(), 1e-9);
+        assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(OWNER, claims.askedFor.get(0), "asked on behalf of the plot's owner");
+    }
+
+    @Test
+    @DisplayName("An in-cell repair whose every candidate is in a foreign claim finds nothing")
+    void aRepairInsideForeignClaimsFindsNothing() throws Exception {
+        // Reaches past every candidate of cell 0, so the failed-repair path takes over.
+        OneForeignClaim claims = new OneForeignClaim(CellArea.inclusive(-40, -40, 40, 40));
+        SpawnManager manager = managerAvoiding(config(0, 8), claims);
+
+        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS),
+                "a repair never settles inside a claim that is not the owner's");
+    }
+
+    @Test
+    @DisplayName("Without a claim plugin, an in-cell repair looks for no claim")
+    void noClaimPluginMeansNoRepairClaimCheck() throws Exception {
+        SpawnManager manager = managerAvoiding(config(0, 8), ClaimLookup.NONE);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
 
         assertEquals(0.5, res.location().getX(), 1e-9);
         assertNull(res.rejections().get(RejectionReason.CLAIMED));

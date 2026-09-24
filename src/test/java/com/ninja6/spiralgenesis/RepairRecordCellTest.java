@@ -89,7 +89,7 @@ class RepairRecordCellTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
             searched.add(cell);
             return CompletableFuture.completedFuture(null);
         }

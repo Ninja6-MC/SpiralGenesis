@@ -32,6 +32,7 @@ import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -106,7 +107,7 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
             index = cell.index();
             return CompletableFuture.completedFuture(result());
         }
@@ -132,8 +133,9 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell) {
-            return getSpawnManager().findSafeSpawnInCell(cell);
+        public CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell,
+                                                                            UUID owner) {
+            return getSpawnManager().findSafeSpawnInCell(cell, owner);
         }
 
         /**

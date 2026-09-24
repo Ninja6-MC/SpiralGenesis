@@ -658,9 +658,18 @@ claim, and a spawn claim SpiralGenesis made earlier and left behind, for example
   see section 10.
 * **Only with GriefPrevention.** Without it there is no claim check. On Folia, where
   GriefPrevention cannot run, there is none either.
-* **Repairs and `setspawn` do not check.** A revalidation repair searches the player's own
-  cell, where the claim nearest its candidates is their own spawn claim; `/sgen setspawn`
-  puts the spawn exactly where the operator says.
+* **Repairs check only other people's claims.** A revalidation repair searches the
+  player's own cell, where the claim nearest its candidates is usually their own spawn
+  claim, so it rejects a candidate as `CLAIMED` only when its `protection.size` square
+  reaches into a claim that is not theirs. A claim counts as theirs when they own it or
+  are trusted on it by name at any level (`/accesstrust`, `/containertrust`, `/trust` or
+  `/permissiontrust`); trust given to `public` does not count. Administrative claims
+  follow the same rule, which is what keeps an `ADMIN_CLAIM` spawn claim, trusting its
+  player with Build and Manage, usable. Inside a subdivision the subdivision decides, as
+  GriefPrevention does: its own trust, or its parent's unless it inherits nothing. When no
+  candidate is left, the repair fails as any other failed repair does.
+* **`setspawn` does not check.** `/sgen setspawn` puts the spawn exactly where the
+  operator says.
 
 A claim made after the scan chose a plot, but before the player was placed, can still be
 in the way. The next section covers that.
