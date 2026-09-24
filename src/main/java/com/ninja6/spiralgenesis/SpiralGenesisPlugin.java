@@ -1101,8 +1101,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                         if (isPlotColumn(point, stored)) {
                             player.setRespawnLocation(null, false);
                         }
-                    } else if (world != null) {
-                        player.teleportAsync(world.getSpawnLocation());
+                    } else {
+                        sendToWorldSpawn(player, world, null);
                     }
                     return;
                 }
@@ -1177,6 +1177,63 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (scheduled == null) {
             repairing.remove(uuid);
         }
+    }
+
+    /**
+     * Moves a player to world spawn, at a position there they can stand
+     * ({@link SpawnManager#worldSpawnPoint}) rather than at the stored block, which can be
+     * solid: a player placed inside it suffocates, and their plot is still unsafe at the
+     * next death, so the loop never ends by itself.
+     *
+     * <p>Safe to call from any thread. The position is found on the thread owning world
+     * spawn and the move is made on the player's own. When nothing in the spawn's column
+     * passes, the stored block is used anyway, as it always was, unless the player is
+     * already there.
+     *
+     * @param world    the world whose spawn is used unchecked when no world is bound, and
+     *                 so there is no manager to check it with
+     * @param onlyFrom when set, the move is dropped unless the player is still in this
+     *                 block column by then: the repair, among others, may have moved them
+     *                 on while the position was being found
+     */
+    public void sendToWorldSpawn(Player player, World world, Location onlyFrom) {
+        // Read once, for the reason allocateSpawn does.
+        SpawnManager manager = spawnManager;
+        CompletableFuture<Location> target;
+        if (manager != null) {
+            target = manager.worldSpawnPoint();
+        } else {
+            target = CompletableFuture.completedFuture(
+                    world == null ? null : world.getSpawnLocation());
+        }
+        target.whenComplete((safe, error) -> {
+            if (error != null) {
+                getLogger().log(Level.WARNING, "Could not check world spawn for "
+                        + player.getName() + "; using it as stored.", error);
+            }
+            player.getScheduler().run(this, task -> {
+                if (!player.isOnline() || player.isDead()) {
+                    return;
+                }
+                if (onlyFrom != null && !isPlotColumn(player.getLocation(), onlyFrom)) {
+                    return;
+                }
+                Location destination = safe;
+                if (destination == null) {
+                    if (error == null) {
+                        getLogger().warning("There is no clear, safe position in the column"
+                                + " of world spawn to send " + player.getName() + " to, so"
+                                + " the stored block is used. Move world spawn with"
+                                + " /setworldspawn.");
+                    }
+                    if (onlyFrom != null || world == null) {
+                        return;
+                    }
+                    destination = world.getSpawnLocation();
+                }
+                player.teleportAsync(destination);
+            }, null);
+        });
     }
 
     /**

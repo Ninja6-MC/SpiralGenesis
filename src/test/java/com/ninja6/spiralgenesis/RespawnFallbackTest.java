@@ -38,6 +38,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -254,9 +255,20 @@ class RespawnFallbackTest {
         boolean noStandingPoint;
         /** The in-cell search finds nothing, rather than staying in flight. */
         boolean cellHasNoPoint;
+        /**
+         * Where a player held at world spawn can stand; null means world spawn itself is
+         * clear. Answered without reading a block, like everything else here.
+         */
+        Location worldSpawnStanding;
+        /** Nothing in the world spawn column passes. */
+        boolean noWorldSpawnPoint;
+        /** Whether the thread handling a respawn owns the chunk world spawn is in. */
+        boolean ownsWorldSpawn = true;
+        private final World world;
 
         private QuietManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
+            this.world = world;
         }
 
         @Override
@@ -280,6 +292,25 @@ class RespawnFallbackTest {
                 return null;
             }
             return lifted == null ? stored : lifted.clone();
+        }
+
+        @Override
+        public CompletableFuture<Location> worldSpawnPoint() {
+            return CompletableFuture.completedFuture(worldSpawnPointNow());
+        }
+
+        @Override
+        public Location worldSpawnPointNow() {
+            if (noWorldSpawnPoint) {
+                return null;
+            }
+            return worldSpawnStanding == null ? world.getSpawnLocation()
+                    : worldSpawnStanding.clone();
+        }
+
+        @Override
+        public boolean ownsWorldSpawn() {
+            return ownsWorldSpawn;
         }
 
         @Override
@@ -1005,6 +1036,123 @@ class RespawnFallbackTest {
         server.getPluginManager().callEvent(new PlayerQuitEvent(player, "left"));
 
         assertFalse(respawnEventSeen(plugin).contains(player.getUniqueId()));
+    }
+
+    // --- World spawn as the place a player is held -----------------------------------
+
+    /**
+     * The block above world spawn, which is where the manager stands a player when world
+     * spawn is stored inside a solid block, as it was on the server the loop was found on.
+     */
+    private Location clearOfSolidWorldSpawn() {
+        Location spawn = world.getSpawnLocation();
+        Location clear = new Location(world, spawn.getBlockX() + 0.5, spawn.getBlockY() + 1,
+                spawn.getBlockZ() + 0.5);
+        manager.worldSpawnStanding = clear;
+        return clear;
+    }
+
+    @Test
+    @DisplayName("on Paper, a respawn held off an unsafe plot lands clear of a solid world spawn")
+    void paperUnsafePlotRespawnsClearOfSolidWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        Location clear = clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.place();
+
+        assertEquals(clear, respawn.getRespawnLocation());
+        assertTrue(player.teleports.isEmpty(), "placed clear already: " + player.teleports);
+    }
+
+    @Test
+    @DisplayName("on Paper, a respawn that cannot check world spawn inline is moved clear of it once placed")
+    void paperUncheckedWorldSpawnIsCorrectedOncePlaced() {
+        SpiralGenesisPlugin plugin = load();
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        manager.ownsWorldSpawn = false;
+        Location clear = clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+
+        die(player);
+        PlayerRespawnEvent respawn = paperRespawnEvent(player);
+        player.setLocation(respawn.getRespawnLocation());
+        player.place();
+
+        assertSameBlock(world.getSpawnLocation(), respawn.getRespawnLocation());
+        assertEquals(List.of(clear), player.teleports);
+    }
+
+    @Test
+    @DisplayName("a player moved off world spawn before it was checked is not pulled back")
+    void playerMovedOffWorldSpawnIsNotPulledBack() {
+        SpiralGenesisPlugin plugin = load();
+        manager.verdict = SpawnManager.SpawnVerdict.UNSAFE;
+        manager.ownsWorldSpawn = false;
+        clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+
+        die(player);
+        paperRespawnEvent(player);
+        // The repair found a point and moved them there first.
+        player.setLocation(new Location(world, 40.5, 70, 40.5));
+        player.place();
+
+        assertTrue(player.teleports.isEmpty(), String.valueOf(player.teleports));
+    }
+
+    @Test
+    @DisplayName("a repair that finds nothing while the player is alive moves them clear of a solid world spawn")
+    void failedRepairWhileAliveAvoidsSolidWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        manager.plotSafe = false;
+        manager.cellHasNoPoint = true;
+        Location clear = clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+
+        plugin.repairSpawn(player, plugin.getDataStorage().getRecord(player.getUniqueId()),
+                true);
+        player.tick();
+
+        assertEquals(List.of(clear), player.teleports);
+        assertSameBlock(plot(), plugin.getDataStorage().getRecord(player.getUniqueId())
+                .toLocation());
+    }
+
+    @Test
+    @DisplayName("a repair that finds nothing, with no safe position at world spawn either, still moves the player there")
+    void failedRepairWithNoSafeWorldSpawnFallsBackToTheStoredBlock() {
+        SpiralGenesisPlugin plugin = load();
+        manager.plotSafe = false;
+        manager.cellHasNoPoint = true;
+        manager.noWorldSpawnPoint = true;
+        RespawnPlayer player = join(plugin, plot());
+
+        plugin.repairSpawn(player, plugin.getDataStorage().getRecord(player.getUniqueId()),
+                true);
+        player.tick();
+
+        assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
+        assertSameBlock(world.getSpawnLocation(), player.teleports.get(0));
+    }
+
+    @Test
+    @DisplayName("on Paper, an unchecked plot with no clear position above it moves the player clear of a solid world spawn")
+    void paperUnverifiedPlotWithNoStandingPointAvoidsSolidWorldSpawn() {
+        SpiralGenesisPlugin plugin = load();
+        manager.noStandingPoint = true;
+        manager.verdict = SpawnManager.SpawnVerdict.UNVERIFIED;
+        Location clear = clearOfSolidWorldSpawn();
+        RespawnPlayer player = join(plugin, plot());
+
+        die(player);
+        paperRespawnEvent(player);
+        player.place();
+
+        assertEquals(List.of(clear), player.teleports);
     }
 
     /** The listener's record of routed respawns, which has no accessor to read it by. */

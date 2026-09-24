@@ -7,6 +7,7 @@ import com.ninja6.spiralgenesis.manager.SpawnManager;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
+import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -288,8 +289,7 @@ public class PlayerSpawnListener implements Listener {
                             + player.getName() + "'s plot; leaving them "
                             + (onPlot ? "at world spawn." : "where they respawned."));
                     if (onPlot) {
-                        Location worldSpawn = plot.getWorld().getSpawnLocation();
-                        player.getScheduler().run(plugin, t -> moveTo(player, worldSpawn), null);
+                        plugin.sendToWorldSpawn(player, plot.getWorld(), null);
                     }
                     return;
                 }
@@ -410,7 +410,7 @@ public class PlayerSpawnListener implements Listener {
         if (verdict == SpawnManager.SpawnVerdict.UNSAFE) {
             // World spawn is a holding position, not the outcome: the repair below moves
             // them onto a safe point inside their own cell as soon as it finds one.
-            event.setRespawnLocation(spawn.getWorld().getSpawnLocation());
+            event.setRespawnLocation(worldSpawnFor(player, manager, spawn.getWorld()));
             plugin.repairSpawn(player, record, false);
             return;
         }
@@ -421,7 +421,7 @@ public class PlayerSpawnListener implements Listener {
             if (standing == null) {
                 plugin.getLogger().warning("There is no clear, safe position above "
                         + player.getName() + "'s plot; respawning them at world spawn.");
-                event.setRespawnLocation(spawn.getWorld().getSpawnLocation());
+                event.setRespawnLocation(worldSpawnFor(player, manager, spawn.getWorld()));
                 return;
             }
             event.setRespawnLocation(standing);
@@ -433,6 +433,33 @@ public class PlayerSpawnListener implements Listener {
         event.setRespawnLocation(spawn);
         plugin.repairSpawn(player, record, true);
         player.getScheduler().run(plugin, task -> placeOnPlot(player, spawn, true), null);
+    }
+
+    /**
+     * Where a respawn held off the plot goes: world spawn, at a position there the player
+     * can stand ({@link SpawnManager#worldSpawnPoint}), since the stored block can be solid
+     * and paper-1.21.11 and later place the player at this event's location exactly.
+     *
+     * <p>This event cannot await anything, so the position is found inline only when this
+     * thread already owns the chunk world spawn is in. Otherwise the respawn goes to the
+     * stored block and the player is moved once placed, unless something has moved them
+     * off it by then - the repair started alongside this, when it finds a point.
+     */
+    private Location worldSpawnFor(Player player, SpawnManager manager, World world) {
+        Location stored = world.getSpawnLocation();
+        if (manager.ownsWorldSpawn()) {
+            Location standing = manager.worldSpawnPointNow();
+            if (standing != null) {
+                return standing;
+            }
+            plugin.getLogger().warning("There is no clear, safe position in the column of"
+                    + " world spawn to respawn " + player.getName() + " at, so the stored"
+                    + " block is used. Move world spawn with /setworldspawn.");
+            return stored;
+        }
+        player.getScheduler().run(plugin,
+                task -> plugin.sendToWorldSpawn(player, world, stored), null);
+        return stored;
     }
 
     /**

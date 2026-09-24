@@ -623,6 +623,110 @@ public class SpawnManager {
     }
 
     /**
+     * Where a player sent to this world's spawn can stand, for the callers that hold them
+     * there when their plot is unsafe and could not be repaired.
+     *
+     * <p>World spawn is stored as a block and nobody has checked it. {@code /setworldspawn}
+     * or terrain changed since can leave it inside a solid block or over lava, and neither
+     * {@code teleportAsync} nor a {@code PlayerRespawnEvent} location on paper-1.21.11 and
+     * later moves a player out of what they are placed in (see {@link #isSafeNow}). The
+     * server's own search near world spawn runs only for a respawn with no point at all,
+     * which is why a player still on the death screen is sent there by clearing their
+     * point rather than by this.
+     *
+     * <p>The search stays in the spawn's own column: the first position at or above the
+     * stored height whose feet and head blocks a respawn admits (see {@link #admitsRespawn})
+     * and which passes {@link #isSafeNow}, which holds it to the rules a plot is held to;
+     * failing that, the first such position below it that stands directly on its floor,
+     * for a spawn left in the air. The position is centred on its block, facing as world
+     * spawn does.
+     *
+     * <p>Loads the chunk first and runs on the thread that owns it, as {@link #standingPoint}
+     * does, so it is safe to call from any thread.
+     *
+     * @return a future resolving to the position, or {@code null} when nothing in the
+     *         column passes
+     */
+    public CompletableFuture<Location> worldSpawnPoint() {
+        CompletableFuture<Location> result = new CompletableFuture<>();
+        Location spawn = world.getSpawnLocation();
+        int chunkX = spawn.getBlockX() >> 4;
+        int chunkZ = spawn.getBlockZ() >> 4;
+        loadChunk(chunkX, chunkZ).whenComplete((chunk, error) -> {
+            if (error != null) {
+                result.completeExceptionally(error);
+                return;
+            }
+            runOnRegion(result, chunkX, chunkZ, () -> result.complete(worldSpawnPointNow()));
+        });
+        return result;
+    }
+
+    /**
+     * {@link #worldSpawnPoint} for a caller that owns the chunk world spawn is in, answered
+     * inline. {@link #ownsWorldSpawn} says whether the caller does.
+     */
+    public Location worldSpawnPointNow() {
+        Location spawn = world.getSpawnLocation();
+        int x = spawn.getBlockX();
+        int z = spawn.getBlockZ();
+        // Two blocks of room at each end: the floor is looked for up to two below the
+        // feet, and the head block has to be inside the world too.
+        int bottom = world.getMinHeight() + 2;
+        int top = world.getMaxHeight() - 2;
+        int from = Math.max(bottom, Math.min(top, spawn.getBlockY()));
+        for (int y = from; y <= top; y++) {
+            Location found = standsAtWorldSpawn(spawn, x, y, z);
+            if (found != null) {
+                return found;
+            }
+        }
+        // On the way down only a position directly on its floor is taken, so a spawn in the
+        // air ends on the ground rather than a step above it.
+        for (int y = from - 1; y >= bottom; y--) {
+            if (!supportsCentre(world.getBlockAt(x, y - 1, z))) {
+                continue;
+            }
+            Location found = standsAtWorldSpawn(spawn, x, y, z);
+            if (found != null) {
+                return found;
+            }
+        }
+        return null;
+    }
+
+    private Location standsAtWorldSpawn(Location spawn, int x, int y, int z) {
+        if (!admitsRespawn(world.getBlockAt(x, y, z))
+                || !admitsRespawn(world.getBlockAt(x, y + 1, z))) {
+            return null;
+        }
+        Location at = new Location(world, x + 0.5, y, z + 0.5, spawn.getYaw(), spawn.getPitch());
+        return isSafeNow(at) ? at : null;
+    }
+
+    /**
+     * Whether the current thread may call {@link #worldSpawnPointNow}: the chunk is
+     * resident, so nothing is loaded to answer, and this thread owns it. On Paper that is
+     * the main thread; on Folia it is the region holding world spawn, which a thread
+     * handling somebody's respawn usually is not.
+     */
+    public boolean ownsWorldSpawn() {
+        Location spawn = world.getSpawnLocation();
+        return isChunkResident(spawn)
+                && ownsChunk(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4);
+    }
+
+    /**
+     * Whether the current thread owns the given chunk.
+     *
+     * <p>Package-private for the same reason as {@link #runOnRegion}: MockBukkit does not
+     * implement region ownership.
+     */
+    boolean ownsChunk(int chunkX, int chunkZ) {
+        return plugin.getServer().isOwnedByCurrentRegion(world, chunkX, chunkZ);
+    }
+
+    /**
      * How an allocation scan ended, when nothing unexpected went wrong.
      *
      * <p>Sealed so a caller can switch over it exhaustively and the compiler names every
