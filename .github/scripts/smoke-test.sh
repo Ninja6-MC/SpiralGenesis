@@ -39,6 +39,11 @@ LIMBO_JAR="${4:-}"
 BOT_JAR="${5:-}"
 # The bot walks throughout; these bound how long it is watched on each side of the release.
 BOT_HELD_SECONDS="${BOT_HELD_SECONDS:-15}"
+# The bot steps once a second and cycles through all four neighbours, so an open one is tried
+# within four seconds of the release and the gate opens on the tick that move lands. 25 is
+# that plus a wide margin for a slow runner. Raising it would not have fixed a run where the
+# bot was never allocated: every one of those had the server rejecting each step as "moved
+# wrongly", which no amount of waiting changes - see rejected_moves below.
 BOT_FREED_SECONDS="${BOT_FREED_SECONDS:-25}"
 # How long to wait for the respawn revalidation to notice a ruined plot and repair it. The
 # in-cell search probes one candidate per tick and may generate chunks, so it is not instant.
@@ -452,6 +457,22 @@ echo "-----------------------------"
 fail() { echo "::error::$1"; FAILED=1; }
 FAILED=0
 
+# How many of the bot's moves the server refused after the limbo let go. A move into a solid
+# block is answered with "moved wrongly" and a teleport back, and fires no PlayerMoveEvent, so
+# a bot walled in on every side it tries gives the gate nothing to read. That once looked
+# exactly like a gate that would not open, so a failure below says which of the two it was.
+rejected_moves() {
+    sed -n '/TESTLIMBO holding=false/,$p' server.log 2>/dev/null \
+        | grep -c "$BOT_NAME moved wrongly" || true
+}
+explain_unfreed() {
+    local rejected
+    rejected="$(rejected_moves)"
+    if (( rejected > 0 )); then
+        echo "::warning::The server rejected $rejected of $BOT_NAME's moves as 'moved wrongly' after the release, and a rejected move never reaches the gate. Check the terrain around the spawn in server.log's 'logged in with' line before suspecting the gate."
+    fi
+}
+
 [[ "$booted" -eq 1 ]] || fail "Server never reached 'Done (' within ${BOOT_TIMEOUT}s."
 
 grep -qi 'Enabling SpiralGenesis' server.log \
@@ -601,6 +622,7 @@ if [[ -n "$BOT_JAR" ]]; then
 
         if [[ "${REASSERT_RESULT:-}" != "reasserted" ]]; then
             fail "$BOT_NAME was never re-asserted onto their plot within ${BOT_FREED_SECONDS}s of the limbo letting go."
+            explain_unfreed
         fi
 
         if [[ "${BACKSTOP_RESULT:-}" == "fired" && "${UNREACHED_RESULT:-}" == "unreached" \
@@ -631,6 +653,7 @@ if [[ -n "$BOT_JAR" ]]; then
         fi
         if [[ "${FREED_RESULT:-}" != "allocated" ]]; then
             fail "$BOT_NAME was never allocated within ${BOT_FREED_SECONDS}s of the limbo letting go."
+            explain_unfreed
         fi
 
         if [[ "${HELD_RESULT:-}" == "held" && "${FREED_RESULT:-}" == "allocated" ]]; then

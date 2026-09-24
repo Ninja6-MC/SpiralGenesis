@@ -52,6 +52,19 @@ public final class GateProbeBot {
     /** Blocks travelled per step. One block is enough: the gate tests block boundaries. */
     private static final double STEP = 1.0;
 
+    /**
+     * The steps taken in turn, as {x, z}: east, back west, south, back north.
+     *
+     * <p>All four, not just the X axis. The server rejects a move into a solid block - it logs
+     * "moved wrongly", puts the player back, and fires no {@code PlayerMoveEvent} - and the
+     * spawn is randomised across the spawn radius, which on the CI seed is woodland. A spawn
+     * with a leaf or a grass block on both X sides left every step rejected, so the gate never
+     * saw a single move and the run failed as though it had refused to open. Those spawns
+     * were open on a Z side. Each step is taken from wherever the server last put us, so
+     * while held this tries every neighbour in turn, and once free the first open one moves.
+     */
+    private static final double[][] DIRECTIONS = {{STEP, 0}, {-STEP, 0}, {0, STEP}, {0, -STEP}};
+
     private GateProbeBot() {
     }
 
@@ -134,12 +147,14 @@ public final class GateProbeBot {
                 // Horizontal only. The gate ignores descent, because at least one limbo
                 // implementation declines to pin a falling player, so a vertical step would
                 // prove nothing either way.
-                double x = at[0] + (steps % 2 == 0 ? STEP : -STEP);
-                session.send(new ServerboundMovePlayerPosPacket(true, false, x, at[1], at[2]));
-                // Optimistic local update. If the server disagrees - a limbo pinning us, or
-                // an allocation teleporting us - it says so with a position packet, which the
-                // listener above writes back over this.
-                position.set(new double[]{x, at[1], at[2]});
+                double[] step = DIRECTIONS[steps % DIRECTIONS.length];
+                double x = at[0] + step[0];
+                double z = at[2] + step[1];
+                session.send(new ServerboundMovePlayerPosPacket(true, false, x, at[1], z));
+                // Optimistic local update. If the server disagrees - a limbo pinning us, a
+                // block in the way, or an allocation teleporting us - it says so with a
+                // position packet, which the listener above writes back over this.
+                position.set(new double[]{x, at[1], z});
                 steps++;
             }
             Thread.sleep(1000);
