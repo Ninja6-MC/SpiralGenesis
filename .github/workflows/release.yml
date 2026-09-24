@@ -23,12 +23,11 @@ jobs:
     # not something you can take back. The environment adds the missing pause: it carries
     # a required reviewer, so a tag starts the run and the run then waits for approval.
     #
-    # It is also where MODRINTH_TOKEN and HANGAR_API_TOKEN belong. While they remain
-    # repository secrets this job still reads them and behaves exactly as before; moving
-    # them to environment secrets is what stops any OTHER workflow from reading them, and
-    # it is a manual step because a secret value cannot be copied through the API. Within
-    # this job, each token is mapped into the env of only the steps that need it, never the
-    # job's env, so the build and the tests never see either.
+    # It is also where MODRINTH_TOKEN and HANGAR_API_TOKEN live, as environment secrets on
+    # `release` rather than repository secrets, so only this job, once approved, can read
+    # them and no OTHER workflow can. Within this job, each token is mapped into the env of
+    # only the steps that need it, never the job's env, so the build and the tests never
+    # see either.
     #
     # The environment is scoped to 'v*' tags, which is the only ref this workflow
     # triggers on anyway - so the policy restates the trigger rather than narrowing it.
