@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **A player held at world spawn is no longer placed inside it.** When a plot was unsafe
+  and the in-cell repair found no replacement, or the respawn handler held a player off
+  the plot while it repaired, the player was sent to the world spawn block exactly as
+  stored. Where that block is solid they suffocated, and since the plot was still unsafe
+  at the next death the cycle repeated until an operator moved them. The player is now
+  sent to the first position in the world spawn column, at or above its stored height,
+  that has room for them and passes the same floor and hazard checks as a plot, or the
+  first such position below it when world spawn is in the air. A respawn that cannot
+  check world spawn inline, because the thread handling it does not own that chunk, still
+  respawns at the stored block and is moved once placed, unless something has moved the
+  player on by then. When nothing in the column passes, the stored block is used as
+  before and a warning names `/setworldspawn`. A player still on the death screen is
+  unchanged: their plot is cleared as their respawn point and the server's own world
+  spawn search places them, on Paper and Folia alike. Nothing here depends on
+  GriefPrevention.
+
 ## [1.0.0-alpha.2] - 2026-09-24
 
 **Upgrading from 1.0.0-alpha.1.** `data.yml` gains an `installed-at` key, a `centre` on

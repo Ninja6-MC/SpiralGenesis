@@ -33,6 +33,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -157,6 +158,14 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * storage under the others.
      */
     private final Set<UUID> repairing = ConcurrentHashMap.newKeySet();
+
+    /**
+     * How many times a repair has moved each player onto a repaired plot; see
+     * {@link #repairMoves}. Written and compared on the player's own thread. Holds only
+     * players whose plot was repaired while they stood in the world, so it is left to grow
+     * with them rather than cleared on quit.
+     */
+    private final Map<UUID, Integer> repairMoves = new ConcurrentHashMap<>();
 
     /**
      * Players already reported as having played here before the plugin was installed, so
@@ -1101,8 +1110,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                         if (isPlotColumn(point, stored)) {
                             player.setRespawnLocation(null, false);
                         }
-                    } else if (world != null) {
-                        player.teleportAsync(world.getSpawnLocation());
+                    } else {
+                        sendToWorldSpawn(player, world);
                     }
                     return;
                 }
@@ -1137,6 +1146,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                     // is also the only lever that works on Folia, whose respawn never
                     // consults a plugin. Anyone already back in the world is moved directly.
                     if (!player.isDead()) {
+                        repairMoves.merge(uuid, 1, Integer::sum);
                         player.teleportAsync(res.location());
                     }
                     getLogger().info("Repaired plot " + record.plotLabel() + " for "
@@ -1177,6 +1187,98 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         if (scheduled == null) {
             repairing.remove(uuid);
         }
+    }
+
+    /**
+     * Moves a player to world spawn, at a position there they can stand
+     * ({@link SpawnManager#worldSpawnPoint}) rather than at the stored block, which can be
+     * solid: a player placed inside it suffocates, and their plot is still unsafe at the
+     * next death, so the loop never ends by itself.
+     *
+     * <p>Safe to call from any thread. The position is found on the thread owning world
+     * spawn and the move is made on the player's own. When nothing in the spawn's column
+     * passes, the stored block is used anyway, as it always was.
+     *
+     * <p>Only the bound world's spawn can be checked, since the manager reads no other
+     * world. For any other world, a record left behind by a change of {@code origin.world}
+     * among them, the player goes to that world's spawn as stored, as before, rather than
+     * across worlds to the bound one.
+     *
+     * @param world the world whose spawn the player is sent to; nothing is done when it is
+     *              null, which is a record whose world is not loaded
+     */
+    public void sendToWorldSpawn(Player player, World world) {
+        moveToWorldSpawn(player, world, null, 0);
+    }
+
+    /**
+     * {@link #sendToWorldSpawn} for a player a respawn has just placed at the stored world
+     * spawn block, to move them clear of it. Dropped unless they are still in that block's
+     * column when the position is known, and unless no repair has moved them since
+     * {@code repairMovesSeen} was read from {@link #repairMoves}. The second test is the
+     * one that decides a race with the repair: its teleport is issued on the player's
+     * thread, as this move is, but on Folia it lands later, so the player can still read
+     * as in the column after the repair has sent them to their plot.
+     *
+     * @param from            the stored world spawn block the respawn placed them at
+     * @param repairMovesSeen {@link #repairMoves} for the player, read when the respawn
+     *                        placed them there
+     */
+    public void settleAtWorldSpawn(Player player, World world, Location from,
+                                   int repairMovesSeen) {
+        moveToWorldSpawn(player, world, from, repairMovesSeen);
+    }
+
+    /**
+     * How many times a repair has moved this player onto a repaired plot this session. Only
+     * compared with itself, by {@link #settleAtWorldSpawn}.
+     */
+    public int repairMoves(UUID uuid) {
+        return repairMoves.getOrDefault(uuid, 0);
+    }
+
+    private void moveToWorldSpawn(Player player, World world, Location from,
+                                  int repairMovesSeen) {
+        if (world == null) {
+            return;
+        }
+        // Read once, for the reason allocateSpawn does.
+        SpawnManager manager = spawnManager;
+        CompletableFuture<Location> target;
+        if (manager != null && world.equals(manager.getWorld())) {
+            target = manager.worldSpawnPoint();
+        } else {
+            target = CompletableFuture.completedFuture(world.getSpawnLocation());
+        }
+        target.whenComplete((safe, error) -> {
+            if (error != null) {
+                getLogger().log(Level.WARNING, "Could not check world spawn for "
+                        + player.getName() + "; using it as stored.", error);
+            }
+            player.getScheduler().run(this, task -> {
+                if (!player.isOnline() || player.isDead()) {
+                    return;
+                }
+                if (from != null && (repairMoves(player.getUniqueId()) != repairMovesSeen
+                        || !isPlotColumn(player.getLocation(), from))) {
+                    return;
+                }
+                Location destination = safe;
+                if (destination == null) {
+                    if (error == null) {
+                        getLogger().warning("There is no clear, safe position in the column"
+                                + " of world spawn to send " + player.getName() + " to, so"
+                                + " the stored block is used. Move world spawn with"
+                                + " /setworldspawn.");
+                    }
+                    if (from != null) {
+                        return; // Already there.
+                    }
+                    destination = world.getSpawnLocation();
+                }
+                player.teleportAsync(destination);
+            }, null);
+        });
     }
 
     /**

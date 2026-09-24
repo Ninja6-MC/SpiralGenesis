@@ -75,9 +75,17 @@ class RepairRecordCellTest {
     private static final class RecordingManager extends SpawnManager {
 
         private final List<SpiralCell> searched = new CopyOnWriteArrayList<>();
+        private final World world;
 
         private RecordingManager(JavaPlugin plugin, World world, PluginConfig config) {
             super(plugin, world, config);
+            this.world = world;
+        }
+
+        /** World spawn as stored: MockBukkit has no async chunk load to check it with. */
+        @Override
+        public CompletableFuture<Location> worldSpawnPoint() {
+            return CompletableFuture.completedFuture(world.getSpawnLocation());
         }
 
         @Override

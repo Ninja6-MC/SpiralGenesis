@@ -1233,6 +1233,92 @@ class SpawnManagerTest {
         assertNull(manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
     }
 
+    // --- Where a player held at world spawn stands -----------------------------------
+
+    private Location worldSpawnPoint(int y) throws Exception {
+        world.setSpawnLocation(0, y, 0);
+        return managerWith(config(0, 8)).worldSpawnPoint().get(10, TimeUnit.SECONDS);
+    }
+
+    @Test
+    @DisplayName("A world spawn inside a solid block is stood on, not in")
+    void solidWorldSpawnIsSteppedOutOf() throws Exception {
+        // The reported case: world spawn stored at the surface block itself, so a player
+        // placed at it as stored is inside the ground and suffocates.
+        Location standing = worldSpawnPoint(MOCK_SURFACE_Y);
+
+        assertEquals(0.5, standing.getX(), 1e-9);
+        assertEquals(0.5, standing.getZ(), 1e-9);
+        assertEquals(MOCK_SURFACE_Y + 1.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A world spawn buried under solid blocks rises to the first clear position")
+    void buriedWorldSpawnRisesToFirstClearPosition() throws Exception {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.STONE);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.STONE);
+
+        Location standing = worldSpawnPoint(MOCK_SURFACE_Y + 1);
+
+        assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A clear world spawn is its own standing point")
+    void clearWorldSpawnStandsWhereStored() throws Exception {
+        Location standing = worldSpawnPoint(MOCK_SURFACE_Y + 1);
+
+        assertEquals(MOCK_SURFACE_Y + 1.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A world spawn left in the air comes down to the ground below it")
+    void worldSpawnInTheAirComesDown() throws Exception {
+        Location standing = worldSpawnPoint(MOCK_SURFACE_Y + 30);
+
+        assertEquals(MOCK_SURFACE_Y + 1.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("World spawn moved while its chunk loads is searched where the chunk was chosen")
+    void worldSpawnMovedDuringTheLoadKeepsTheChosenColumn() throws Exception {
+        CompletableFuture<Object> load = new CompletableFuture<>();
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+                return load;
+            }
+        };
+        world.setSpawnLocation(0, MOCK_SURFACE_Y, 0);
+
+        CompletableFuture<Location> standing = manager.worldSpawnPoint();
+        // A /setworldspawn into another chunk before the load completes.
+        world.setSpawnLocation(100, MOCK_SURFACE_Y, 100);
+        load.complete(null);
+
+        Location found = standing.get(10, TimeUnit.SECONDS);
+        assertEquals(0.5, found.getX(), 1e-9);
+        assertEquals(0.5, found.getZ(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A world spawn over lava has no standing point")
+    void worldSpawnOverLavaHasNoStandingPoint() throws Exception {
+        // Solid below, lava in the spawn block: every clear position above has lava
+        // underfoot or no floor, and everything below is solid.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.LAVA);
+
+        assertNull(worldSpawnPoint(MOCK_SURFACE_Y + 1));
+    }
+
+    @Test
+    @DisplayName("A world spawn outside the border has no standing point")
+    void worldSpawnOutsideTheBorderHasNoStandingPoint() throws Exception {
+        borderAround(CELL, 0, 20);
+
+        assertNull(worldSpawnPoint(MOCK_SURFACE_Y + 1));
+    }
+
     // --- Where a player stands on a plot that has been built over --------------------
 
     private Location storedOrigin() {
