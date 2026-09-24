@@ -136,7 +136,8 @@ hangarPublish {
                 // hangar(...) takes the project slug, not owner/slug: Hangar resolves it
                 // with `lower(slug) = lower(:slug)` and rejects the whole upload
                 // (invalidPluginDependencyNamespace) when nothing matches. Floodgate is
-                // GeyserMC/Floodgate and GriefPrevention is GriefPrevention/GriefPrevention.
+                // GeyserMC/Floodgate, GriefPrevention is GriefPrevention/GriefPrevention
+                // and Multiverse-Core is Multiverse/Multiverse-Core.
                 // AuthMeReloaded has no Hangar project, so it is an external link.
                 dependencies {
                     hangar("Floodgate") {
@@ -146,6 +147,9 @@ hangarPublish {
                         required.set(false)
                     }
                     url("AuthMeReloaded", "https://modrinth.com/plugin/authmereloaded") {
+                        required.set(false)
+                    }
+                    hangar("Multiverse-Core") {
                         required.set(false)
                     }
                 }

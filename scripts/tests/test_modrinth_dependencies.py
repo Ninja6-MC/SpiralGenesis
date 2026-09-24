@@ -20,6 +20,7 @@ softdepend:
   - floodgate
   - AuthMe
   - GriefPrevention
+  - Multiverse-Core
 
 commands:
   sgen:
@@ -32,6 +33,7 @@ RELEASE = """      - uses: x
             floodgate(optional){modrinth:bWrNNfkb}
             griefprevention(optional){modrinth:O4o4mKaq}
             authmereloaded(optional){modrinth:9js4IEHC}
+            multiverse-core(optional){modrinth:3wmN97b8}
           files: |
             build/libs/*.jar
 """
@@ -57,7 +59,7 @@ class Compare(unittest.TestCase):
         self.assertEqual(compare(), [])
 
     def test_inline_list(self):
-        plugin = "softdepend: [floodgate, AuthMe, 'GriefPrevention']\n"
+        plugin = "softdepend: [floodgate, AuthMe, 'GriefPrevention', Multiverse-Core]\n"
         self.assertEqual(compare(plugin=plugin), [])
 
     def test_softdepend_without_mapping(self):
@@ -107,7 +109,7 @@ class Format(unittest.TestCase):
             deps.release_dependencies("with:\n  files: x\n")
 
     def test_column_zero_block_sequence(self):
-        plugin = "softdepend:\n- floodgate\n- AuthMe\n- GriefPrevention\ncommands: {}\n"
+        plugin = "softdepend:\n- floodgate\n- AuthMe\n- GriefPrevention\n- Multiverse-Core\ncommands: {}\n"
         self.assertEqual(compare(plugin=plugin), [])
 
     def test_key_with_no_entries(self):

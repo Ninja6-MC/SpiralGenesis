@@ -4,7 +4,9 @@
 
 # Global spiral origin settings
 origin:
-  # The world where spiral allocation takes place
+  # The world where spiral allocation takes place. This must match a loaded world's name
+  # exactly; no other world is ever substituted for it. If the name does not resolve, the
+  # plugin logs a SEVERE error and allocates nothing until it does.
   world: "world"
   # Global X center coordinate
   x: 0
@@ -16,6 +18,8 @@ cell-size: 500
 
 # NOTE: the live spiral progression index is persisted in data.yml
 # (`current-spiral-index`), not here. Editing it in this file has no effect.
+# Changing origin.x, origin.z or cell-size starts a new spiral centre: plots already
+# allocated stay where they are, and new cells that overlap them are skipped.
 
 # Where inside an allocated cell the player is placed.
 placement:
@@ -83,10 +87,15 @@ allocation:
 # so their bed and first chest are covered the moment they arrive. The rest of the plot is
 # left unclaimed and is theirs to claim normally.
 protection:
-  # Off by default, and off is genuinely off: nothing is claimed, nothing is looked up, and
-  # a server with no protection plugin behaves exactly as it did before this block existed.
+  # Off by default, and off is genuinely off for claiming: nothing is claimed, and a
+  # server with no protection plugin behaves exactly as it did before this block existed.
   # Turning it on with the provider below missing is also harmless: nothing is claimed and
   # the plugin carries on as if this were false.
+  #
+  # Separately, and whatever this says, allocation keeps new spawns off existing claims
+  # wherever GriefPrevention is installed: a spot whose square of the size below would
+  # overlap any claim, whoever owns it, is not chosen. There is no such check without
+  # GriefPrevention, or on Folia.
   enabled: false
   # Which protection plugin creates the claim.
   # GRIEF_PREVENTION - the only implementation shipped today. (Default)
@@ -99,7 +108,8 @@ protection:
   provider: GRIEF_PREVENTION
   # The side of the claimed square in blocks, centred on the spawn point. 9 means four
   # blocks out in every direction from the block the player lands on. Clamped to 3-255, and
-  # a value outside that range is logged at warning naming what was used instead.
+  # a value outside that range is logged at warning naming what was used instead. It is
+  # also the square allocation keeps clear of existing claims, with enabled on or off.
   #
   # Even sizes are rounded UP to the next odd number, and a warning naming both the
   # configured value and the value actually used is logged every time the config loads. An
@@ -122,8 +132,11 @@ protection:
   # Who owns the claim that gets created.
   # ADMIN_CLAIM  - create it as an administrative claim and trust the player on it. Costs
   #                the player no claim blocks, so it still works on a server whose starting
-  #                balance is zero. They cannot resize, delete or manage trust on it, and it
-  #                is not listed as theirs by the protection plugin. It also sits in the way:
+  #                balance is zero. They are given both building and trust management, so
+  #                they can /trust and /untrust a friend onto the plot themselves; they
+  #                cannot resize, subdivide or delete it, and it is not listed as theirs by
+  #                the protection plugin. That last part cuts both ways - it is also why
+  #                they cannot abandon the protection by accident. It also sits in the way:
   #                a protection plugin refuses any new claim overlapping an existing one, so
   #                a player later claiming the ground around their spawn has to claim around
   #                this square rather than through it. (Default)

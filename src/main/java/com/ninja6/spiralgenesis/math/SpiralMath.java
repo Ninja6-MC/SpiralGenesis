@@ -21,6 +21,38 @@ public final class SpiralMath {
         if (index <= 0) {
             return new int[]{0, 0};
         }
+        // The legs run 1, 1, 2, 2, 3, 3, ... blocks, turning clockwise each time. After the
+        // first 2m legs, m(m + 1) steps, the walk stands on a diagonal corner: (k, k) with
+        // k = (m + 1) / 2 when m is odd, (-k, -k) with k = m / 2 when m is even. The next two
+        // legs are m + 1 long, east then south from an even corner and west then north from
+        // an odd one. Closed form rather than a walk, so a large index costs no more than a
+        // small one.
+        long k = index;
+        long m = (long) ((Math.sqrt(4.0 * k + 1.0) - 1.0) / 2.0);
+        while (m * (m + 1) > k) {
+            m--;
+        }
+        while ((m + 1) * (m + 2) <= k) {
+            m++;
+        }
+        long rest = k - m * (m + 1);
+        long leg = m + 1;
+        boolean even = (m & 1) == 0;
+        long corner = even ? -(m / 2) : (m + 1) / 2;
+        long sign = even ? 1 : -1;
+        long u = corner + sign * Math.min(rest, leg);
+        long v = corner + sign * Math.max(0, rest - leg);
+        return new int[]{(int) u, (int) v};
+    }
+
+    /**
+     * {@link #indexToGrid} by walking the spiral one step at a time. Kept as the reference
+     * the closed form is tested against.
+     */
+    static int[] walkToGrid(int index) {
+        if (index <= 0) {
+            return new int[]{0, 0};
+        }
 
         int u = 0;
         int v = 0;

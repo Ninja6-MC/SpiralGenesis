@@ -2,7 +2,8 @@
 
 This is the reference for server owners who want to know exactly how SpiralGenesis picks a
 spot, what it stores, and how to size a world for it. For installation and day-to-day use,
-start with the [README](../README.md).
+start with the [README](../README.md). Installing onto a server people already play on has
+its own section, [section 10](#10-installing-on-an-existing-server).
 
 **Contents**
 
@@ -15,8 +16,10 @@ start with the [README](../README.md).
 7. [Stored data](#7-stored-data)
 8. [Tuning with `/sgen simulate`](#8-tuning-with-sgen-simulate)
 9. [Sizing and world generation](#9-sizing-and-world-generation)
-10. [Testing checklist](#10-testing-checklist)
-11. [Where the code lives](#11-where-the-code-lives)
+10. [Installing on an existing server](#10-installing-on-an-existing-server)
+11. [Uninstalling](#11-uninstalling)
+12. [Testing checklist](#12-testing-checklist)
+13. [Where the code lives](#13-where-the-code-lives)
 
 ---
 
@@ -30,9 +33,11 @@ A player joins for the first time. SpiralGenesis:
 2. Loads that cell's chunks asynchronously and probes **candidate points inside the cell**,
    spiralling outward from its centre.
 3. Accepts the first (or best, depending on strategy) candidate that passes every terrain
-   rule in §3.
+   rule in §3 and, where GriefPrevention is installed, is clear of existing claims
+   (section 6).
 4. If every candidate in the cell fails, claims another index and starts again — up to
-   `safety.max-scan-attempts` cells.
+   `safety.max-scan-attempts` cells. A cell whose every candidate is inside an existing
+   claim is skipped and does not count toward that limit.
 5. If all attempts are exhausted, settles on the best candidate seen anywhere during the
    scan rather than dropping the player at world spawn.
 
@@ -108,6 +113,7 @@ names `/sgen simulate` reports:
 | `PIT` | Sits more than the allowed depth below the median of surrounding terrain — ravines, canyons, sinkholes, craters. | `safety.max-pit-depth` (8) |
 | `ROUGH` | Surroundings vary more sharply than allowed — cliff edges, spikes, jagged ground. | `safety.max-roughness` (12) |
 | `NEARBY_HAZARD` | Lava or powder snow within the sampled surroundings. | — |
+| `CLAIMED` | The square around it would overlap an existing claim. Only where GriefPrevention is installed; see [existing claims](#existing-claims-and-allocation). | `protection.size` (9) |
 
 Two details worth knowing:
 
@@ -245,16 +251,44 @@ has proven anything, which permanently burns a spiral index per connection and r
 login plugin's own position restore. SpiralGenesis logs a warning at startup if it sees a
 known login plugin while this trigger is set.
 
+### Players from before the plugin was installed
+
+On every path above, a player without a record who played on the server before
+SpiralGenesis was installed is left alone: no plot is allocated, no index is reserved, their
+bed or respawn anchor is kept, and they are not moved or gated. The console says so once per
+player per run, at info. `/sgen reassign <player>` gives such a player a plot when you want
+them to have one; `/sgen allocate` refuses them and says the same. Reassigning replaces
+their respawn point with the new plot, including a bed or respawn anchor they had set, and
+`/sgen setspawn` does the same; section 10 covers installing onto a live server.
+
+"Before" is the server's first-played time for the player against `installed-at` in
+`data.yml` (see section 7), not merely whether they have joined before: a player who first
+joined after the install and left before being placed is still allocated on their next
+visit. A player whose server data file carries no first-played time at all was written by
+a server that never ran Bukkit, and counts as before. A player who already has a record is
+never skipped, so one owed a placement is still placed.
+
 ### Respawn
 
 The plugin sets the player's respawn location at allocation time and handles
-`PlayerRespawnEvent` at `HIGHEST` priority. A bed or respawn anchor always takes priority;
-the genesis plot is the fallback, replacing world spawn.
+`PlayerRespawnEvent` at `HIGHEST` priority. The genesis plot is the fallback, replacing
+world spawn, and three things always outrank it:
+
+* a working bed or respawn anchor;
+* a respawn point forced elsewhere, such as by `/spawnpoint`;
+* a respawn location another plugin sets, such as EssentialsX respawn-at-home or
+  spawn-on-death, or Multiverse.
+
+The handler acts only on a respawn already headed for the plot, or one whose respawn point
+failed - a broken bed, an emptied anchor - and fell back to world spawn. Everything else is
+left where it was going.
 
 The plot is re-checked on the way through, because it was validated once - when it was
-allocated - and cells are 500 blocks wide with no claim or protection system. Anyone can
-flood a spawn, pour lava on it, or dig the ground out from under it, and without a re-check
-the owner respawns into it, dies, and respawns into it again.
+allocated - and cells are 500 blocks wide. Spawn protection claims only a
+`protection.size` square around the spawn point, and only when `protection.enabled` is
+true (it is off by default) and GriefPrevention is present, so never on Folia (see
+section 6). Anyone can flood a spawn, pour lava on it, or dig the ground out from under
+it, and without a re-check the owner respawns into it, dies, and respawns into it again.
 
 The check starts **on death**, not on respawn. That buys the seconds a player spends on the
 death screen, so a plot that can be repaired in time is usually already fixed before they
@@ -285,6 +319,13 @@ allocation, and their spiral index does not advance. That is deliberate: relocat
 would make griefing somebody's spawn a way to evict them from their land. On success the new
 point is written to `data.yml` under the same index, their respawn point is updated, and they
 are teleported to it - logged at `INFO`.
+
+The cell is the one the plot was allocated in: its index on its own spiral centre, at the
+origin and cell size recorded for that centre in `data.yml`. `/sgen setcenter`, or a reload
+with a new `origin` or `cell-size`, does not change which ground a repair searches. A point
+set with `/sgen setspawn` is on no spiral, so there is no cell to search: when it fails its
+re-check the player is sent to world spawn with a warning, the point is left as it is, and it
+is up to an operator to set a new one.
 
 If every sampled candidate in the cell fails, the player is sent to world spawn with a
 warning and **their plot assignment is left unchanged**. `max-candidates` defaults to 12 of
@@ -342,9 +383,12 @@ Nothing here repairs the plot. `/sgen tp` is for looking; `/sgen setspawn` and
 SpiralGenesis can claim a small square of ground around each player's spawn point, so
 their bed, their first chest and the block they land on are covered the moment they
 arrive. It is **off by default**, it needs
-[GriefPrevention](https://github.com/TechFortress/GriefPrevention) installed, and it
-changes nothing about allocation: a player gets the same plot, the same index and the same
-teleport whether the claim succeeds, fails or is never attempted.
+[GriefPrevention](https://github.com/TechFortress/GriefPrevention) installed, and turning
+it on or off changes nothing about allocation: a player gets the same plot, the same index
+and the same teleport whether the claim succeeds, fails or is never attempted. Allocation
+does keep new spawns off claims that already exist, but it does so whenever
+GriefPrevention is installed, protection on or off; see
+[existing claims and allocation](#existing-claims-and-allocation).
 
 The claim is deliberately much smaller than the plot. See
 [the claim is small on purpose](#the-claim-is-small-on-purpose) below, which is the part
@@ -362,9 +406,9 @@ protection:
 
 | Key | Default | What it does |
 | :--- | :--- | :--- |
-| `enabled` | `false` | Whether any claim is created at all. Off is genuinely off: nothing is claimed, nothing is looked up, and the server behaves exactly as it did before this block existed. |
+| `enabled` | `false` | Whether any claim is created at all. Off is genuinely off for claiming: nothing is claimed and the provider is never asked. Allocation still avoids existing GriefPrevention claims wherever GriefPrevention is installed; see [existing claims](#existing-claims-and-allocation). |
 | `provider` | `GRIEF_PREVENTION` | Which plugin creates the claim. `GRIEF_PREVENTION` is the only implementation shipped. `NONE` claims nothing, the same as `enabled: false`. An unrecognised name falls back to `NONE`, not to the default, and is logged at warning. |
-| `size` | `9` | The side of the claimed square in blocks, centred on the spawn point. `9` means four blocks out in every direction from the block the player lands on. Clamped to 3-255. |
+| `size` | `9` | The side of the claimed square in blocks, centred on the spawn point. `9` means four blocks out in every direction from the block the player lands on. Clamped to 3-255. Also the square allocation keeps clear of existing claims, with `enabled` on or off. |
 | `claim-as` | `ADMIN_CLAIM` | Whether the claim is an administrative claim the player is trusted onto, or an ordinary claim the player owns and pays for. An unrecognised name falls back to `ADMIN_CLAIM`, logged at warning. |
 
 All four are re-read by `/sgen reload`, which rebuilds the provider from scratch, so a
@@ -400,6 +444,7 @@ section, read that line on your own server.
 | Folia | INFO | `Spawn protection is configured for GriefPrevention, which does not run on Folia. Nothing will be claimed, and everything else behaves exactly as it does without this feature.` |
 | GriefPrevention present, its own startup failed | WARNING | `GriefPrevention is enabled but has not published its API, so no spawn claims will be created. This usually means its own startup failed - check the log above for its errors.` |
 | `size` below GriefPrevention's minimum | WARNING | Names both numbers; see [the minimum claim size](#the-minimum-claim-size-the-one-that-catches-people) below. The "working" line above is then deliberately not printed. |
+| GriefPrevention installed, any `enabled` | INFO | `Allocation avoids existing GriefPrevention claims: a spawn whose protection.size square would overlap one is not chosen.` Printed each time allocation binds to its world, separately from the lines above; see [existing claims](#existing-claims-and-allocation). |
 
 There is no per-player line for any of these. Every condition above is a server-wide
 setting that would otherwise produce one identical line per joining player, which is how a
@@ -410,13 +455,15 @@ log gets trained out of being read.
 **Not installed.** Nothing is claimed and nothing else changes. The provider resolves as
 absent at startup, every claim request answers "no provider" and stays silent, and
 allocation, reassign, setspawn and revalidation all behave exactly as they do with
-`enabled: false`. You can leave `protection.enabled: true` in the file on a server with no
-claim plugin; it costs one INFO line at boot and nothing else.
+`enabled: false`. There are no claims for allocation to avoid either, so it checks terrain
+only. You can leave `protection.enabled: true` in the file on a server with no claim
+plugin; it costs one INFO line at boot and nothing else.
 
 **Folia.** GriefPrevention does not run on Folia at all - it declares no `folia-supported`
 flag, so Folia refuses to load it, and no configuration on either side will make it
 appear. SpiralGenesis detects the platform, picks the no-op provider, and says so once at
-INFO rather than leaving a silence that reads like a bug. Nothing about
+INFO rather than leaving a silence that reads like a bug. Allocation does no claim check
+there either, and never tries to load GriefPrevention's classes to find out. Nothing about
 `folia-supported: true` in SpiralGenesis' own `plugin.yml` becomes dishonest by this: the
 plugin still runs on Folia in full, and the one feature that cannot work there says so
 instead of failing quietly.
@@ -434,19 +481,54 @@ behave differently in ways their names do not suggest.
 
 | | `ADMIN_CLAIM` (default) | `PLAYER_CLAIM` |
 | :--- | :--- | :--- |
-| What GriefPrevention creates | An administrative claim, owned by the server, with the player granted `Build` trust on it | An ordinary claim the player owns outright |
+| What GriefPrevention creates | An administrative claim, owned by the server, with the player granted `Build` and `Manage` trust on it | An ordinary claim the player owns outright |
 | Claim blocks | None. Charged to nobody | The full area, charged to the player's balance |
 | Works with a zero starting balance | Yes | No: every claim is refused until players are given blocks |
 | `MinimumWidth` / `MinimumArea` | Exempt. GriefPrevention applies neither to admin claims | Enforced |
 | `MaximumNumberOfClaimsPerPlayer` | Does not count against it | Counts against it |
-| Player can resize, abandon or share it | No | Yes |
+| Player can share it with `/trust` | Yes | Yes |
+| Player can resize, subdivide or abandon it | No | Yes |
 
 `ADMIN_CLAIM` is the default because it is the one that works on an untouched
 GriefPrevention install, and on a server that starts players at zero claim blocks. Its
-cost is ownership: the player is trusted to build there, which is what makes the claim
-useful to them, but the claim is not theirs. They cannot resize it, cannot abandon it, and
-cannot trust a friend onto it - only an administrator can, through GriefPrevention's own
-commands.
+cost is ownership: the player is trusted to build there and to hand out trust there, which
+is what makes the claim useful to them, but the claim itself is not theirs.
+
+The trust half is worth spelling out, because it is the half GriefPrevention does not
+derive for you. `Build` and `Manage` are separate grants in its permission model -
+`Manage` is not implied by `Build`, and `Build` is not implied by `Manage` - so the claim
+carries both. `Build` is the ground, the bed and the first chest; `Manage` is what
+`/trust`, `/containertrust`, `/accesstrust` and `/untrust <player>` check for, so the
+player can invite a friend onto their spawn plot and withdraw the invitation again
+without an administrator.
+
+What stays with the server is `Edit`: resizing, subdividing and deleting. GriefPrevention
+will not let that level be delegated on an administrative claim at all - it belongs to
+`griefprevention.adminclaims` - so on an `ADMIN_CLAIM` server those three are an operator's
+job. So are three trust commands that GriefPrevention checks against `Edit` as well as
+`Manage`: `/permissiontrust`, `/untrust all`, and `/untrust` aimed at a player who is
+themselves a manager on the claim. The player can hand out trust but cannot make anyone
+else a manager, and cannot clear the claim's trust list in one go. If that is the wrong
+trade for your server, `PLAYER_CLAIM` is the alternative, and the two sections above are
+its price.
+
+**How a player can lock themselves out of their own plot.** GriefPrevention holds one of
+`Build`, container or access trust per player per claim, and a new grant of one of those
+replaces the old one instead of adding to it. `Manage` is kept in a separate list and is
+not affected. A player who runs `/accesstrust` or `/containertrust` on their own name -
+almost always by mistake - replaces their `Build` with the lower level. Their `Manage`
+survives and does not help: GriefPrevention only lets someone grant a level they hold
+themselves, so they cannot give `Build` back. A second manager an operator has added can
+replace the plot holder's `Build` with any level that manager holds themselves; one added
+with `/permissiontrust` alone holds none of the three and cannot downgrade anyone. Nobody
+without `Edit` can remove the plot holder's `Manage`, because `/untrust` on a manager is
+one of the three `Edit` commands above.
+
+Nothing repairs this on its own. An administrative claim has no owner to fall back on,
+and SpiralGenesis recognises its own claims by the owner's `Build` grant, so once that is
+gone `/sgen protect` no longer treats the claim as one of its own and will not touch it.
+An operator puts it right by standing in the claim and running `/trust <player>`, after
+which SpiralGenesis recognises the claim again.
 
 `PLAYER_CLAIM` gives the player a claim that is genuinely theirs, and every one of
 GriefPrevention's rules then applies to it. Read the next two sections before switching.
@@ -526,6 +608,47 @@ too. It is `0` - unlimited - on a stock install; if you have capped it, a player
 at the cap is refused rather than quietly handed one more claim than you allowed. Admin
 claims count against nobody's cap.
 
+### Existing claims and allocation
+
+Wherever GriefPrevention is installed, allocation keeps new spawns off ground that is
+already claimed, **whether or not `protection.enabled` is on**: players claim their bases
+either way. Every claim counts, whoever owns it - a player's own claim, an administrative
+claim, and a spawn claim SpiralGenesis made earlier and left behind, for example by
+`/sgen reassign` without `release`.
+
+* **What is tested.** A candidate is rejected, as `CLAIMED`, when the `protection.size`
+  square centred on it would overlap an existing claim. That is the square a spawn claim
+  there would cover, and the same square is used with protection off: it keeps the same
+  distance from a neighbour's claim either way, and a server that turns protection on
+  later, or runs `/sgen protect`, finds the square around each new spawn free to claim
+  rather than refused. A larger `size` keeps new players further from existing claims, at
+  the cost of more rejected candidates.
+* **A claimed candidate costs no chunk.** The test reads GriefPrevention's own claim index
+  and needs no terrain, so it runs before the candidate's chunk is loaded, as the world
+  border test does. Its cost is one lookup per chunk the square touches - at most 4 at the
+  default `size: 9` - and a comparison per claim listed in those chunks. It does not grow
+  with the number of claims on the server.
+* **A wholly claimed cell is skipped.** When every candidate in a cell is inside a claim,
+  the scan moves on to the next cell and logs `Skipped plot #0,3: every candidate spawn is
+  inside an existing claim.` Like a cell skipped for overlapping another centre's plot
+  (section 7), it uses up its index but does not count toward `safety.max-scan-attempts`,
+  so a claimed town around the origin cannot spend the scan's budget and be reported as
+  the spiral outgrowing the world border. A cell where only some candidates are claimed
+  counts as usual, and a claimed candidate is never the least-bad fallback. If one claim
+  covers everything inside the world border, the scan walks past it until its cells are
+  outside the border and reports that.
+* **Unclaimed builds are not detected.** Nothing looks at the blocks players have placed,
+  which would be costly on a live server and unreliable. Keep the origin away from them;
+  see section 10.
+* **Only with GriefPrevention.** Without it there is no claim check. On Folia, where
+  GriefPrevention cannot run, there is none either.
+* **Repairs and `setspawn` do not check.** A revalidation repair searches the player's own
+  cell, where the claim nearest its candidates is their own spawn claim; `/sgen setspawn`
+  puts the spawn exactly where the operator says.
+
+A claim made after the scan chose a plot, but before the player was placed, can still be
+in the way. The next section covers that.
+
 ### Overlapping claims
 
 GriefPrevention refuses any new claim that overlaps an existing one, and SpiralGenesis
@@ -533,21 +656,33 @@ treats that as an ordinary outcome rather than an error. The player keeps their 
 loses the protection, nothing is retried, nothing is moved, and the existing claim is
 never touched.
 
-The overlap is logged at `INFO`, so it **is** in your console. The line names the path
-that asked, the claim that got in the way and who owns it:
+On the two paths that allocate - first allocation and `/sgen reassign` - allocation has
+already avoided every claim it could see, so an overlap there means a claim was made in
+the moment between choosing the plot and placing the player, who now stands inside it
+without build rights. That is logged at `WARNING`, naming the claim and its owner:
 
 ```
 No spawn claim for 06e7b6b2-9f1c (first allocation): the square overlaps
+claim 214 (Steve). The claim appeared after allocation chose this plot, so
+the player is placed inside it without a claim of their own. Move them with
+/sgen reassign if the claim is not theirs.
+```
+
+On `/sgen setspawn` and a revalidation repair the overlap is logged at `INFO`, because
+there it is usually the player's own claim:
+
+```
+No spawn claim for 06e7b6b2-9f1c (sgen setspawn): the square overlaps
 claim 214 (Steve). They keep the spawn, and their cover there is whatever
 that claim already gives them.
 ```
 
-That last clause is careful on purpose. Usually the claim in the way belongs to somebody
-else and the player has no protection at all, which is the case worth looking into. But
-`/sgen setspawn` moving a spawn a few blocks, or a revalidation repair, can land the new
-centre inside the player's *own* spawn square, and the overlap reported is then their
-existing claim - they are exactly as covered as they were a moment ago. Read the claim
-number and the owner before deciding which one you are looking at.
+That last clause is careful on purpose. Moving a spawn a few blocks, as either path can,
+lands the new centre inside the player's *own* spawn square, and the overlap reported is
+then their existing claim - they are exactly as covered as they were a moment ago. But
+`setspawn` can also put a spawn inside somebody else's claim, where the player has no
+protection at all. Read the claim number and the owner before deciding which one you are
+looking at.
 
 It is not one line per joining player, whatever it might look like. A claim is only ever
 asked for when a spawn point is created or moved - first allocation, `/sgen reassign`,
@@ -607,14 +742,15 @@ rules hold across all of them:
 * **A claim can never cost a player their plot.** The claim is asked for after the spawn
   is final and written to storage, and a provider that refuses, or breaks outright, still
   leaves the player allocated, teleported and with their respawn point set.
-* **Nothing is deleted unless you ask in as many words.** Exactly one command argument in
-  the whole plugin removes a claim.
+* **Nothing is deleted unless you ask in as many words.** Exactly two things in the
+  whole plugin remove a claim: the `release` argument on `reassign` here, and
+  `/sgen release-all confirm` for uninstalling (section 11).
 
 | Path | The new spawn | The old claim |
 | :--- | :--- | :--- |
 | First allocation | Claimed last of all - after the spawn is stored, the respawn point set and the teleport requested | There is none |
 | `/sgen reassign <player>` | Claimed | Left standing, with its coordinates and world named in the command output. See the note below on removing it |
-| `/sgen reassign <player> release` | Claimed | Released, if it is still recognisably the claim SpiralGenesis made. The only thing in the plugin that deletes a claim |
+| `/sgen reassign <player> release` | Claimed | Released, if it is still recognisably the claim SpiralGenesis made. The only path that moves a spawn and deletes a claim |
 | `/sgen setspawn <player> [x y z]` | Claimed | Left standing and reported in the command output. There is no `release` argument here |
 | Respawn revalidation repair | Claimed at the repaired point | Left standing and reported to the server log, since this path has no command output |
 | Teleport re-assert | Nothing at all. The stored spawn has not moved, so the claim already there is the right one | Unchanged |
@@ -645,9 +781,11 @@ matches what SpiralGenesis would have created at that point: the same square to 
 no subdivisions inside it, and either the same owner under `PLAYER_CLAIM` or - under
 `ADMIN_CLAIM`, where there is no owner to compare against - an administrative claim
 carrying the explicit `Build` trust SpiralGenesis grants in the same breath as creating
-one. A claim the player has since resized outward over their house, one belonging to
-somebody else, or one made by hand is reported and left completely alone. Declining costs
-you one stale square; deleting the wrong claim costs a player everything inside it.
+one. `Build` and not `Manage` is deliberately the signature it looks for: claims created
+before SpiralGenesis granted `Manage` carry only `Build`, and they are still ours. A
+claim the player has since resized outward over their house, one belonging to somebody
+else, or one made by hand is reported and left completely alone. Declining costs you one
+stale square; deleting the wrong claim costs a player everything inside it.
 
 Both `reassign` and `setspawn` act on an online player, as they always have, so neither is
 a way to tidy up after somebody who has left.
@@ -670,6 +808,13 @@ new permission node. It walks every stored spawn and claims the square around it
   and is counted as skipped. There is no flag in `data.yml`, nothing to migrate, and no
   way for an interrupted run to leave anything in a state a later run reads wrongly. Run
   it again after fixing a setting that was refusing claims.
+* **Under `ADMIN_CLAIM` it also repairs an existing spawn claim that is missing the
+  `Manage` grant.** SpiralGenesis granted `Build` alone before this was fixed, which left
+  those players unable to `/trust` anyone onto their own plot. A claim that is still
+  recognisably one of ours - the same square, no subdivisions, the owner trusted on it -
+  has the missing grant added, and the fact is said in the skip reason. The claim is
+  otherwise untouched, it is still counted as skipped rather than created, and a claim that
+  is not recognisably ours or already carries both grants is not written to at all.
 * **It does not freeze the server.** The work has to happen on the main thread, and a
   large `data.yml` has thousands of entries, so the job does a bounded slice per tick - at
   most 50 entries, and at most two milliseconds - and carries on across ticks until it is
@@ -723,12 +868,21 @@ spiral position.
 ```yaml
 # data.yml
 current-spiral-index: 12
+installed-at: "2026-08-17T01:58:12.402Z"
+active-centre: 0
+centres:
+  '0':
+    x: 0
+    z: 0
+    cell-size: 500
+    next-index: 12
 
 players:
   # Bedrock player (Floodgate)
   00000000-0000-0000-0009-01f4c3a2b100:
     name: "*BedrockWarrior"
     client: "BEDROCK"
+    centre: 0
     assigned-index: 0
     grid-u: 0
     grid-v: 0
@@ -742,6 +896,7 @@ players:
   a1b2c3d4-e5f6-7890-abcd-ef1234567890:
     name: "JavaCrafter"
     client: "JAVA"
+    centre: 0
     assigned-index: 1
     grid-u: 1
     grid-v: 0
@@ -752,8 +907,66 @@ players:
     assigned-date: "2026-08-17T02:05:00Z"
 ```
 
+A record can also carry `placement-owed: true`. It is written when a player disconnects
+while their plot is being found: the plot is recorded against them, and the key says they
+have not been placed on it yet. They are placed when a new player would be allocated:
+under the default `FIRST_ACTION`, on their first uncancelled action after they next join,
+and at once on joining under `ON_JOIN` and for Bedrock players. The key is then removed.
+It is absent from every other record, and a record without it is not owed anything.
+
+`centres` records every spiral the server has allocated on. Moving `origin.x` or
+`origin.z` (including with `/sgen setcenter`) or changing `cell-size` does not move the
+plots already handed out, so it starts a new centre with the next free id and its own
+counter, and each record's `centre` names the spiral its `assigned-index` is on. Plots are
+named `#centre,index` in commands and logs, for example `#1,4`; a point set with
+`/sgen setspawn` is `#-1`. Going back to a geometry used before resumes that centre where
+it left off. Before a new cell is used it is tested against every recorded plot of another
+centre, by that plot's whole cell, and against every point set by hand, by its column; a
+cell that overlaps one is skipped, logged as `Skipped plot #1,9: its cell overlaps plot
+#0,7 of <player>.`, and does not count toward `max-scan-attempts`. `current-spiral-index`
+is the counter of `active-centre`, the centre allocated on last. A file written before
+centres were recorded has no `centres` and no `centre` keys: its records are all on centre
+0, which is recorded at the `origin` and `cell-size` configured when the file is first
+loaded.
+
+`installed-at` is when the plugin first recorded anything on this server, and is what
+decides which players are left alone as having played before it was installed (section 5).
+It is written once, on the first start that finds it missing, and kept from then on. A fresh
+install takes the current time. A file written by an earlier version takes the earliest
+`assigned-date` it holds, since that version allocated the first player to join on their
+first action; with no assignment in it, the current time. Every write of a record (a
+repair, `/sgen reassign`, `/sgen setspawn`) rewrites its `assigned-date`, so the earliest
+one can be later than the real install, which leans toward leaving players alone. It is an
+ISO-8601 instant, quoted or not, and can be edited, for example moved back to allocate
+players who joined in between.
+
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.
+
+### When `data.yml` cannot be read
+
+A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.
+A file that exists and does not parse is never treated that way, because starting from
+index 0 would hand every returning player a new plot, in cells other players already own.
+Instead the plugin stays enabled and storage is marked failed:
+
+* One SEVERE line reports the parse error, and the file is copied aside as
+  `data.yml.broken-<timestamp>` (UTC, for example `data.yml.broken-20260922T051132Z`)
+  before anything else can touch it.
+* Nothing is saved. Not the periodic flush, not `/sgen reload`, not shutdown, so the file
+  on disk stays exactly as it was.
+* Nobody is allocated and no respawn point is changed. A joining player waits in the same
+  hold as when no world is bound, logged once as `Cannot allocate a spawn for <player>:
+  data.yml could not be read`, and is allocated without having to act again once storage
+  recovers. This includes returning players, since no record of their plot can be read.
+* Operators with `spiralgenesis.admin` are told in chat when they join, with the name of
+  the copy. `/sgen setspawn`, `allocate`, `reassign`, `protect`, `tp` and `info` are refused
+  with the same message; `setcenter`, `simulate` and `reload` still work.
+
+To recover, repair `data.yml` or restore it from a backup, then run `/sgen reload`. A
+reload that reads it clears the failure and allocates every held player. A reload that
+still cannot read it says so to whoever ran it and logs the error again, but does not copy
+the same file a second time.
 
 ---
 
@@ -786,7 +999,8 @@ index burn, fallback use, or spawns below `min-surface-y`.
 ## 9. Sizing and world generation
 
 Allocation generates chunks while it searches, so pregenerate with a tool such as Chunky
-before opening the doors.
+before opening the doors. On a server people already play on, read section 10 first: the
+origin, and so the area to pregenerate, should be chosen around the existing builds.
 
 | Expected players | Cell size | Minimum world radius | Chunky command |
 | :--- | :--- | :--- | :--- |
@@ -803,7 +1017,186 @@ Also check that your world border is larger than the radius you plan to fill.
 
 ---
 
-## 10. Testing checklist
+## 10. Installing on an existing server
+
+Nothing above changes on a server people already play on, except that the first start
+with the plugin installed matters more. It decides who counts as an existing player, and
+from that moment every new player is placed around whatever origin `config.yml` holds.
+Set things up before that start rather than after it.
+
+### What the first start does
+
+* `plugins/SpiralGenesis/config.yml` is written from the defaults only if there is no file
+  there. A `config.yml` you put in place before the first start is kept as it is, and any
+  key you leave out of it takes its default.
+* `installed-at` is recorded in `data.yml` as the time of that start (section 7). A player
+  who first joined the server before it is an existing player and is left alone (section
+  5). Anyone joining for the first time after it is a new player and is allocated a plot.
+* The default origin is `(0, 0)` in the world named `world`. On most servers that is close
+  to world spawn, which is usually where the oldest builds are.
+
+That is why the quick start's order - start the server, then run `/sgen setcenter` -
+leaves a gap on a live server. A new player who joins between the first start and
+`setcenter` is allocated plot #0,0 around `(0, 0)`, and keeps it: moving the centre later
+does not move anyone already allocated.
+
+### Before the first start
+
+1. **Write `config.yml` yourself, or keep new players out.** Create
+   `plugins/SpiralGenesis/config.yml` before the first start, starting from the
+   [default file](../src/main/resources/config.yml), and set `origin.world`, `origin.x`
+   and `origin.z`. `origin.world` must name a loaded world exactly; if it does not,
+   nothing is allocated until it does. If you would rather stand on the spot and run
+   `/sgen setcenter`, turn the whitelist on before the first start instead, set the
+   centre, then turn it off. `setcenter` sets only `origin.x` and `origin.z`, from where
+   you stand or from the coordinates given; it never changes `origin.world`. If the
+   spiral is not in the world named `world`, set `origin.world` in `config.yml` before
+   the first start, or edit it and run `/sgen reload` before running `setcenter`.
+   Whitelist existing players if they should keep playing meanwhile; they are left alone
+   either way.
+2. **Put the origin away from existing builds.** Allocation checks terrain and, where
+   GriefPrevention is installed, existing claims: a spot whose `protection.size` square
+   would overlap any claim is not chosen, with protection on or off (section 6). It does
+   not look for builds nobody has claimed, so a spot on top of an unclaimed house is
+   accepted if the ground passes the rules in section 3, and the new player respawns
+   there. Without GriefPrevention, and on Folia, claims are not checked either. Plot #0,0
+   is centred on the origin and each plot is `cell-size` blocks across. The first 9 plots
+   fill a 3 x 3 block of cells centred on the origin, the first 25 a 5 x 5 block, the
+   first 49 a 7 x 7 block, and so on outward. Skipped cells, whether for terrain or for
+   claims, use up indices too, so the spiral reaches further than the player count alone
+   suggests. Plan from the radius in section 9 and keep that whole square clear of
+   anything you want left alone.
+3. **Measure and pregenerate around the new origin.** With the origin set and the server
+   still closed, `/sgen simulate` (section 8) reports how many indices each spawn uses on
+   your terrain, which is the headroom to add. Pregenerate the area with, for example,
+   `chunky center <x> <z>` followed by `chunky radius <blocks>`. Both generate chunks that
+   do not exist yet; neither changes chunks that already do.
+4. **Choose the trigger and protection before opening.** `allocation.trigger` is
+   `FIRST_ACTION` by default, which is right behind a login plugin; `ON_JOIN` is only for
+   online-mode servers and networks that authenticate at the proxy (section 5).
+   `protection.enabled` is `false` by default. If you turn it on, read section 6 first.
+   Allocation already keeps new spawns off existing claims, so a spawn square is only
+   refused for overlapping one when that claim was made between choosing the plot and
+   placing the player; the player keeps the spawn with no claim of their own, and the
+   console says so at warning.
+5. **Open the server.** Watch the console for the startup lines and for the first new
+   player's allocation.
+
+### What happens to the players already there
+
+* **They are left alone.** No plot is allocated, no index is reserved, their bed or
+  respawn anchor is kept, and they are not moved or gated. The console says so once per
+  player per run, at info. When one of them dies with no bed or anchor, they respawn
+  wherever the server would have sent them before the plugin was installed.
+* **New players are placed as usual**, starting at plot #0,0.
+* **`/sgen reassign <player>` gives an existing player a plot.** They must be online. It
+  reserves a fresh index, teleports them to the new plot and claims the spawn square if
+  protection is on. It also **replaces their respawn point with the plot, including a bed
+  or respawn anchor they had set.** Tell them before you run it; sleeping in a bed or
+  setting an anchor again afterwards takes precedence over the plot as usual.
+* **`/sgen setspawn <player>` replaces the respawn point the same way**, bed or anchor
+  included, for any player it is run on.
+* **`/sgen allocate` refuses an existing player** and names `reassign` instead, so wiring
+  it to a login plugin cannot place them by accident.
+
+### Moving the centre after opening
+
+`/sgen setcenter`, or a changed `origin` or `cell-size` followed by `/sgen reload`, takes
+effect from the next allocation. Players already allocated keep their spawns. The new
+geometry is a new spiral centre with its own counter, starting at index 0 around the new
+origin, and any of its cells that overlaps a plot allocated around an earlier centre is
+skipped (section 7), so new plots stay clear of old ones, at the cost of the skipped
+cells. Choosing the origin and cell size before the first new player joins still keeps
+the spiral in one piece.
+
+---
+
+## 11. Uninstalling
+
+Removing the jar stops new allocations and nothing else. Two things SpiralGenesis created
+outlive it: the spawn claims in GriefPrevention, and each player's respawn point. Deal
+with the claims before you remove the jar, because the command that releases them is part
+of the plugin.
+
+### Releasing the spawn claims
+
+Under the default `protection.claim-as: ADMIN_CLAIM` every spawn claim is an
+administrative claim, and players cannot abandon one. Without help an uninstall would be
+one `/sgen reassign <player> release` per player, which also moves each of them to a new
+plot on the way. Instead, run:
+
+```
+/sgen release-all
+/sgen release-all confirm
+```
+
+The first form only says how many stored players it would cover and what it leaves alone;
+nothing is released without `confirm`. It is gated on the existing `spiralgenesis.admin`
+permission and adds no new permission node.
+
+* **It covers the claim around each player's current plot, and only that.** Every
+  release goes through the same check as `/sgen reassign <player> release` (section 6,
+  "What `release` will and will not delete"), so a claim is deleted only when it is still
+  exactly the square SpiralGenesis would create there today. Offline players are covered;
+  their plot is read from `data.yml`.
+* **It changes nothing in `data.yml`.** Every spawn record is kept, so a server that keeps
+  the plugin after all still knows where everyone lives, and `/sgen protect` can put the
+  claims back.
+* **It does not freeze the server.** It works through `data.yml` in the same bounded
+  slices per tick as `/sgen protect`, answers at once, and reports when it is done.
+* **It refuses to run when protection is not active.** That includes Folia, where
+  GriefPrevention does not run and SpiralGenesis has made no claims.
+* **It refuses to run under `PLAYER_CLAIM`.** There each spawn claim belongs to its player
+  and cannot be told apart from a claim they made themselves over the same square. Players
+  can remove their own with `/abandonclaim`.
+* **It stops if either of those changes while it runs.** Both are checked again before
+  every entry, so a `/sgen reload` that switches to `PLAYER_CLAIM` or turns protection off
+  part way ends the run; the entries it had not reached are counted as skipped.
+
+The report counts every outcome, and each claim left standing is also listed in the server
+log with its coordinates and owner:
+
+```
+Spawn claim release finished: 131 released, 4 not ours, 5 with no claim, 0 with no
+GriefPrevention, 0 in unloaded worlds, 0 failed, 0 skipped, out of 140 stored spawns.
+```
+
+"Not ours" is a claim that no longer matches, most often because its owner resized it over
+their house. "With no claim" is a plot that never had one, or whose claim was already
+removed.
+
+**What it cannot reach.** `data.yml` records each player's current spawn and nothing
+about claims, so these are left standing and have to be removed with GriefPrevention's own
+tools, such as `/deleteclaim` while standing in the claim:
+
+* claims around plots a player left through an earlier `/sgen reassign` without `release`,
+  or through `/sgen setspawn`. Their coordinates were printed when that happened;
+* every spawn claim on a `PLAYER_CLAIM` server;
+* claims made before `protection.size` or `protection.claim-as` was changed, which no
+  longer match the square the check looks for and are reported as "not ours".
+
+### Respawn points
+
+SpiralGenesis does not clear respawn points, and uninstalling cannot. A respawn point is
+stored in each player's own data file, which the plugin cannot change for a player who is
+offline. So every player keeps their plot as their respawn point until they sleep in a bed,
+set a respawn anchor, or have another point set for them. An admin can reset one with
+`/spawnpoint <player>` at the new spot, or `/spawnpoint <player> <x> <y> <z>`.
+
+Players who first joined before SpiralGenesis was installed were never given a plot
+(section 5), so their respawn points are unaffected unless an admin ran `reassign` or
+`setspawn` on them.
+
+### Removing the plugin
+
+With the claims released, stop the server, remove the jar, and start it again.
+`plugins/SpiralGenesis/`, holding `config.yml` and `data.yml`, is not read by anything else
+and can be deleted or kept. Keeping it means a later reinstall picks up the same plots and
+the same `installed-at`.
+
+---
+
+## 12. Testing checklist
 
 Worth running once on a staging server before going live:
 
@@ -822,7 +1215,7 @@ Worth running once on a staging server before going live:
 
 ---
 
-## 11. Where the code lives
+## 13. Where the code lives
 
 All implementation is under `src/main/java/com/ninja6/spiralgenesis/`. The source is the
 authoritative reference — this guide describes behaviour, not line numbers.
@@ -843,6 +1236,7 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | GriefPrevention claims | `protection/GriefPreventionProtectionProvider.java` | Creates and releases the spawn claim | §6 |
 | Provider selection | `protection/ProtectionProviders.java` | Picks the provider, or the no-op | §6 |
 | Protection backfill | `protection/SpawnProtectionBackfill.java` | `/sgen protect`, a bounded slice per tick | §6 |
+| Claim release | `protection/SpawnClaimRelease.java` | `/sgen release-all`, a bounded slice per tick | §11 |
 | Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
 | Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |
 

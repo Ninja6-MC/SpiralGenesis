@@ -1,7 +1,10 @@
 package com.ninja6.spiralgenesis.storage;
 
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import org.bukkit.Location;
 
+import java.time.Instant;
 import java.util.Map;
 import java.util.UUID;
 
@@ -10,13 +13,41 @@ import java.util.UUID;
  */
 public interface DataStorage {
 
-    /**
-     * Initializes or loads storage backend.
-     */
-    void load();
+    /** What {@link #load()} found. */
+    enum LoadOutcome {
+        /** Records were read. */
+        LOADED,
+        /** Nothing is recorded yet: no file, or a file that parses to nothing. */
+        NO_FILE,
+        /**
+         * The file exists and could not be read. Storage is failed until a later load
+         * succeeds; see {@link #getFailure()}.
+         */
+        UNREADABLE
+    }
 
     /**
-     * Flushes in-memory data to disk immediately on the calling thread.
+     * Initializes or loads storage backend.
+     *
+     * <p>An unreadable file is never treated as an empty one. It leaves storage failed:
+     * no records, nothing written back, and every write refused, until a later call reads
+     * the file successfully.
+     */
+    LoadOutcome load();
+
+    /**
+     * Why storage is failed, or {@code null} if the last load succeeded.
+     */
+    StorageFailure getFailure();
+
+    /** Whether the last load failed, so nothing may be read from or written to storage. */
+    default boolean isFailed() {
+        return getFailure() != null;
+    }
+
+    /**
+     * Flushes in-memory data to disk immediately on the calling thread. Writes nothing
+     * while storage is failed.
      */
     void save();
 
@@ -59,12 +90,67 @@ public interface DataStorage {
     Map<UUID, StoredSpawn> getAllRecords();
 
     /**
-     * Records a new spawn assignment for a player.
+     * Records a new spawn assignment for a player, unless storage is failed.
+     *
+     * <p>The result is the only safe answer to "was it recorded". A caller that checked
+     * {@link #isFailed()} first can still be refused here, by a reload that fails to read
+     * the file in between, so anything that acts on the record - a respawn point, a
+     * teleport, a claim - has to be gated on this return value and not on that check.
+     *
+     * <p>Replaces any earlier record whole, so a record written here is never owed a
+     * placement.
+     *
+     * @return true if the record was written, false if it was refused because storage is
+     *         failed, in which case nothing changed
      */
-    void setSpawn(UUID uuid, Location location, int index, int gridU, int gridV, String playerName, String clientType);
+    default boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                             String playerName, String clientType) {
+        return setSpawn(uuid, location, index, gridU, gridV, playerName, clientType, false);
+    }
 
     /**
-     * Removes a player's assigned spawn.
+     * Records a spawn assignment on centre 0, as {@link #setSpawn(UUID, Location, int, int,
+     * int, int, String, String, boolean)} does.
+     */
+    default boolean setSpawn(UUID uuid, Location location, int index, int gridU, int gridV,
+                             String playerName, String clientType, boolean placementOwed) {
+        return setSpawn(uuid, location, 0, index, gridU, gridV, playerName, clientType,
+                placementOwed);
+    }
+
+    /**
+     * Records a spawn assignment, as {@link #setSpawn(UUID, Location, int, int, int, String,
+     * String)} does, on spiral centre {@code centre}, and whether its player is still owed a
+     * placement on it: set for a plot recorded after its player disconnected, so the mark
+     * survives a restart.
+     *
+     * <p>Written or refused, the cell {@code (centre, index)} is no longer in flight (see
+     * {@link #reserveCell}): once written the record stands for it, and once refused nothing
+     * will write it.
+     *
+     * @param centre the id of the spiral centre {@code index} was reserved on; ignored for a
+     *               point set by hand, whose index is -1
+     * @return true if the record was written, false if it was refused because storage is
+     *         failed, in which case nothing changed
+     */
+    boolean setSpawn(UUID uuid, Location location, int centre, int index, int gridU, int gridV,
+                     String playerName, String clientType, boolean placementOwed);
+
+    /**
+     * Clears the placement mark on a player's record, once they have been placed.
+     *
+     * <p>Refused like a write while storage is failed, and answered the same way: a caller
+     * places the player only on true, so the file never goes on claiming a placement is
+     * owed after it has been made.
+     *
+     * @return true if the record now carries no mark, including when it had none or there is
+     *         no record; false if it was refused because storage is failed, in which case
+     *         nothing changed
+     */
+    boolean clearPlacementOwed(UUID uuid);
+
+    /**
+     * Removes a player's assigned spawn. Ignored while storage is failed.
      */
     void removeSpawn(UUID uuid);
 
@@ -77,18 +163,110 @@ public interface DataStorage {
     UUID findByName(String playerName);
 
     /**
-     * Reads the next index that would be handed out, without consuming it.
+     * When SpiralGenesis first recorded anything on this server, or {@code null} while
+     * storage is failed and nothing recorded can be read.
+     *
+     * <p>A player who played here before this instant has no plot because the plugin did not
+     * exist yet, not because allocation missed them, and is left where they are.
+     *
+     * <p>Set once, by the first load that finds no value, and kept from then on. For a file
+     * written before the value existed it is the earliest assignment the file records, the
+     * nearest the plugin can get to its own install from what it wrote, since an older
+     * version allocated the first player to join on their first action. Every write of a
+     * record rewrites its assignment date, so this can be later than the real install,
+     * which leans toward leaving players alone.
+     *
+     * <p>Null is never a reason to allocate: callers treat it as storage that cannot be
+     * read, and hold.
+     */
+    Instant getInstalledAt();
+
+    /**
+     * Reads the next index that would be handed out on the active centre, without consuming
+     * it. The active centre is the one the last reservation was made on, or the one the
+     * file names as active; see {@link #reserveCell}.
      */
     int getCurrentIndex();
 
     /**
-     * Atomically claims the next global spiral sequence index.
+     * The spiral centre recorded under {@code id}, or {@code null} if none is, or if it is
+     * centre 0 of a file written before centres had ids and nothing has been reserved since
+     * to say where it is.
+     */
+    SpiralCentre getCentre(int id);
+
+    /**
+     * The spiral centre growing from {@code (originX, originZ)} with cells of
+     * {@code cellSize}, recorded under a new id if there is none yet, which becomes the
+     * active centre.
      *
-     * <p>Every caller receives a distinct value, so concurrent allocations can never be
+     * <p>Returning to a geometry used before returns its centre, with its counter where it
+     * was left. The first call after loading a file written before centres had ids records
+     * centre 0 at the geometry it is given, which is the configured one, and every record in
+     * that file is on centre 0.
+     *
+     * @throws IllegalStateException while storage is failed
+     */
+    SpiralCentre centreFor(int originX, int originZ, int cellSize);
+
+    /**
+     * Atomically claims the next free cell of the spiral growing from
+     * {@code (originX, originZ)} with cells of {@code cellSize}; see {@link #centreFor}.
+     *
+     * <p>Every caller receives a distinct index, so concurrent allocations can never be
      * mapped onto the same grid cell. Indices consumed by a rejected (for example ocean)
      * candidate are simply never reused.
      *
+     * <p>A cell of another centre's spiral can cover the same ground, so each index is
+     * tested before it is handed out, and skipped if its cell overlaps the cell of a plot
+     * recorded on another centre, the column of a point set by hand, or a cell of another
+     * centre that is still in flight. A skipped index is consumed like any other and is
+     * logged. The test, the index and the registration of the cell as in flight are one
+     * step under one lock, so two scans on different centres cannot both take the same
+     * ground. The cell stays in flight until {@link #releaseCell} or a {@link #setSpawn} for
+     * it, which a scan in flight across a reload or a centre move keeps.
+     *
+     * <p>The counter is per centre, and survives a load as {@link #reserveNextIndex} says.
+     *
+     * @return the claimed cell
+     * @throws IllegalStateException while storage is failed, since the counter it would
+     *                               advance is the one that could not be read
+     */
+    SpiralCell reserveCell(int originX, int originZ, int cellSize);
+
+    /**
+     * Claims the next free cell of {@code centre}, as {@link #reserveCell(int, int, int)}
+     * does for its geometry, without making it the active centre.
+     *
+     * <p>For the second and later cells of a scan, which stay on the spiral its first cell
+     * came from even when the configured origin or cell size has changed since: the scan
+     * must not mix two spirals, and must not turn the spiral new scans start on back to the
+     * one the operator moved away from.
+     *
+     * @throws IllegalStateException while storage is failed
+     */
+    SpiralCell reserveCell(SpiralCentre centre);
+
+    /**
+     * Ends the in-flight registration of cell {@code (centre, index)}, reserved and then
+     * given up on or never written, so it no longer blocks cells of other centres. Its index
+     * is not handed out again.
+     */
+    void releaseCell(int centre, int index);
+
+    /**
+     * Atomically claims the next index of the active centre, as {@link #reserveCell} does
+     * for its geometry.
+     *
+     * <p>Every caller receives a distinct value. That holds across a load too, including one
+     * that recovers from a failure with a file older than the reservation: the scan that
+     * holds an index may still write it afterwards, so a load never restores a centre's
+     * counter below it. The one index a load hands out again is one whose {@link #setSpawn}
+     * was refused, since nothing can still write it.
+     *
      * @return the claimed index
+     * @throws IllegalStateException while storage is failed, since the counter it would
+     *                               advance is the one that could not be read
      */
     int reserveNextIndex();
 }

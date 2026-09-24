@@ -1,7 +1,6 @@
 package com.ninja6.spiralgenesis;
 
 import be.seeseemelk.mockbukkit.ServerMock;
-import be.seeseemelk.mockbukkit.entity.PlayerMock;
 import io.papermc.paper.entity.TeleportFlag;
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
@@ -9,6 +8,7 @@ import org.bukkit.Location;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.Plugin;
 
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -23,7 +23,7 @@ import java.util.function.Consumer;
  * resulting NullPointerException gets swallowed by the plugin's own error handling and the
  * test passes on a path that never finished.
  */
-public class InlinePlayerMock extends PlayerMock {
+public class InlinePlayerMock extends SessionPlayerMock {
 
     /**
      * Whether teleports succeed. Set false to reproduce a login plugin holding an
@@ -31,8 +31,35 @@ public class InlinePlayerMock extends PlayerMock {
      */
     public boolean teleportSucceeds = true;
 
+    /** The stored respawn point, as the server keeps it: unresolved, and null when unset. */
+    public Location respawnPoint;
+
     public InlinePlayerMock(ServerMock server, String name) {
         super(server, name);
+    }
+
+    /** The same player again, as a new entity: a rejoin keeps the UUID and nothing else. */
+    public InlinePlayerMock(ServerMock server, String name, UUID uuid) {
+        super(server, name, uuid);
+    }
+
+    /**
+     * MockBukkit has no {@code getPotentialBedLocation}, which the revalidation repair reads,
+     * so the point is kept here and both getters return it unchecked.
+     */
+    @Override
+    public void setRespawnLocation(Location location, boolean force) {
+        respawnPoint = location == null ? null : location.clone();
+    }
+
+    @Override
+    public Location getRespawnLocation() {
+        return respawnPoint == null ? null : respawnPoint.clone();
+    }
+
+    @Override
+    public Location getPotentialBedLocation() {
+        return getRespawnLocation();
     }
 
     @Override

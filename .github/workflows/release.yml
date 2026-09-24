@@ -250,13 +250,14 @@ jobs:
           # before this was added carry an empty dependency list. The ids are pinned
           # here explicitly so the mapping cannot be guessed wrong.
           #
-          # All three are `optional`, matching `softdepend`: the plugin loads and works
+          # All four are `optional`, matching `softdepend`: the plugin loads and works
           # with none of them installed. scripts/modrinth-dependencies.py holds the
           # name-to-id mapping and fails CI when this list and plugin.yml disagree.
           dependencies: |
             floodgate(optional){modrinth:bWrNNfkb}
             griefprevention(optional){modrinth:O4o4mKaq}
             authmereloaded(optional){modrinth:9js4IEHC}
+            multiverse-core(optional){modrinth:3wmN97b8}
           # The sources and javadoc jars are not built by `shadowJar`, but exclude them
           # explicitly so a future build change cannot quietly upload them as the plugin.
           files: |

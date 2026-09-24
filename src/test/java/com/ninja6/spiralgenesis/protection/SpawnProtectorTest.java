@@ -255,6 +255,38 @@ class SpawnProtectorTest {
     }
 
     @Test
+    @DisplayName("an overlap on a spawn allocation just chose is a warning, and the spawn is kept")
+    void anOverlapAfterAllocationIsAWarning() {
+        RecordingProvider provider = new RecordingProvider()
+                .answering(r -> ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED,
+                        "the square overlaps claim 42 (Steve)."));
+        CapturingHandler handler = new CapturingHandler();
+
+        ClaimResult result = protectorLogging(provider, handler)
+                .protectAllocated(owner, at(10, 10), "first allocation");
+
+        // Allocation avoided every claim it could see, so this one appeared between the scan
+        // and the placement, and the player is standing in it with nothing of their own.
+        assertEquals(ClaimOutcome.ALREADY_CLAIMED, result.outcome());
+        LogRecord line = handler.only();
+        assertEquals(Level.WARNING, line.getLevel(), line.getMessage());
+        assertTrue(line.getMessage().contains("claim 42"), line.getMessage());
+        assertTrue(line.getMessage().contains("appeared after allocation chose this plot"),
+                line.getMessage());
+    }
+
+    @Test
+    @DisplayName("every other outcome on an allocated spawn is logged as on any other path")
+    void otherOutcomesAfterAllocationAreUnchanged() {
+        RecordingProvider provider = new RecordingProvider();
+        CapturingHandler handler = new CapturingHandler();
+
+        protectorLogging(provider, handler).protectAllocated(owner, at(10, 10), "first allocation");
+
+        assertEquals(Level.INFO, handler.only().getLevel());
+    }
+
+    @Test
     @DisplayName("a square below the provider's minimum stays quiet, since startup already said so")
     void belowMinimumSizeStaysQuiet() {
         RecordingProvider provider = new RecordingProvider()

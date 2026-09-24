@@ -69,6 +69,22 @@ public class PlayerActionGateListener implements Listener {
     private final Set<UUID> unreached = ConcurrentHashMap.newKeySet();
 
     /**
+     * Players who have passed the gate but could not be allocated, because allocation is
+     * unavailable for a reason the plugin expects to clear.
+     *
+     * <p>Separate from {@link #pending} because the gate's job for them is done: they have
+     * already produced the action that proves nothing is holding them, so the timeout does
+     * not apply and an action does not end the hold. Every qualifying action still calls
+     * back in, which is what lets a world loaded after enable be picked up without a reload;
+     * the entry stays until the caller allocates them through {@link #forget}, or they quit.
+     */
+    private final Map<UUID, Held> held = new ConcurrentHashMap<>();
+
+    /** A held player, kept whole so they can be released without an action of their own. */
+    private record Held(Player player, String clientType) {
+    }
+
+    /**
      * @param onRelease invoked with the player and their client type once the gate opens;
      *                  must be idempotent, since a login-plugin adapter may have allocated
      *                  the same player already
@@ -107,8 +123,10 @@ public class PlayerActionGateListener implements Listener {
         }
     }
 
-    /** Whether this player is still waiting on the gate. Package-private for tests. */
-    boolean isPending(UUID uuid) {
+    /**
+     * Whether this player is still waiting on the gate, so their release will call back in.
+     */
+    public boolean isPending(UUID uuid) {
         return pending.containsKey(uuid);
     }
 
@@ -130,18 +148,97 @@ public class PlayerActionGateListener implements Listener {
     }
 
     /**
+     * Holds a player who passed the gate but could not be allocated yet.
+     *
+     * <p>Idempotent, and says whether this call started the hold, so the caller can report a
+     * hold once rather than on every action that retries it. No timeout is armed: a held
+     * player is waiting on the server, not on themselves, and allocating anyway is exactly
+     * what cannot be done.
+     *
+     * <p>Callers can reach this off the player's own thread - {@code sgen allocate} from the
+     * console, or a failed allocation completing wherever its future completed - so it can
+     * land after {@link #onQuit} has already cleared the player, or after the same player
+     * has rejoined as a new entity. Sessions are told apart with {@code isConnected()}, not
+     * {@code isOnline()}: the server answers {@code isOnline()} by looking the UUID up, so it
+     * still reads true while the quit event is firing and reads true again for the old
+     * entity once the player rejoins, where {@code isConnected()} belongs to the entity and
+     * turns false before the quit event fires.
+     *
+     * <p>Three rules follow. An existing entry whose entity is still connected is kept, so a
+     * late hold for an earlier session cannot evict the current one. An existing entry
+     * whose entity has disconnected belongs to an earlier session and is replaced, so a
+     * rejoin is held, reported and resumed as the entity that is actually connected. And the
+     * player is checked after the put rather than before it: a quit that ran first is seen
+     * here, and one that runs after the put removes the entry itself.
+     *
+     * @return true if this call started a hold for this session of the player
+     */
+    public boolean hold(Player player, String clientType) {
+        UUID uuid = player.getUniqueId();
+        pending.remove(uuid);
+        boolean[] started = {false};
+        held.compute(uuid, (key, previous) -> {
+            if (previous != null
+                    && (previous.player() == player || previous.player().isConnected())) {
+                return previous;
+            }
+            started[0] = true;
+            return new Held(player, clientType);
+        });
+        if (!player.isConnected()) {
+            dropIfSame(uuid, player);
+            return false;
+        }
+        return started[0];
+    }
+
+    /** Removes the hold for this UUID only if it still belongs to this player instance. */
+    private void dropIfSame(UUID uuid, Player player) {
+        held.computeIfPresent(uuid, (key, entry) -> entry.player() == player ? null : entry);
+    }
+
+    /** Whether this player is held until allocation is available. */
+    public boolean isHeld(UUID uuid) {
+        return held.containsKey(uuid);
+    }
+
+    /**
+     * Visits every held player, for a caller that has just made allocation available again.
+     *
+     * <p>Does not remove them. The caller allocates each one through the same idempotent
+     * path an action takes, which drops them from the hold on the way through, so a player
+     * whose allocation still cannot start stays held rather than being lost.
+     *
+     * <p>An entry whose entity has disconnected is dropped instead of visited. Scheduling on
+     * a retired entity never runs, so visiting it would do nothing but keep it held.
+     * {@code isConnected()} rather than {@code isOnline()}, for the reason {@link #hold}
+     * gives: an old entity reads online again as soon as its player rejoins.
+     */
+    public void forEachHeld(BiConsumer<Player, String> action) {
+        for (Held entry : held.values()) {
+            Player player = entry.player();
+            if (!player.isConnected()) {
+                dropIfSame(player.getUniqueId(), player);
+                continue;
+            }
+            action.accept(player, entry.clientType());
+        }
+    }
+
+    /**
      * Drops a player from the gate without allocating them.
      *
      * <p>For a caller that is allocating the player itself, so the gate does not later fire
-     * a second, redundant release for an action they take afterwards.
+     * a second, redundant release for an action they take afterwards. Ends a hold as well.
      */
     public void forget(UUID uuid) {
         pending.remove(uuid);
+        held.remove(uuid);
     }
 
-    /** Whether any player is being watched, for either reason. */
+    /** Whether any player is being watched, for any reason. */
     private boolean watching() {
-        return !pending.isEmpty() || !unreached.isEmpty();
+        return !pending.isEmpty() || !unreached.isEmpty() || !held.isEmpty();
     }
 
     /**
@@ -158,6 +255,14 @@ public class PlayerActionGateListener implements Listener {
         if (clientType != null) {
             plugin.getLogger().fine("Allocation gate opened for " + player.getName() + " (" + why + ").");
             onRelease.accept(player, clientType);
+        } else {
+            // A held player is retried, not released: the entry stays until the callback
+            // allocates them, so an action taken while allocation is still unavailable
+            // leaves them exactly where they were.
+            Held entry = held.get(uuid);
+            if (entry != null) {
+                onRelease.accept(player, entry.clientType());
+            }
         }
         // After the allocation branch, not instead of it, and the two are not exclusive.
         // A player allocated through this method is dropped from `pending` on the way, but
@@ -292,5 +397,6 @@ public class PlayerActionGateListener implements Listener {
         UUID uuid = event.getPlayer().getUniqueId();
         pending.remove(uuid);
         unreached.remove(uuid);
+        held.remove(uuid);
     }
 }

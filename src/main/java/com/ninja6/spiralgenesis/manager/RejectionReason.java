@@ -29,5 +29,14 @@ public enum RejectionReason {
     ROUGH,
 
     /** Lava or powder snow within the sampled surroundings. */
-    NEARBY_HAZARD
+    NEARBY_HAZARD,
+
+    /** Sits outside the world border, where a player takes damage until they die. */
+    OUTSIDE_BORDER,
+
+    /**
+     * The spawn claim square around it would overlap a claim that already exists, whoever
+     * owns it. Only checked where GriefPrevention is installed.
+     */
+    CLAIMED
 }

@@ -337,11 +337,11 @@ if [[ "$booted" -eq 1 ]]; then
             # Both wordings: teleportAsync completing false and completing exceptionally
             # are separate branches in the plugin and either one leaves the same hole.
             for ((i = 0; i < 30; i++)); do
-                grep -qE "Assigned $BOT_NAME to plot #[0-9]+ but the teleport (did not complete|failed)" \
+                grep -qE "Assigned $BOT_NAME to plot #[0-9]+,[0-9]+ but the teleport (did not complete|failed)" \
                     server.log 2>/dev/null && break
                 sleep 1
             done
-            if grep -qE "Assigned $BOT_NAME to plot #[0-9]+ but the teleport (did not complete|failed)" \
+            if grep -qE "Assigned $BOT_NAME to plot #[0-9]+,[0-9]+ but the teleport (did not complete|failed)" \
                 server.log 2>/dev/null; then
                 UNREACHED_RESULT=unreached
             else
@@ -391,14 +391,16 @@ if [[ "$booted" -eq 1 ]]; then
             # owner inside their own cell rather than back into the lava, or off their land.
             if [[ "$FREED_RESULT" == "allocated" ]]; then
                 PLOT_LINE="$(grep -o "Assigned & teleported $BOT_NAME to plot #.*" server.log | tail -1)"
-                PLOT_INDEX="$(sed -n 's/.*plot #\([0-9]*\).*/\1/p' <<<"$PLOT_LINE")"
+                # Named centre,index; data.yml records the index on its own.
+                PLOT_LABEL="$(sed -n 's/.*plot #\([0-9]*,[0-9]*\).*/\1/p' <<<"$PLOT_LINE")"
+                PLOT_INDEX="${PLOT_LABEL#*,}"
                 PLOT_COORDS="$(sed -n 's/.*at (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$PLOT_LINE")"
                 read -r PLOT_X PLOT_Y PLOT_Z <<<"$PLOT_COORDS"
 
                 if [[ -z "${PLOT_X:-}" ]]; then
                     echo "::warning::Could not parse the plot coordinates out of: $PLOT_LINE"
                 else
-                    echo "Griefing plot #$PLOT_INDEX at $PLOT_X $PLOT_Y $PLOT_Z..."
+                    echo "Griefing plot #$PLOT_LABEL at $PLOT_X $PLOT_Y $PLOT_Z..."
                     # The stored point is where the player's feet go, so this is a player
                     # standing in lava, not next to it.
                     echo "setblock $PLOT_X $PLOT_Y $PLOT_Z minecraft:lava" >&3 || true
@@ -406,12 +408,12 @@ if [[ "$booted" -eq 1 ]]; then
                     echo "kill $BOT_NAME" >&3 || true
 
                     for ((i = 0; i < BOT_REPAIR_SECONDS; i++)); do
-                        grep -q "Repaired plot #$PLOT_INDEX for $BOT_NAME" server.log 2>/dev/null && break
+                        grep -q "Repaired plot #$PLOT_LABEL for $BOT_NAME" server.log 2>/dev/null && break
                         grep -q "No safe point found among" server.log 2>/dev/null && break
                         sleep 1
                     done
 
-                    REPAIR_LINE="$(grep -o "Repaired plot #$PLOT_INDEX for $BOT_NAME.*" server.log | tail -1 || true)"
+                    REPAIR_LINE="$(grep -o "Repaired plot #$PLOT_LABEL for $BOT_NAME.*" server.log | tail -1 || true)"
                     if [[ -n "$REPAIR_LINE" ]]; then
                         REPAIR_RESULT=repaired
                     else
@@ -644,11 +646,11 @@ if [[ -n "$BOT_JAR" ]]; then
         grep -q 'BOT died' bot.log 2>/dev/null \
             || fail "$BOT_NAME never registered a death, so respawn was never exercised."
 
-        grep -q "Plot #$PLOT_INDEX is no longer safe for $BOT_NAME" server.log \
-            || fail "Respawn did not revalidate plot #$PLOT_INDEX after it was filled with lava."
+        grep -q "Plot #$PLOT_LABEL is no longer safe for $BOT_NAME" server.log \
+            || fail "Respawn did not revalidate plot #$PLOT_LABEL after it was filled with lava."
 
         if [[ "${REPAIR_RESULT:-}" != "repaired" ]]; then
-            fail "Plot #$PLOT_INDEX was never repaired within ${BOT_REPAIR_SECONDS}s of the death."
+            fail "Plot #$PLOT_LABEL was never repaired within ${BOT_REPAIR_SECONDS}s of the death."
         else
             echo "$REPAIR_LINE"
             NEW_COORDS="$(sed -n 's/.*same cell to (\(-\?[0-9]*\), \(-\?[0-9]*\), \(-\?[0-9]*\)).*/\1 \2 \3/p' <<<"$REPAIR_LINE")"
@@ -682,7 +684,7 @@ if [[ -n "$BOT_JAR" ]]; then
                 echo "::warning::data.yml not found at $DATA_FILE."
             fi
 
-            echo "Revalidation behaved: plot #$PLOT_INDEX repaired inside its own cell."
+            echo "Revalidation behaved: plot #$PLOT_LABEL repaired inside its own cell."
         fi
     fi
 fi

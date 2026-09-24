@@ -10,6 +10,10 @@ The plugin finds them somewhere sensible to stand: not in an ocean, not in a lav
 at the bottom of a ravine or on the edge of a cliff. It happens on first join, off the main
 thread, and the player keeps that spot as their respawn point for good.
 
+Installing it on a server people already play on moves none of them: a player who was there
+before the plugin keeps their position, bed and respawn anchor, and gets a plot only when an
+operator gives them one with `/sgen reassign`.
+
 ---
 
 ## Quick start
@@ -20,7 +24,12 @@ thread, and the player keeps that spot as their respawn point for good.
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
 3. Start the server. `plugins/SpiralGenesis/config.yml` is generated on first run.
 4. Stand where you want the spiral to begin and run `/sgen setcenter`.
-5. That's it. The next player to join gets plot #1.
+5. That's it. The next player to join gets plot #0,0, centred on that spot.
+
+Installing on a server people already play on? Read
+[Installing on an existing server](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#10-installing-on-an-existing-server)
+before the first start: a new player who joins before step 4 is placed around `(0, 0)`,
+and the origin should be chosen away from existing builds and claims.
 
 Optional: install **Floodgate** if you run Bedrock cross-play. If your Java players log in
 with a password, any login plugin works (AuthMe, nLogin, LibreLogin and the rest) with no
@@ -42,8 +51,9 @@ them. On an online-mode server, or a network authenticating at the proxy, set
 * **Skips bad ground.** Oceans, lava, ice, deep water, ravines, sinkholes, cliff edges and
   jagged peaks are all rejected. The plugin searches *inside* a plot for a good landing
   spot before giving up on it.
-* **Respawns at home.** Die without a bed or anchor and you return to your own plot, not to
-  world spawn.
+* **Respawns at home.** Die and you return to your own plot, not to world spawn - unless
+  a bed, a respawn anchor, a `/spawnpoint` set elsewhere or another plugin's respawn
+  location says otherwise.
 * **Cross-play aware.** Bedrock players (Geyser/Floodgate) are placed the moment they join.
   Java players behind any login plugin are held until they authenticate, so nobody burns a
   plot before proving who they are. This works without naming a login plugin, so it covers
@@ -120,13 +130,14 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 
 | Command | What it does |
 | :--- | :--- |
-| `/sgen setcenter` | Set the centre of the spiral to where you're standing. |
+| `/sgen setcenter` | Set the centre's X and Z to where you're standing. The world is always `origin.world`. |
 | `/sgen setcenter <x> <z>` | Set the centre to explicit coordinates. |
 | `/sgen setspawn <player>` | Move a player's spawn to your position. |
 | `/sgen setspawn <player> <x> <y> <z>` | Move a player's spawn to exact coordinates. |
 | `/sgen reassign <player>` | Give a player a fresh plot further along the spiral. |
-| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. The only command in the plugin that deletes a claim. |
+| `/sgen reassign <player> release` | The same, and release the claim around their old spawn. |
 | `/sgen protect` | Claim the spawn square for players allocated before spawn protection was switched on. Safe to run twice. |
+| `/sgen release-all confirm` | Release the spawn claim around every player's current plot, for uninstalling. Refused under `PLAYER_CLAIM`. See [Uninstalling](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/ADMIN_GUIDE.md#11-uninstalling). |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
 | `/sgen simulate <count>` | Dry-run 1-500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
@@ -143,8 +154,9 @@ and exactly which safety rule did the rejecting.
 
 ## How the spiral works
 
-Plot 1 lands on the centre. Each following plot moves one cell along an expanding clockwise
-square spiral, so plot *n* is always `cell-size` blocks from its neighbours:
+The first plot, #0,0, lands on the centre. Each following plot moves one cell along an
+expanding clockwise square spiral, so plot *n* is always `cell-size` blocks from its
+neighbours:
 
 ```
         (-1,-1) ───> (0,-1) ───> (1,-1) ───> (2,-1)
@@ -192,10 +204,14 @@ runtime runs unchanged.
 recorded plot are allocated one; everyone else keeps the spawn they already have until you
 `/sgen reassign` them (they must be online for that).
 
-**Players land in the wrong world.** If `origin.world` doesn't match a loaded world, the
-plugin logs a warning and falls back to the server's first world rather than refusing to
-allocate - so allocation looks healthy while everyone is placed somewhere unintended. Check
-the startup log for `Could not find target world`.
+**Nobody gets a plot and the log names `origin.world`.** The plugin binds only to the
+world `origin.world` names and never substitutes another. If that world is not loaded it
+logs `Configured world '...' (origin.world) is not loaded` at SEVERE, lists the worlds
+that are, and allocates nothing. New players are held where they joined and allocated as
+soon as the world is bound: correct `origin.world` and run `/sgen reload`. A world that a
+world manager loads after SpiralGenesis starts needs no reload; it is picked up the next
+time a player without a plot passes the gate or a held player acts. Multiverse-Core is
+always enabled first, so its worlds are already loaded when SpiralGenesis starts.
 
 **First join takes a few seconds.** The plugin is generating chunks to look for safe
 ground. Pregenerate the area (see the sizing table in the admin guide) and it disappears.

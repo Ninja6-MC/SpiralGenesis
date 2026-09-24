@@ -13,17 +13,21 @@ folia-supported: true
 # GriefPrevention registers exactly `GriefPrevention` - checked against the jar,
 # not assumed from the project name. It declares no folia-supported flag, so it
 # is simply absent on Folia and the provider resolves to the no-op there.
+# Multiverse-Core is here for load order only: it creates its worlds in its own
+# onEnable, so without this origin.world can still be missing when ours runs. The
+# name is the same in Multiverse-Core 4 and 5.
 softdepend:
   - floodgate
   - AuthMe
   - GriefPrevention
+  - Multiverse-Core
 
 commands:
   sgen:
     description: SpiralGenesis administrative commands
     aliases: [spiralgenesis]
     permission: spiralgenesis.admin
-    usage: /sgen <setcenter|setspawn|allocate|reassign|protect|tp|info|simulate|reload>
+    usage: /sgen <setcenter|setspawn|allocate|reassign|protect|release-all|tp|info|simulate|reload>
 
 permissions:
   spiralgenesis.admin:

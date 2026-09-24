@@ -5,8 +5,10 @@ import java.util.Locale;
 /**
  * How the spawn claim is registered with the protection plugin.
  *
- * <p>The two options differ in who pays for the ground, and that is the whole decision.
- * The claim covers the same blocks and the player can build on it either way.
+ * <p>The two options differ in who pays for the ground, and that is most of the decision.
+ * The claim covers the same blocks either way, the player can build on it either way, and
+ * either way they can invite somebody else onto it. What is left is that a claim they own
+ * outright is one they can also resize, subdivide and delete.
  */
 public enum ClaimOwnership {
 
@@ -16,9 +18,14 @@ public enum ClaimOwnership {
      * <p>The default, because it costs the player nothing. An admin claim consumes no
      * claim blocks, so it works on a server whose starting balance is zero - a common
      * configuration, and one where a player claim would fail for every player on the
-     * server until somebody noticed. The trade is that the player does not own the claim:
-     * they cannot resize it, delete it, or manage trust on it themselves, and it does not
-     * appear as theirs in the protection plugin's own listings.
+     * server until somebody noticed.
+     *
+     * <p>The player is granted both build and trust-management on it, so the plot is theirs
+     * to live in and theirs to share: they can invite a friend onto it and withdraw the
+     * invitation again without an operator. The trade is that they still do not own it.
+     * Resizing, subdividing and deleting it stay with the server, and it does not appear as
+     * theirs in the protection plugin's own listings. For some servers that is the point,
+     * since it also means the player cannot abandon or delete the protection by accident.
      */
     ADMIN_CLAIM,
 

@@ -12,11 +12,14 @@ import org.bukkit.World;
 import org.bukkit.entity.Player;
 import org.bukkit.plugin.Plugin;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -108,6 +111,17 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
      * still null when this class resolves it.
      */
     public static final String PLUGIN_NAME = "GriefPrevention";
+
+    /**
+     * What the player is granted on an administrative spawn claim, in grant order.
+     *
+     * <p>Two levels rather than one because GriefPrevention's hierarchy keeps them apart -
+     * the reasoning, read off the shipped 16.18.2 jar, is in {@link #trustOwner}. The order
+     * is the order they are written in, and it is only the order the log and the tests read
+     * them in; the two grants land in different structures and neither depends on the other.
+     */
+    private static final List<ClaimPermission> OWNER_PERMISSIONS =
+            List.of(ClaimPermission.Build, ClaimPermission.Manage);
 
     private final Logger logger;
     private final ClaimOwnership ownership;
@@ -446,6 +460,22 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
         // where it always was.
         Claim covering = gp.dataStore.getClaimAt(centre, true, null);
         if (covering != null) {
+            // The one repair path for a claim this plugin made before it granted Manage.
+            // Those claims are already here and nothing else ever revisits them: the outcome
+            // below is ALREADY_CLAIMED whatever happens, so without this a server upgrading
+            // from an earlier version would have every existing player still unable to
+            // /trust anyone onto their plot, with no way short of an operator doing it by
+            // hand. Guarded by the same matches() the release path uses, so a claim that is
+            // not recognisably ours is read and not written, and by the held check inside
+            // trustOwner, so a claim already carrying both levels is not written either.
+            boolean repaired = ownership == ClaimOwnership.ADMIN_CLAIM
+                    && matches(covering, centre, requestedSize, owner) == null
+                    && trustOwner(gp, covering, owner);
+            if (repaired) {
+                return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering)
+                        + " Its owner has been granted the permissions a spawn claim carries "
+                        + "but this one was missing, so they can now manage trust on it.");
+            }
             return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering));
         }
 
@@ -558,28 +588,102 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
      *
      * <p>{@code Build} rather than {@code Access} or {@code Inventory}, because
      * GriefPrevention's own hierarchy has {@code Build} grant both of those - the bed, the
-     * first chest and the ground are all covered by the one level. The identifier is the
-     * UUID's string form, which is exactly what {@code /trust} stores for a known player,
-     * and {@code setPermission} followed by {@code saveClaim} is exactly what it does with
-     * it. What {@code /trust} additionally does and this does not is fire
-     * {@code TrustChangedEvent} and honour a cancellation: the event reports a player
-     * granting trust on a claim they hold, and here the server is trusting a player onto a
-     * claim the server just made for them, which is not the same act.
+     * first chest and the ground are all covered by the one level.
+     *
+     * <p>{@code Manage} as well as {@code Build}, and that is two grants rather than one
+     * because the hierarchy does not connect them. Read off {@code ClaimPermission
+     * .isGrantedBy} in 16.18.2 rather than inferred from the enum's order: {@code Manage}
+     * sits outside the {@code Edit > Build > Inventory > Access} chain entirely, and the
+     * method special-cases it so that it is granted by nothing but {@code Manage} and
+     * {@code Edit} and itself grants nothing else. {@code Build} alone therefore covers the
+     * ground, the bed and the first chest and stops there, which is what left the player
+     * unable to {@code /trust} a friend onto the plot the plugin had just made for them.
+     *
+     * <p>{@code Manage} is exactly what {@code /trust} asks for:
+     * {@code Claim.allowGrantPermission} is a straight {@code checkPermission(player,
+     * Manage, null)}. On an administrative claim that check passes the
+     * {@code griefprevention.adminclaims} operator branch and the owner comparison - an
+     * admin claim has no owner to compare against, which is what makes it administrative -
+     * and lands on {@code hasExplicitPermission}, which the grant made here satisfies. So
+     * the player hands out and withdraws trust on their own spawn plot without being an
+     * operator.
+     *
+     * <p>The two grants do not collide, and that is GriefPrevention's storage rather than a
+     * lucky ordering: {@code setPermission} routes {@code Manage} into the separate
+     * {@code managers} list and every other level into the single-valued
+     * player-to-permission map, so neither call can overwrite the other. The one thing it
+     * will not do is deduplicate - {@code managers} is a plain list and a repeated grant
+     * appends a second copy of the same UUID - which is why the grant goes through
+     * {@link #missingOwnerPermissions} first.
+     *
+     * <p>What this still cannot hand over is resize, subdivide and delete. Those want
+     * {@code ClaimPermission.Edit}, which {@code setPermission} refuses outright with
+     * {@code IllegalArgumentException("Cannot add editors!")}: on an administrative claim
+     * that level is {@code griefprevention.adminclaims} and nothing in this plugin can
+     * delegate it. A server that wants the player to hold those too wants
+     * {@code protection.claim-as: PLAYER_CLAIM}, at the cost documented there.
+     *
+     * <p>The identifier is the UUID's string form, which is exactly what {@code /trust}
+     * stores for a known player, and {@code setPermission} followed by {@code saveClaim} is
+     * exactly what it does with it. What {@code /trust} additionally does and this does not
+     * is fire {@code TrustChangedEvent} and honour a cancellation: the event reports a
+     * player granting trust on a claim they hold, and here the server is trusting a player
+     * onto a claim the server just made for them, which is not the same act.
      *
      * <p>A failure here is not a failed claim: the square is already reserved and the
      * outcome is still {@link ClaimOutcome#CREATED}. It is worth a warning, though, because
      * a claim the player cannot build in is worse for them than no claim at all.
+     *
+     * @return {@code true} when something was granted and saved, {@code false} when the
+     *         claim already carried both levels or the attempt threw
      */
-    private void trustOwner(GriefPrevention gp, Claim claim, UUID owner) {
+    private boolean trustOwner(GriefPrevention gp, Claim claim, UUID owner) {
         try {
-            claim.setPermission(owner.toString(), ClaimPermission.Build);
+            List<ClaimPermission> missing =
+                    missingOwnerPermissions(level -> claim.hasExplicitPermission(owner, level));
+            if (missing.isEmpty()) {
+                return false;
+            }
+            for (ClaimPermission level : missing) {
+                claim.setPermission(owner.toString(), level);
+            }
             gp.dataStore.saveClaim(claim);
+            return true;
         } catch (Throwable t) {
             logger.log(Level.WARNING, "The spawn claim for " + owner + " was created as an admin "
                     + "claim, but they could not be trusted onto it, so they cannot build on their "
                     + "own spawn. Trust them manually, or set protection.claim-as to PLAYER_CLAIM.",
                     t);
+            return false;
         }
+    }
+
+    /**
+     * Which of {@link #OWNER_PERMISSIONS} the owner does not hold yet, in the order they are
+     * to be granted.
+     *
+     * <p>Split out of {@link #trustOwner} because it is the whole of the decision and it is
+     * the only part of it a test can reach - {@code Claim}'s constructors are
+     * package-private to GriefPrevention, so the claim is reduced here to the single
+     * question asked of it.
+     *
+     * <p>It earns its place twice over. A claim created before this plugin granted
+     * {@code Manage} carries {@code Build} alone, and a later pass over it should add the
+     * level it lacks rather than a second copy of the one it has. And a claim already
+     * carrying both should produce no write at all, because {@code setPermission} appends to
+     * {@code managers} without looking, so an unguarded repeat grows that list by one entry
+     * every time it runs.
+     *
+     * @param held answers whether the owner already holds a level on the claim
+     */
+    static List<ClaimPermission> missingOwnerPermissions(Predicate<ClaimPermission> held) {
+        List<ClaimPermission> missing = new ArrayList<>(OWNER_PERMISSIONS.size());
+        for (ClaimPermission level : OWNER_PERMISSIONS) {
+            if (!held.test(level)) {
+                missing.add(level);
+            }
+        }
+        return missing;
     }
 
     /**

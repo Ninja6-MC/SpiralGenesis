@@ -1,8 +1,13 @@
 package com.ninja6.spiralgenesis.commands;
 
 import com.ninja6.spiralgenesis.SpiralGenesisPlugin;
+import com.ninja6.spiralgenesis.manager.CellReserver;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
+import com.ninja6.spiralgenesis.config.ClaimOwnership;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
+import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
@@ -20,6 +25,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.logging.Level;
@@ -57,6 +63,19 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
      */
     private static final String RELEASE_FLAG = "release";
 
+    /**
+     * The word {@code release-all} needs before it deletes anything.
+     *
+     * <p>A trailing literal token, the same shape as {@link #RELEASE_FLAG} and for the same
+     * reason. Without it the command only says what it would do, so a subcommand typed or
+     * tab-completed by accident costs nothing.
+     */
+    private static final String CONFIRM_TOKEN = "confirm";
+
+    /** Subcommands that depend on stored records, and are refused while storage is failed. */
+    private static final Set<String> STORAGE_SUBCOMMANDS =
+            Set.of("setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info");
+
     private final SpiralGenesisPlugin plugin;
 
     public SpiralCommand(SpiralGenesisPlugin plugin) {
@@ -65,7 +84,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
-        if (!sender.hasPermission("spiralgenesis.admin")) {
+        if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
             sender.sendMessage(ChatColor.RED + "You do not have permission to execute SpiralGenesis commands.");
             return true;
         }
@@ -76,12 +95,22 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         String sub = args[0].toLowerCase();
+        // Every subcommand that reads or writes a player's record is refused while data.yml
+        // could not be read. The records are gone from memory, so these would report every
+        // player as unallocated, or record a spawn that nothing can save. Reload is how the
+        // state is cleared, and setcenter and simulate touch no record.
+        String storageNotice = plugin.storageFailureNotice();
+        if (storageNotice != null && STORAGE_SUBCOMMANDS.contains(sub)) {
+            sender.sendMessage(ChatColor.RED + storageNotice);
+            return true;
+        }
         switch (sub) {
             case "setcenter" -> handleSetCenter(sender, args);
             case "setspawn" -> handleSetSpawn(sender, args);
             case "allocate" -> handleAllocate(sender, args);
             case "reassign" -> handleReassign(sender, args);
             case "protect" -> handleProtect(sender, args);
+            case "release-all" -> handleReleaseAll(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
             case "simulate" -> handleSimulate(sender, args);
@@ -170,7 +199,14 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         StoredSpawn previous = plugin.getDataStorage().getRecord(target.getUniqueId());
         Location oldSpawn = previous == null ? null : previous.toLocation();
 
-        plugin.getDataStorage().setSpawn(target.getUniqueId(), loc, -1, 0, 0, target.getName(), "MANUAL");
+        // Gated on the write rather than on the storage check made before this command ran:
+        // a reload that fails to read data.yml can land in between, and a refused write
+        // records nothing for the respawn point and the claim below to agree with.
+        if (!plugin.getDataStorage().setSpawn(target.getUniqueId(), loc, -1, 0, 0, target.getName(), "MANUAL")) {
+            sender.sendMessage(ChatColor.RED + "Spawn for " + target.getName()
+                    + " was not changed: " + refusedWriteNotice());
+            return;
+        }
         target.setRespawnLocation(loc, true);
         sender.sendMessage(ChatColor.GREEN + "Set spawn for " + target.getName() + " to: " +
                 loc.getBlockX() + ", " + loc.getBlockY() + ", " + loc.getBlockZ());
@@ -226,6 +262,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         if (plugin.getDataStorage().hasSpawn(target.getUniqueId())) {
             sender.sendMessage(ChatColor.YELLOW + target.getName()
                     + " already has a plot; nothing to do. Use /sgen reassign to move them.");
+            return;
+        }
+
+        // Refused here as well as in allocation, so the operator is told why rather than
+        // seeing "Allocating" and nothing after it. This command is wired to login hooks, so
+        // it must not be the way round the skip; reassign is the deliberate one.
+        if (plugin.isPreInstallPlayer(target)) {
+            sender.sendMessage(ChatColor.YELLOW + target.getName() + " played on this server"
+                    + " before SpiralGenesis was installed, so they are not allocated a plot."
+                    + " Use /sgen reassign " + target.getName() + " to give them one.");
             return;
         }
 
@@ -291,21 +337,48 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
         sender.sendMessage(ChatColor.YELLOW + "Reallocating fresh safe spiral plot for " + target.getName() + "...");
 
-        spawnManager.allocateNextSafeSpawn(plugin.getDataStorage()::reserveNextIndex).thenAccept(res -> {
-            // Player state must be touched on the thread owning that player: the entity
-            // scheduler on Folia, the main thread on Paper.
-            target.getScheduler().run(plugin, task -> {
-                if (!target.isOnline()) {
-                    sender.sendMessage(ChatColor.RED + target.getName() + " went offline before reassignment completed.");
+        spawnManager.allocateNextSafeSpawn(CellReserver.of(plugin.getDataStorage())).thenAccept(outcome -> {
+            SpawnManager.LocationResult res;
+            switch (outcome) {
+                case SpawnManager.LocationResult found -> res = found;
+                case SpawnManager.BorderExhausted exhausted -> {
+                    // Not logged: the scan that gave up has already said so on the console,
+                    // once. The operator who asked is owed the reason, and nothing moved.
+                    reply(sender, () -> sender.sendMessage(ChatColor.RED + "Could not reassign "
+                            + target.getName() + "; they keep their current spawn. "
+                            + exhausted.message()));
                     return;
                 }
-                plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(), res.index(), res.gridU(), res.gridV(), target.getName(), "REASSIGN");
+            }
+            // Player state must be touched on the thread owning that player: the entity
+            // scheduler on Folia, the main thread on Paper.
+            ScheduledTask scheduled = target.getScheduler().run(plugin, task -> {
+                if (!target.isOnline()) {
+                    abandonReassignment(sender, target, res);
+                    return;
+                }
+                // A reload that failed to read data.yml can land during the scan, or between
+                // any check made here and the write, so the write's own answer gates
+                // everything after it. A refused write records nothing: the old plot is still
+                // the player's, so neither claim is touched, and nothing is moved.
+                if (!plugin.getDataStorage().setSpawn(target.getUniqueId(), res.location(),
+                        res.centre(), res.index(), res.gridU(), res.gridV(), target.getName(),
+                        "REASSIGN", false)) {
+                    plugin.getLogger().warning("Reassignment of " + target.getName() + " to plot "
+                            + res.plotLabel() + " by " + sender.getName() + " was not recorded, because"
+                            + " data.yml could not be read when it was written. Nothing was"
+                            + " changed.");
+                    reply(sender, () -> sender.sendMessage(ChatColor.RED + "Reassignment of "
+                            + target.getName() + " was abandoned and nothing was changed: "
+                            + refusedWriteNotice()));
+                    return;
+                }
 
                 // Both protection calls happen here, inside the task that owns the player -
                 // the main thread wherever a real provider exists - and not in the teleport
                 // callback below, which resolves on whichever thread finished the teleport
                 // and would breach the provider's threading contract.
-                plugin.getSpawnProtector().protect(target.getUniqueId(), res.location(),
+                plugin.getSpawnProtector().protectAllocated(target.getUniqueId(), res.location(),
                         "sgen reassign");
                 String staleNotice = plugin.getSpawnProtector().handOffStaleClaim(
                         target.getUniqueId(), target.getName(), oldSpawn, res.location(), release,
@@ -340,23 +413,41 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
                 target.setRespawnLocation(res.location(), true);
                 target.teleportAsync(res.location()).thenAccept(success -> {
-                    sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to index #" +
-                            res.index() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
+                    sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to plot " +
+                            res.plotLabel() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                     // Logged after the teleport resolves so the line reflects what actually
                     // happened; the spawn itself is already recorded either way.
                     plugin.getLogger().info(sender.getName() + " reassigned " + target.getName()
-                            + " to plot #" + res.index() + " (grid " + res.gridU() + ", " + res.gridV()
+                            + " to plot " + res.plotLabel() + " (grid " + res.gridU() + ", " + res.gridV()
                             + ") at (" + res.location().getBlockX() + ", " + res.location().getBlockY()
                             + ", " + res.location().getBlockZ() + ")"
                             + (Boolean.TRUE.equals(success) ? "" : " - spawn recorded, but the teleport did not complete"));
                 });
-            }, () -> sender.sendMessage(ChatColor.RED + target.getName()
-                    + " went offline before reassignment completed."));
+            }, () -> abandonReassignment(sender, target, res));
+            // A refused task runs neither callback, and the scheduler refuses only an entity
+            // already retired, which is the same departure.
+            if (scheduled == null) {
+                abandonReassignment(sender, target, res);
+            }
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Failed to reassign " + target.getName(), ex);
             sender.sendMessage(ChatColor.RED + "Reassignment failed; check the console for details.");
             return null;
         });
+    }
+
+    /**
+     * Drops a reassignment whose player left before it could be applied.
+     *
+     * <p>The plot it found is never written, so nothing else ends the cell's reservation:
+     * left in flight, it would keep other centres off that ground until a restart. Released
+     * here, and the player keeps the plot they had.
+     */
+    private void abandonReassignment(CommandSender sender, Player target,
+                                     SpawnManager.LocationResult res) {
+        plugin.getDataStorage().releaseCell(res.centre(), res.index());
+        reply(sender, () -> sender.sendMessage(ChatColor.RED + target.getName()
+                + " went offline before reassignment completed."));
     }
 
     /**
@@ -400,6 +491,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     + "running; wait for it to report before starting another.");
             return;
         }
+        if (plugin.isClaimReleaseRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn claim release is running; wait for "
+                    + "it to report before claiming anything.");
+            return;
+        }
 
         SpawnProtectionBackfill job = plugin.startProtectionBackfill(summary ->
                 reply(sender, () -> sender.sendMessage(ChatColor.GREEN + summary)));
@@ -416,6 +512,78 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(ChatColor.YELLOW + "Claiming spawn squares for " + job.total()
                     + " stored spawns, a few per tick. Spawns that are already claimed are "
                     + "skipped, so running this again is safe.");
+        }
+    }
+
+    /**
+     * Releases the spawn claim around every player's current plot, for uninstalling.
+     *
+     * <p>Every release goes through the same provider call as {@code reassign <player>
+     * release}, which deletes a claim only when it is exactly the square this plugin would
+     * create there for that player, so a claim anybody has resized or made by hand is left
+     * standing and listed in the console. No spawn record is changed.
+     *
+     * <p>Refused under {@code protection.claim-as: PLAYER_CLAIM}: there the spawn claim is
+     * the player's own, a claim they made themselves over the same square cannot be told
+     * apart from it, and they can abandon it themselves. Gated on the existing
+     * {@code spiralgenesis.admin}, like every other subcommand.
+     */
+    private void handleReleaseAll(CommandSender sender, String[] args) {
+        if (args.length > 2 || (args.length == 2 && !args[1].equalsIgnoreCase(CONFIRM_TOKEN))) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen release-all [" + CONFIRM_TOKEN + "]");
+            return;
+        }
+
+        SpawnProtector protector = plugin.getSpawnProtector();
+        if (!protector.isActive()) {
+            // Folia lands here too: GriefPrevention does not run there, so the provider is
+            // the no-op and there is no claim this plugin made to give back.
+            sender.sendMessage(ChatColor.RED + "Spawn protection is not active, so there are "
+                    + "no spawn claims to release. GriefPrevention has to be installed and "
+                    + "running, with protection.enabled set; it does not run on Folia.");
+            return;
+        }
+        if (plugin.getPluginConfig().getClaimOwnership() == ClaimOwnership.PLAYER_CLAIM) {
+            sender.sendMessage(ChatColor.RED + "protection.claim-as is PLAYER_CLAIM, so each "
+                    + "spawn claim belongs to its player and cannot be told apart from a claim "
+                    + "they made themselves over the same square. Nothing was released. Players "
+                    + "can remove their own with /abandonclaim.");
+            return;
+        }
+        if (plugin.isClaimReleaseRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn claim release is already running; "
+                    + "wait for it to report before starting another.");
+            return;
+        }
+        if (plugin.isProtectionBackfillRunning()) {
+            sender.sendMessage(ChatColor.YELLOW + "A spawn protection backfill is running; "
+                    + "wait for it to report before releasing anything.");
+            return;
+        }
+
+        if (args.length == 1) {
+            int stored = plugin.getDataStorage().getAllRecords().size();
+            sender.sendMessage(ChatColor.YELLOW + "This releases the spawn claim around the "
+                    + "current plot of each of " + stored + " stored players, where the claim is "
+                    + "still exactly the " + protector.size() + "x" + protector.size()
+                    + " square SpiralGenesis creates. Resized or hand-made claims, and claims "
+                    + "around plots players have left, are not touched. Spawn records are kept. "
+                    + "Run /sgen release-all " + CONFIRM_TOKEN + " to go ahead.");
+            return;
+        }
+
+        plugin.getLogger().info(sender.getName() + " started releasing every stored spawn claim.");
+        SpawnClaimRelease job = plugin.startClaimRelease(summary ->
+                reply(sender, () -> sender.sendMessage(ChatColor.GREEN + summary)));
+        if (job == null) {
+            sender.sendMessage(ChatColor.YELLOW + "The spawn claim release did not start; "
+                    + "another may already be running, or scheduling was refused. Check the "
+                    + "console.");
+            return;
+        }
+        if (job.total() > 0) {
+            sender.sendMessage(ChatColor.YELLOW + "Releasing spawn claims for " + job.total()
+                    + " stored spawns, a few per tick.");
         }
     }
 
@@ -548,8 +716,19 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Info: " + args[1] + " ===");
         sender.sendMessage(ChatColor.YELLOW + "UUID: " + ChatColor.WHITE + uuid);
         sender.sendMessage(ChatColor.YELLOW + "Client: " + ChatColor.WHITE + record.clientType());
-        sender.sendMessage(ChatColor.YELLOW + "Spiral Index: " + ChatColor.WHITE + record.index()
-                + ChatColor.GRAY + " (grid " + record.gridU() + ", " + record.gridV() + ")");
+        if (record.onSpiral()) {
+            SpiralCentre centre = plugin.getDataStorage().getCentre(record.centre());
+            sender.sendMessage(ChatColor.YELLOW + "Plot: " + ChatColor.WHITE + record.plotLabel()
+                    + ChatColor.GRAY + " (grid " + record.gridU() + ", " + record.gridV() + ")");
+            sender.sendMessage(ChatColor.YELLOW + "Spiral Centre: " + ChatColor.WHITE
+                    + record.centre() + ChatColor.GRAY + (centre == null
+                            ? " (origin not recorded)"
+                            : " (origin " + centre.originX() + ", " + centre.originZ()
+                                    + ", cell-size " + centre.cellSize() + ")"));
+        } else {
+            sender.sendMessage(ChatColor.YELLOW + "Plot: " + ChatColor.WHITE
+                    + "none; set by hand with setspawn");
+        }
         sender.sendMessage(ChatColor.YELLOW + "Spawn Location: " + ChatColor.WHITE +
                 (int) record.x() + ", " + (int) record.y() + ", " + (int) record.z()
                 + " (" + record.worldName() + ")");
@@ -594,6 +773,12 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             // sender may well be the console anyway.
             plugin.getLogger().info(report.toSummaryLine());
             plugin.getLogger().info(report.toRejectionLine());
+            if (report.failure() != null) {
+                // The run stopped at this sample; everything above covers the ones before it.
+                plugin.getLogger().log(Level.SEVERE, "Spawn simulation stopped at sample "
+                        + report.failedSample() + " of " + report.samples()
+                        + "; the report covers the samples before it", report.failure());
+            }
 
             reply(sender, () -> {
                 sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Simulation ===");
@@ -609,6 +794,16 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                         + report.minSurfaceY() + " to " + report.maxSurfaceY());
                 sender.sendMessage(ChatColor.YELLOW + "Rejections: " + ChatColor.WHITE
                         + (report.rejections().isEmpty() ? "none" : report.rejections().toString()));
+                sender.sendMessage(ChatColor.YELLOW + "Border exhausted: " + ChatColor.WHITE
+                        + (report.borderExhausted() == 0 ? "none" : String.valueOf(report.borderExhausted())
+                                + ChatColor.GRAY + " (first at sample " + report.firstExhaustedSample()
+                                + ", scanning from spiral index " + report.firstExhaustedIndex()
+                                + "; no plot there fit inside the world border)"));
+                if (report.failure() != null) {
+                    sender.sendMessage(ChatColor.RED + "Stopped at sample " + report.failedSample()
+                            + " of " + report.samples() + ": " + report.failureSummary()
+                            + ". Check the console for details.");
+                }
             });
         }).exceptionally(ex -> {
             plugin.getLogger().log(Level.SEVERE, "Spawn simulation failed", ex);
@@ -616,6 +811,20 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     ChatColor.RED + "Simulation failed; check the console for details."));
             return null;
         });
+    }
+
+    /**
+     * Why a record write was refused, for the operator who asked for it.
+     *
+     * <p>A write is only ever refused while storage is failed, but a reload that reads the
+     * file can clear that before this is read, and the operator is still owed an answer
+     * that says the command did nothing.
+     */
+    private String refusedWriteNotice() {
+        String notice = plugin.storageFailureNotice();
+        return notice != null ? notice
+                : "data.yml could not be read when the record was written. It has been read"
+                        + " since, so run the command again.";
     }
 
     /**
@@ -636,7 +845,27 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     private void handleReload(CommandSender sender) {
         plugin.reload();
-        sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
+        // Checked before the green line rather than after it, because storage that is still
+        // unreadable means the reload did not do the one thing the operator most likely ran
+        // it for. The error goes to the console at SEVERE again as well; the copy of the
+        // file is not made a second time.
+        String storageNotice = plugin.storageFailureNotice();
+        if (storageNotice != null) {
+            sender.sendMessage(ChatColor.RED + "Configuration reloaded, but storage is still"
+                    + " unavailable. " + storageNotice);
+        } else {
+            sender.sendMessage(ChatColor.GREEN + "SpiralGenesis configuration and storage reloaded successfully.");
+        }
+        // Reloading the file and binding a world are two outcomes, and only the first one
+        // succeeded here. Reported to the sender rather than to the console alone: the
+        // administrator correcting origin.world is the one person who needs to know the
+        // correction did not take, and a green "reloaded successfully" on its own reads as
+        // confirmation that it did.
+        if (plugin.getSpawnManager() == null) {
+            sender.sendMessage(ChatColor.RED + "No world is bound: origin.world is '"
+                    + plugin.getPluginConfig().getWorldName()
+                    + "', which is not a loaded world. Nothing will be allocated until it is.");
+        }
     }
 
     private void sendHelp(CommandSender sender) {
@@ -649,6 +878,8 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 + "' also removes the claim around their old spawn; without it the old claim is kept.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen protect" + ChatColor.WHITE
                 + " - Claims the spawn square for players allocated before protection was enabled.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen release-all [" + CONFIRM_TOKEN + "]" + ChatColor.WHITE
+                + " - Releases the spawn claim around every player's current plot, for uninstalling.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen simulate <count>" + ChatColor.WHITE + " - Measures allocation against live terrain.");
@@ -657,12 +888,12 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
-        if (!sender.hasPermission("spiralgenesis.admin")) {
+        if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
             return Collections.emptyList();
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "tp", "info", "simulate", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {
@@ -688,6 +919,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         if (args.length == 3 && "reassign".equals(args[0].toLowerCase())
                 && RELEASE_FLAG.startsWith(args[2].toLowerCase())) {
             return List.of(RELEASE_FLAG);
+        }
+
+        if (args.length == 2 && "release-all".equals(args[0].toLowerCase())
+                && CONFIRM_TOKEN.startsWith(args[1].toLowerCase())) {
+            return List.of(CONFIRM_TOKEN);
         }
 
         return Collections.emptyList();

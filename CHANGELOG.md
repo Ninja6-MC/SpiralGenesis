@@ -9,7 +9,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-alpha.2] - 2026-09-24
+
+**Upgrading from 1.0.0-alpha.1.** `data.yml` gains an `installed-at` key, a `centre` on
+each spiral plot's record as it is written (a point set with `/sgen setspawn` has none,
+and a record without one reads as centre 0), and an optional per-record `placement-owed`.
+Once a spiral centre has been placed it also gains a `centres` table and an
+`active-centre` key; until then neither is written. A file written by 1.0.0-alpha.1 loads
+as it is, with all of its spiral plots on centre 0 and `installed-at` taken from its
+earliest `assigned-date`, or the current time if it has none. Going back to 1.0.0-alpha.1
+still loads the file, but a plot that version records writes no `centre` key and reads
+back as centre 0, so one it allocates on another centre is not protected against later
+centres. A server whose `origin.world` does not name a loaded world stops allocating until
+the name is corrected, and the owner of a spawn claim created under `ADMIN_CLAIM` before
+this release cannot `/trust` anyone on it until `/sgen protect` repairs it. The entries
+below have the detail.
+
+### Added
+- **`/sgen release-all confirm` releases the spawn claims, for uninstalling.** Under the
+  default `protection.claim-as: ADMIN_CLAIM` players cannot abandon their spawn claims, so
+  removing the plugin meant a `/sgen reassign <player> release` for each of them, which
+  also moved them. The new command releases the claim around every stored player's
+  current plot, online or not, through the same check `reassign ... release` uses, a few
+  per tick, and reports how many were released, not ours, unclaimed or unreachable,
+  listing each claim left standing in the console. It keeps every spawn record, is refused
+  while protection is inactive (including on Folia) and under `PLAYER_CLAIM`, stops if a
+  reload switches either mid-run, and without `confirm` only says what it would do. The
+  admin guide has a new "Uninstalling" section covering it, the claims it cannot reach,
+  and why respawn points are left as they are.
+
 ### Changed
+- **`origin.world` is matched exactly, and no other world is ever substituted for it.**
+  Previously a name that matched no loaded world fell back to whichever world the server
+  loaded first, silently, so a typo carved spiral plots into a lobby or the Nether and
+  overwrote the respawn points of everyone it allocated. The plugin now binds nothing,
+  reports the configured name and the loaded worlds at SEVERE, and tells `/sgen reload`
+  what it bound. **On upgrade, a server whose `origin.world` does not name a loaded world
+  stops allocating entirely** rather than allocating into the wrong one; correct the name
+  and run `/sgen reload`. A world created after the plugin enables is still picked up on
+  the first join that needs it.
 - **The Hangar resource page is synced on release.** After the version upload succeeds,
   the release workflow writes `docs/modrinth-description.md`, without its generated
   comment, to the Hangar resource page, then reads the page back and fails the job unless
@@ -22,6 +60,284 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Registry tokens are scoped to the steps that use them.** `MODRINTH_TOKEN` and
   `HANGAR_API_TOKEN` are no longer in the release job's environment, so the build and the
   tests run without either.
+
+### Fixed
+- **A player can share their own spawn plot again.** Under the default
+  `protection.claim-as: ADMIN_CLAIM` the spawn claim granted the player
+  `ClaimPermission.Build` and nothing else, and `Build` does not imply `Manage` in
+  GriefPrevention's permission model - the two are separate grants and `isGrantedBy`
+  connects neither to the other. `/trust` checks for `Manage`, so the player could build on
+  the plot the plugin had made for them but could not invite anybody onto it, and because
+  administrative claims are administered through `griefprevention.adminclaims`, no
+  ordinary player could work around it. The claim now carries both grants. Resizing,
+  subdividing and deleting still belong to the server, because GriefPrevention refuses to
+  delegate `ClaimPermission.Edit` on an administrative claim at all; `PLAYER_CLAIM` remains
+  the setting for a plot the player owns outright. No default changed and no configuration
+  key was added or renamed. Claims created before this fix carry `Build` alone and are
+  repaired in place by `/sgen protect`, which under `ADMIN_CLAIM` now adds the missing
+  grant to a claim it still recognises as one of its own and says so in the skip reason.
+- **Allocation no longer places a player outside the world border.** Candidate scoring
+  checked terrain only, so once the spiral grew past the border a player was teleported
+  outside it and had their respawn point forced onto the same spot, leaving them taking
+  border damage with every respawn returning them to it. Candidates outside the border are
+  now rejected before their chunk is even requested, so a cell lying wholly outside is
+  skipped without generating terrain nobody may stand on, and the spiral advances. A scan
+  that spends `max-scan-attempts` without reaching inside the border fails with a console
+  message naming the border instead of placing the player: they stay where they are, and
+  the operator is told to widen the border or move `origin.x`/`origin.z`. Allocations after
+  that are refused on the spot, without claiming a spiral index, so a player rejoining
+  cannot walk the spiral outward a scan at a time with no plot to show for it. The refusal
+  is held against the border's position and size rather than as a latch, so widening or
+  moving the border resumes allocation with nothing for an operator to reset. The console
+  is told once, in plain text and without a stack trace: by the scan that gives up, not by
+  the refusals that follow or by other scans in flight that give up against the same
+  border. It is told again when a changed border is exhausted again, and when the border
+  is put back where a scan already gave up, by the first join refused on its return.
+  `/sgen reassign` that finds no plot tells the operator why in chat. `/sgen
+  simulate` is outside all of this in both directions: it scans from the origin rather than
+  from where the live spiral has reached, so it still runs and reports after a live
+  allocation has given up, and a run of its own can never refuse a joining player.
+- **A broken bed on Folia no longer costs a player their plot.** Sleeping in a bed replaces
+  the respawn point allocation set, and on Paper a later respawn with that bed gone is
+  sent back to the plot by `PlayerRespawnEvent`. Folia never fires that event for a death
+  respawn, so the player landed at world spawn instead. When the server finds the bed or
+  anchor gone during the respawn and clears the respawn point (`PlayerSetSpawnEvent` with
+  cause `PLAYER_RESPAWN`), the plot is now stored in its place and, on Folia, the player is
+  moved there as soon as they are placed, after the plot passes a fresh safety check;
+  with `doImmediateRespawn` as well. The respawn itself still lands at world spawn for
+  that one moment. When the point the server rejected is the plot itself, it is restored
+  as the respawn point all the same; a flooded or otherwise unsafe plot fails the safety
+  check, so the player stays at world spawn while the existing repair runs. A player left
+  with no respawn point at all has the plot restored when they die. A bed or anchor that
+  still works, and a point forced elsewhere such as by `/spawnpoint`, is left alone on
+  both platforms.
+- **Building on your own spawn point no longer moves it.** The death-time re-check failed
+  a plot whenever the block at the player's feet or head could not be walked through, so
+  a chest, crafting table, bed, door or slab placed on the landing spot made the plot
+  "unsafe", and the repair rewrote the stored spawn to another point in the cell, away
+  from what had been built. The re-check now fails a plot only for what can hurt a player:
+  a missing floor, or water, lava, powder snow, underwater plants, cactus, magma or a
+  campfire at the feet, head or underfoot. An obstruction is not one of them. Instead
+  the player respawns at the first clear position above the plot, on top of the build:
+  on Paper that position is the respawn location itself, since Paper 1.21.11 and later
+  place a respawning player exactly where they are sent, inside any block there; on
+  Folia, which declines such a point and places the player at world spawn, the player is
+  moved there once they are placed. The stored spawn is not changed by the lift. If the
+  column has no clear position below the build limit, or the first one sits on something
+  that hurts, the player is held at world spawn. On Paper the client still shows the
+  vanilla "no respawn block" message on such a death; the placement is unaffected. Ice
+  no longer fails the re-check either, so an ice floor or ice road through the spawn is
+  kept; allocation still rejects ice as a surface for new plots.
+- **A save that keeps failing no longer floods the console.** The background flush retries
+  `data.yml` every five seconds, and each failure logged a SEVERE stack trace, so a full
+  disk or read-only mount filled the console for as long as it lasted. The first failure
+  is still logged in full; the retries after it are logged at FINE, and one line is logged
+  when a save succeeds again, with the number of failed attempts. Removing a leftover
+  `data.yml.tmp` at startup and on `/sgen reload` now also waits for a save in progress
+  instead of deleting the scratch file out from under it.
+- **Repairing a plot no longer takes away a working bed or anchor.** When the death-time
+  re-check found a plot unsafe and the repair moved it within the cell, the player's
+  respawn point was forced onto the repaired point unconditionally, so a player with a bed,
+  a charged anchor or a point set elsewhere by `/spawnpoint` lost it the next time their
+  plot was repaired, and a player who had already respawned at their bed was teleported to
+  the plot. The repaired point is still recorded as the plot, but the respawn point now
+  follows it only when it is unset or is the old plot, matched on its block column in the
+  plot's world so a player lifted on top of a build still counts. Anything else is left
+  alone, and so is the player. Whether the bed still works is not checked: one that has
+  stopped working is handled when the server clears the point on respawn.
+- **A plot left outside a shrunken world border no longer passes its re-check.** The
+  re-check on death and respawn looked at terrain only, so after an operator drew the
+  border in past an existing plot, its owner kept respawning outside the border and
+  taking border damage. A stored point outside the border now fails the re-check, even
+  when its chunk is not loaded. The in-cell repair then looks for a point inside the
+  border in the same cell. When the whole cell is outside, it finds none and the player
+  respawns at the main world's spawn, which is the plot world's only while the plot world
+  is the main world; Folia always uses the overworld. On Folia, which accepts a forced
+  respawn point without looking at the border, the plot is taken off the player's respawn
+  point at death, before the respawn can use it; a bed, anchor or point set elsewhere is
+  left alone. No new spiral index is claimed and the stored plot is not rewritten. Once
+  the border takes the plot back in, the player's next death restores it as their respawn
+  point and re-checks it. Separately, on Folia a player whose repair finds no safe point
+  while they are still on the death screen now respawns at the overworld's spawn instead
+  of back on the unsafe plot.
+- **The respawn listener no longer keeps an entry for every player who has left.** Each
+  respawn that fired `PlayerRespawnEvent` without its point failing left the player in a
+  set that only their next death cleared, so one entry stayed behind per player who quit
+  before dying again. The entry is now dropped on quit.
+- **A step, slab or trapdoor under your spawn point no longer moves it.** The death-time
+  re-check treated anything a player can pass through as a missing floor, so a staircase
+  dug down from the spawn point or an open trapdoor over it failed, and the repair moved
+  the plot away from the build. The floor is now whatever has a collision shape under
+  the centre of the column: slabs, stairs, closed trapdoors, carpet, two or more layers of
+  snow and a closed fence gate all count, and air, fluids, plants, a single snow layer, a
+  door, an open trapdoor or an open fence gate do not. When the block under the spawn is
+  not a floor, a step of one block down onto a floor is accepted too. Anything deeper
+  still fails, so a spawn over a real drop is still repaired. The floor that is used,
+  and the block stepped into, get the same checks as before for water, lava, magma,
+  cactus and campfires. Allocation of new plots is unchanged.
+- **A player who cannot be allocated because no world is bound stays held until one is.**
+  The log said such a player would be retried once `origin.world` named a loaded world,
+  but the hold lasted one action: their next step retried while the world was still
+  missing, and afterwards nothing retried them for the rest of the session. They now stay
+  held across every action and are allocated as soon as a world is bound, by
+  `/sgen reload` or by a world that loads late, without having to act again. The hold is
+  logged once per player at WARNING instead of at SEVERE on every retry, and the missing
+  world is still reported at SEVERE once per configured name, now also when two threads
+  retry the bind together.
+- **An unreadable `data.yml` no longer restarts the spiral from index 0.** A file that
+  did not parse loaded as an empty one, indistinguishable from a fresh install, so the
+  counter reset and every returning player was allocated a new plot in cells other
+  players already held; the next save then wrote that empty state over the original.
+  Such a file is now reported once at SEVERE and copied aside as
+  `data.yml.broken-<timestamp>`, and storage is marked failed: nothing is saved by the
+  flush, `/sgen reload` or shutdown, nobody is allocated, and no respawn point is changed.
+  Joining players wait in the same hold as when no world is bound, operators with
+  `spiralgenesis.admin` are told in chat when they join, and the commands that read or
+  write player records are refused. A `/sgen reload` that reads the repaired file clears
+  the state and allocates everyone held; one that still cannot read it reports again
+  without copying the same file twice. A missing or empty file is still a fresh install.
+- **`/sgen simulate` no longer discards its report when a sample fails.** One sample
+  that found no plot inside the world border, or failed for any other reason, aborted the
+  whole run with "Simulation failed" and none of the samples already taken. A sample that
+  exhausts against the border is now counted and the run carries on: the report shows how
+  many samples exhausted, the first one that did and the spiral index it scanned from, and
+  the console summary line gains `exhausted=`. Any other failure ends the run at that
+  sample and the report for the samples before it is still delivered, with the failure
+  reported alongside it and logged in full.
+- **A respawn lifted above an open trapdoor or a door checks the drop beneath it.** When
+  a build over the spawn point lifts the player onto a block that leaves the column
+  centre clear, the player falls through it onto the build below, and only the cells at
+  the lifted position were checked. The fall is now followed to the first floor, and the
+  cells passed and that floor get the same checks for water, lava, magma, cactus and
+  campfires. A drop onto or through one of them, one that falls past the step below the
+  spawn point, or one longer than 3 blocks, the most a fall takes without damage, holds
+  the player at world spawn as a hazard on top of the build does.
+- **A held player's bind retry can no longer undo a `/sgen reload` that bound a world.**
+  On Folia the reload and a held player's retry run on different threads, and a retry
+  that had read the old `origin.world` could clear the manager just after the reload
+  bound the new one. The log then said the world was bound while held players stayed
+  held until they acted again. Binding is now serialised, so the reload's bind stands and
+  releases everyone held.
+- **A spawn that storage refused to record no longer moves anyone.** A `/sgen reload`
+  that failed to read `data.yml` could land after a first allocation or `/sgen reassign`
+  had checked storage and before it wrote the new spawn. The write was refused, but the
+  player was still teleported, their respawn point set and the new plot claimed, and
+  reassign's `release` removed the old claim, all for a record that did not exist.
+  Everything after the write is now gated on the write itself. A refused first
+  allocation leaves the player where they are, logs one line and holds them until
+  storage reads again, and the line says they left instead if they disconnected before
+  they could be held; a refused reassign changes nothing and tells the operator so. The
+  refused plot's index is recorded against nobody, so it is never shared.
+  `/sgen setspawn` and the in-cell repair are gated the same way.
+- **A scan in flight across a failed `/sgen reload` no longer shares its plot.** An
+  allocation reserves its spiral index when it starts and records the player when it
+  finishes. If a reload failed to read `data.yml` in between, and a later reload read back
+  a file saved before the reservation, the counter was restored below the scan's index:
+  the scan recorded its player there and the next player was handed the same plot. A
+  reservation made between a reload's save and its load could be handed out twice the
+  same way. A load now never restores the counter below an index already reserved or
+  recorded in this run, except one whose write was refused, which is handed out again.
+- **A player who disconnects during their terrain scan keeps the plot it finds.** The
+  scan reserves a spiral index when it starts, and a player who left before the result
+  was applied had it dropped: the index was recorded against nobody and they were
+  allocated a second one on their next join, leaving a permanent gap in the spiral. The
+  plot is now recorded against them anyway, and they are placed on it when they return -
+  respawn point, teleport and claim - without another index being reserved. Placement
+  happens when a new player would have been allocated: under the default `FIRST_ACTION`,
+  on their first uncancelled action after they join, and at once under `ON_JOIN` and for
+  Bedrock players. The same holds for a player who rejoined while the scan was still
+  running, once it finishes. A write refused because `data.yml` could not be read records
+  nothing, as for a connected player. The pending placement is saved with the record as
+  an optional `placement-owed` key in `data.yml`, so it survives a restart, and is
+  removed once the player is placed; a file written before the key existed loads with
+  nobody owed a placement.
+- **Installing on a server people already play on no longer moves them.** Every player
+  without a record was treated as new, so each one who had played there before the
+  install was allocated a plot on their next visit: their bed or respawn anchor was
+  overwritten and they were teleported away from their base, with the first of them landing
+  on whatever already stood around the spiral origin. A player who played on the server
+  before the plugin was installed is now left alone: no index is reserved, nothing is set,
+  moved or claimed, and they are not gated. The console says so once per player per run,
+  and `/sgen reassign` gives them a plot when an operator wants them to have one;
+  `/sgen allocate` refuses them and says the same. "Before" is the server's first-played
+  time against a new `installed-at` key in `data.yml`, not whether they have played
+  before, so a player who first joined after the install and left before being placed is
+  still allocated. A fresh install records the current time. A file written by an earlier
+  version records its earliest `assigned-date`, since that version allocated the first
+  player to join on their first action, or the current time if it assigns nobody. Every
+  record write rewrites its `assigned-date`, so that can be later than the real install,
+  which leans toward leaving players alone. A player with a record is never skipped, so
+  one owed a placement is still placed.
+- **A respawn point forced elsewhere is kept on Paper 1.21 and later.** The respawn
+  handler left a respawn alone only when Paper flagged it as a bed or anchor spawn. Paper
+  1.21.11 and later flag neither for a forced point, so a working point set by
+  `/spawnpoint`, EssentialsX or Multiverse was replaced with the plot for every player who
+  had one, and so was a location another plugin chose for the respawn, such as EssentialsX
+  respawn-at-home. Paper 1.20.4 flags every working point as a bed, the plot included, so
+  the respawn-time re-check of the plot never ran there. The handler now acts only on a
+  respawn headed for the plot's block column, or one whose point failed and fell back to
+  world spawn, and leaves a working bed, anchor or forced point and a location another
+  plugin set alone on every version.
+- **The pre-install log line warns that `/sgen reassign` replaces a bed.** The line that
+  recommends reassigning a player from before the install now says that it replaces
+  their bed or respawn anchor with the new plot, as `/sgen setspawn` also does. The admin
+  guide has a new section on installing onto a server people already play on: writing
+  `config.yml` before the first start, choosing an origin away from existing builds and
+  claims, and what happens to the players already there. The README quick start said the
+  first player gets plot #1; the first plot is #0,0.
+- **SpiralGenesis loads after Multiverse-Core.** Multiverse-Core creates its worlds in its
+  own startup, and nothing ordered the two, so an `origin.world` that Multiverse loads could
+  still be missing when SpiralGenesis bound it: the log said no spawn would be allocated,
+  and the world was only bound on a later join. Multiverse-Core is now a soft dependency,
+  and an optional dependency on Hangar and Modrinth. The error for a world that is not
+  loaded now says allocation starts once it is, and that a wrong name needs correcting and
+  `/sgen reload`, rather than that no spawn will be allocated. The README's respawn line
+  and the admin guide's respawn section now name every respawn that outranks the plot, a
+  point forced elsewhere and a location another plugin sets included, and the guide and
+  the respawn re-check no longer say the plugin has no claim or protection system.
+- **Moving the spiral centre or changing `cell-size` no longer puts new plots on top of
+  existing ones.** A plot's cell was the configured origin plus its index's grid position
+  times the configured cell size, with one running index, so after `/sgen setcenter` or an
+  edit to `origin` or `cell-size` the next indices landed in cells other players already
+  held. Each geometry is now its own spiral centre, recorded in a `centres` table in
+  `data.yml` with its own counter, and every record carries the `centre` its index is on.
+  Plots are named `#centre,index` in commands and logs, and `/sgen info` shows the centre's
+  origin and cell size. Before a cell is used it is tested against the whole cell of every
+  plot on another centre, every point set with `/sgen setspawn`, and every cell another
+  scan is still searching; one that overlaps is skipped and logged, and does not count
+  toward `max-scan-attempts`. Returning to an earlier geometry resumes its centre's
+  counter. A file written by an earlier version loads with all of its plots on centre 0,
+  recorded at the `origin` and `cell-size` configured when it is first loaded; a centre
+  moved under an earlier alpha is not detected. `current-spiral-index` remains the active
+  centre's counter, so an earlier version still loads the file. A plot that earlier
+  version records writes no `centre` key and reads back as centre 0, so one it allocates
+  on another centre is not protected against later centres. With an even `cell-size`
+  the in-cell search no longer reaches the first column of the neighbouring cell, so every
+  candidate stays inside its own cell.
+- **Repairing a plot searches the plot's own cell.** The in-cell repair rebuilt the cell
+  from the configured `origin` and `cell-size`, so after `/sgen setcenter` or a reload
+  with a new origin or cell size it searched the cell at the same index of the new spiral,
+  often another player's, and a point set with `/sgen setspawn` had the origin cell
+  searched for it. A repair now searches the record's index on its own centre, at the
+  origin and cell size recorded for that centre, and reserves nothing. A `setspawn` point
+  that fails its re-check is not searched around: it is kept, and the player is sent to
+  world spawn with a warning. A scan also keeps the centre its first cell was on for every
+  later cell, so a `setcenter` during a scan applies from the next scan, and a scan that
+  gives up against the world border records the spiral it walked rather than the one
+  configured when it gave up, so the moved spiral is still scanned on the next join.
+- **Allocation no longer places new players inside existing claims.** Candidates were
+  judged on terrain alone, so on a populated world a new player could be placed, and
+  their respawn point forced, inside somebody's base; the spawn claim was then refused and
+  they lived there without build rights. Wherever GriefPrevention is installed, whether
+  or not `protection.enabled` is on, a candidate whose `protection.size` square would
+  overlap any existing claim is now rejected as `CLAIMED`, before its chunk is loaded:
+  players' own claims, administrative claims and spawn claims left behind by
+  `/sgen reassign` without `release` alike. A cell whose every candidate is claimed is
+  skipped and logged, and does not count toward `max-scan-attempts`. Repairs and
+  `/sgen setspawn` do not check, and there is no check without GriefPrevention or on
+  Folia. Unclaimed builds are not detected. A spawn claim refused for an overlap on first
+  allocation or `/sgen reassign`, which now means the claim appeared after the plot was
+  chosen, is logged at warning; the player still keeps the plot.
 
 ## [1.0.0-alpha.1] - 2026-08-27
 

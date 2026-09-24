@@ -4,6 +4,11 @@ import be.seeseemelk.mockbukkit.MockBukkit;
 import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.WorldMock;
 import com.ninja6.spiralgenesis.config.PluginConfig;
+import com.ninja6.spiralgenesis.math.CellArea;
+import com.ninja6.spiralgenesis.math.SpiralCell;
+import com.ninja6.spiralgenesis.math.SpiralCentre;
+import com.ninja6.spiralgenesis.math.SpiralMath;
+import com.ninja6.spiralgenesis.protection.ClaimLookup;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -11,22 +16,38 @@ import org.bukkit.block.Biome;
 import org.bukkit.block.Block;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.java.JavaPlugin;
+import org.bukkit.util.BoundingBox;
+import org.bukkit.util.VoxelShape;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EnumSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.StringReader;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.IntSupplier;
+import java.util.function.Supplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
+import java.util.stream.Stream;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,12 +68,15 @@ class SpawnManagerTest {
 
     /** Default surface height of a MockBukkit world. */
     private static final int MOCK_SURFACE_Y = 4;
-    private static final int CELL = 64;
+    /** Odd, so two rings of candidates at {@link #STRIDE} fit inside a cell; see makeCellOcean. */
+    private static final int CELL = 65;
     private static final int STRIDE = 16;
 
     private ServerMock server;
     private JavaPlugin plugin;
     private WorldMock world;
+    /** Vanilla collision for what a test places; see {@link BlockShapes}. */
+    private final BlockShapes shapes = new BlockShapes();
 
     @BeforeEach
     void setUp() {
@@ -75,19 +99,46 @@ class SpawnManagerTest {
      * {@code whenComplete}, turning any bug into an unexplained timeout.
      */
     private static class InlineSpawnManager extends SpawnManager {
-        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config) {
-            super(plugin, world, config);
+
+        /** Counts what a real server would have generated, for the tests that care. */
+        private final AtomicInteger chunkLoads = new AtomicInteger();
+
+        /** Collision for each block, since MockBukkit models none. */
+        private final BlockShapes shapes;
+
+        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config,
+                           BlockShapes shapes) {
+            this(plugin, world, config, shapes, ClaimLookup.NONE);
+        }
+
+        InlineSpawnManager(JavaPlugin plugin, World world, PluginConfig config,
+                           BlockShapes shapes, ClaimLookup claims) {
+            super(plugin, world, config, claims);
+            this.shapes = shapes;
         }
 
         @Override
         CompletableFuture<?> loadChunk(int chunkX, int chunkZ) {
+            chunkLoads.incrementAndGet();
             return CompletableFuture.completedFuture(null);
         }
 
-        /** MockBukkit's {@code Block.isPassable()} throws, so judge by material instead. */
+        /** MockBukkit's {@code Block.getCollisionShape()} throws, so answer from the table. */
+        @Override
+        VoxelShape collisionShape(Block block) {
+            return shapes.shapeOf(block);
+        }
+
+        /** MockBukkit's {@code Block.isPassable()} throws, so answer from the table. */
         @Override
         boolean isPassable(Block block) {
-            return block.getType().isAir();
+            return shapes.isPassable(block);
+        }
+
+        /** MockBukkit does not answer {@code isBuildable()} from block state either. */
+        @Override
+        boolean admitsRespawn(Block block) {
+            return shapes.admitsRespawn(block);
         }
 
         @Override
@@ -123,8 +174,8 @@ class SpawnManagerTest {
         private final int blockedZ;
 
         BlockedHeadroomManager(JavaPlugin plugin, World world, PluginConfig config,
-                               int blockedX, int blockedZ) {
-            super(plugin, world, config);
+                               BlockShapes shapes, int blockedX, int blockedZ) {
+            super(plugin, world, config, shapes);
             this.blockedX = blockedX;
             this.blockedZ = blockedZ;
         }
@@ -162,12 +213,13 @@ class SpawnManagerTest {
     }
 
     private SpawnManager managerWith(PluginConfig config) {
-        return new InlineSpawnManager(plugin, world, config);
+        return new InlineSpawnManager(plugin, world, config, shapes);
     }
 
     private SpawnManager.LocationResult allocate(SpawnManager manager, IntSupplier supplier)
             throws InterruptedException, ExecutionException, TimeoutException {
-        return manager.allocateNextSafeSpawn(supplier).get(10, TimeUnit.SECONDS);
+        return assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(supplier).get(10, TimeUnit.SECONDS));
     }
 
     private static IntSupplier sequentialIndices(AtomicInteger counter) {
@@ -178,7 +230,7 @@ class SpawnManagerTest {
      * Marks every candidate column of a cell as ocean, so the whole cell is unusable
      * rather than just its centre.
      *
-     * <p>With {@code CELL}=64 and {@code STRIDE}=16 the in-cell search reaches two rings
+     * <p>With {@code CELL}=65 and {@code STRIDE}=16 the in-cell search reaches two rings
      * out, so the candidates are exactly the 5x5 stride grid around the cell centre.
      */
     private void makeCellOcean(int gridU, int gridV) {
@@ -247,6 +299,36 @@ class SpawnManagerTest {
     }
 
     @Test
+    @DisplayName("A scan hands back the cells it gave up on and keeps the one it settled on")
+    void rejectedCellsAreReleased() throws Exception {
+        makeCellOcean(0, 0);
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+        List<SpiralCell> released = new CopyOnWriteArrayList<>();
+        CellReserver cells = new CellReserver() {
+            @Override
+            public SpiralCell reserve(int originX, int originZ, int cellSize) {
+                return new SpiralCentre(3, originX, originZ, cellSize)
+                        .cell(indices.getAndIncrement());
+            }
+
+            @Override
+            public void release(SpiralCell cell) {
+                released.add(cell);
+            }
+        };
+
+        SpawnManager.LocationResult res = assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(cells).get(10, TimeUnit.SECONDS));
+
+        assertEquals(1, res.index());
+        assertEquals(3, res.centre(), "the result names the centre its cell was reserved on");
+        assertEquals("#3,1", res.plotLabel());
+        assertEquals(List.of(new SpiralCentre(3, 0, 0, CELL).cell(0)), released,
+                "only the ocean cell is handed back");
+    }
+
+    @Test
     @DisplayName("A water block on the surface is rejected even outside an ocean biome")
     void inlandWaterIsRejected() throws Exception {
         // Biome stays PLAINS: this is the gate the biome check alone would miss.
@@ -257,6 +339,21 @@ class SpawnManagerTest {
         Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
 
         assertNotEquals(0.5, loc.getX(), "the water column itself must not be chosen");
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"ICE", "PACKED_ICE", "BLUE_ICE"})
+    @DisplayName("An ice surface is rejected for a new plot")
+    void iceSurfaceIsRejected(Material ice) throws Exception {
+        // Re-checking a stored plot accepts ice, so this is the only rule that still keys
+        // on it: allocation wants dry land, and a frozen lake is not that.
+        makeHazard(0, 0, ice);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
+
+        assertNotEquals(0.5, loc.getX(), "the ice column itself must not be chosen");
     }
 
     @Test
@@ -288,7 +385,7 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A column without headroom is rejected even though its surface is safe")
     void missingHeadroomIsRejected() throws Exception {
-        SpawnManager manager = new BlockedHeadroomManager(plugin, world, config(0, 8), 0, 0);
+        SpawnManager manager = new BlockedHeadroomManager(plugin, world, config(0, 8), shapes, 0, 0);
 
         Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
 
@@ -485,7 +582,7 @@ class SpawnManagerTest {
         // asserting nothing, so the contract is pinned from this side.
         assertTrue(line.startsWith("SIMULATE samples="), line);
         for (String key : new String[]{"samples=", "completed=", "indices=", "ratio=",
-                "candidates=", "fallbacks=", "minY=", "maxY="}) {
+                "candidates=", "fallbacks=", "minY=", "maxY=", "exhausted="}) {
             assertTrue(line.contains(" " + key) || line.startsWith(key),
                     "summary line lost the '" + key + "' field that CI parses: " + line);
         }
@@ -591,7 +688,25 @@ class SpawnManagerTest {
     @Test
     @DisplayName("A plot whose ground was dug out no longer verifies")
     void hollowedPlotIsUnsafe() {
+        // Two deep: one block down is a step, and still has a floor.
         world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        world.getBlockAt(0, MOCK_SURFACE_Y - 1, 0).setType(Material.AIR);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A floor that hurts is caught even when the column itself is clear")
+    void hazardousGroundIsUnsafe(Material floor) {
+        // Each collides over the column centre, so it is the floor on a real server as well
+        // and it is the material rule that has to fire. Water or lava replacing the floor
+        // has no collision and reads as a step down; floodedStepIsUnsafe covers that path.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
 
         SpawnManager manager = managerWith(config(0, 8));
 
@@ -600,16 +715,604 @@ class SpawnManagerTest {
     }
 
     @Test
-    @DisplayName("A hazard underfoot is caught even when the column itself is clear")
-    void hazardousGroundIsUnsafe() {
-        // Solid, so the passability checks all pass; it is the material rule that has to
-        // fire here, exactly as it did when the point was first scored.
-        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.PACKED_ICE);
+    @DisplayName("Water at head height still fails the re-check")
+    void floodedHeadIsUnsafe() {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.WATER);
 
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
                 manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    /*
+     * What a player plausibly builds on the point they were given. Doors, trapdoors, slabs
+     * and beds are here on purpose: Block.isPassable() reports them impassable although a
+     * player stands on or walks through them, which is what the old check keyed on. The
+     * fixture gives each its vanilla collision (BlockShapes), so that is what is tested.
+     */
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at their feet does not fail the re-check")
+    void ownBlockAtFeetKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "CHEST", "CRAFTING_TABLE", "WHITE_BED", "OAK_DOOR", "OAK_TRAPDOOR", "OAK_SLAB",
+            "COBBLESTONE", "PACKED_ICE"})
+    @DisplayName("A block the owner placed at head height does not fail the re-check")
+    void ownBlockAtHeadKeepsThePlot(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A block that hurts, placed at the feet, fails the re-check")
+    void harmfulBlockAtFeetIsUnsafe(Material placed) {
+        // Each is solid, so a respawn lifts the player onto it: a griefer's way to hurt
+        // the owner on every death if the re-check let it through.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A block that hurts, placed at head height, fails the re-check")
+    void harmfulBlockAtHeadIsUnsafe(Material placed) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(placed);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("Pointed dripstone on the spawn does not fail the re-check")
+    void pointedDripstoneKeepsThePlot() {
+        // It only hurts through a fall, and a respawn does not drop the player onto it.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.POINTED_DRIPSTONE);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"PACKED_ICE", "BLUE_ICE", "ICE"})
+    @DisplayName("An ice floor laid over the spawn does not fail the re-check")
+    void iceFloorKeepsThePlot(Material floor) {
+        // Allocation rejects ice as a surface because it wants dry land. Nothing about it
+        // hurts a player standing on it, so a floor the owner lays later is no reason to
+        // move them.
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(floor);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE,
+                manager.verifyStoredSpawn(originCentreSpawn()));
+    }
+
+    @Test
+    @DisplayName("The asynchronous re-check the death repair uses keeps a built-over plot")
+    void asyncRevalidateKeepsABuiltOverPlot() throws Exception {
+        // repairSpawn rewrites the stored point exactly when this answers false, so this is
+        // the answer that decides whether the owner is moved off their build.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.OAK_SLAB);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y, 0).setType(Material.AIR);
+        world.getBlockAt(0, MOCK_SURFACE_Y - 1, 0).setType(Material.AIR);
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
+                "a missing floor must still fail under a built-over point");
+    }
+
+    // --- What counts as a floor on re-check ------------------------------------------
+
+    /*
+     * The stored spawn is at MOCK_SURFACE_Y + 1, so its floor is at MOCK_SURFACE_Y, the
+     * step-down floor one below that, and the mock world is solid underneath down to y=0.
+     */
+
+    private Block atFloor() {
+        return world.getBlockAt(0, MOCK_SURFACE_Y, 0);
+    }
+
+    private Block belowFloor(int depth) {
+        return world.getBlockAt(0, MOCK_SURFACE_Y - depth, 0);
+    }
+
+    private SpawnManager.SpawnVerdict verdictOnOrigin() {
+        Location stored = originCentreSpawn();
+        return managerWith(config(0, 8)).verifyStoredSpawn(stored);
+    }
+
+    static Stream<Arguments> standableFloors() {
+        return Stream.of(
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.TOP_SLAB),
+                Arguments.of(Material.OAK_STAIRS, BlockShapes.STAIRS),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_CLOSED_BOTTOM),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_CLOSED_TOP),
+                Arguments.of(Material.WHITE_CARPET, BlockShapes.CARPET),
+                Arguments.of(Material.SNOW, BlockShapes.snow(2)),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8)),
+                Arguments.of(Material.OAK_FENCE_GATE, BlockShapes.FENCE_GATE_CLOSED));
+    }
+
+    /** Nothing collides at the centre of these, whatever they have at the edges. */
+    static Stream<Arguments> clearAtTheCentre() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY),
+                Arguments.of(Material.POPPY, BlockShapes.EMPTY),
+                Arguments.of(Material.SNOW, BlockShapes.snow(1)),
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_CLOSED),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_OPEN),
+                Arguments.of(Material.OAK_FENCE_GATE, BlockShapes.FENCE_GATE_OPEN));
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("standableFloors")
+    @DisplayName("A floor that is not a full block but has something at the centre keeps the plot")
+    void partialFloorKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        // Nothing beneath it, so it is this block that has to count as the floor and not a
+        // step down to the one below.
+        shapes.place(atFloor(), type, shape);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("clearAtTheCentre")
+    @DisplayName("A floor with nothing at the centre fails when there is no step below it")
+    void floorClearAtTheCentreOverAHoleIsUnsafe(Material type, BlockShapes.Shape shape) {
+        shapes.place(atFloor(), type, shape);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("clearAtTheCentre")
+    @DisplayName("A one-block step down to a floor keeps the plot")
+    void stepDownKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        // A staircase dug down from the spawn point, or an open trapdoor over a one-deep
+        // hole: the ground under it is the mock world's own.
+        shapes.place(atFloor(), type, shape);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0} as {1}")
+    @MethodSource("standableFloors")
+    @DisplayName("A step down onto a floor that is not a full block keeps the plot")
+    void stepDownOntoAPartialFloorKeepsThePlot(Material type, BlockShapes.Shape shape) {
+        atFloor().setType(Material.AIR);
+        shapes.place(belowFloor(1), type, shape);
+        belowFloor(2).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A hole two blocks deep fails even with ground at its bottom")
+    void twoDeepHoleIsUnsafe() {
+        atFloor().setType(Material.AIR);
+        belowFloor(1).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("An open trapdoor over a hole two blocks deep fails")
+    void openTrapdoorOverATwoDeepHoleIsUnsafe() {
+        shapes.place(atFloor(), Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        belowFloor(1).setType(Material.AIR);
+        belowFloor(2).setType(Material.AIR);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A spawn over a real drop fails")
+    void realDropIsUnsafe() {
+        for (int y = MOCK_SURFACE_Y; y > 0; y--) {
+            world.getBlockAt(0, y, 0).setType(Material.AIR);
+        }
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {
+            "MAGMA_BLOCK", "CACTUS", "CAMPFIRE", "SOUL_CAMPFIRE"})
+    @DisplayName("A step down onto a floor that hurts fails")
+    void stepDownOntoAHazardIsUnsafe(Material floor) {
+        atFloor().setType(Material.AIR);
+        belowFloor(1).setType(floor);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("An open trapdoor over a floor that hurts fails")
+    void openTrapdoorOverAHazardIsUnsafe() {
+        shapes.place(atFloor(), Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        belowFloor(1).setType(Material.MAGMA_BLOCK);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @EnumSource(value = Material.class, names = {"WATER", "LAVA", "POWDER_SNOW"})
+    @DisplayName("A step down the feet would drop into something that hurts fails")
+    void floodedStepIsUnsafe(Material fill) {
+        // No collision, so each reads as a step down onto the ground below it; the
+        // feet-level hazard check on the step cell is what has to fire.
+        atFloor().setType(fill);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A step-down plot outside the border still fails")
+    void stepDownOutsideTheBorderIsUnsafe() {
+        atFloor().setType(Material.AIR);
+        borderAround(CELL, 0, 20);
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, verdictOnOrigin());
+    }
+
+    @Test
+    @DisplayName("A step-down plot is its own standing point")
+    void stepDownPlotStandsWhereStored() throws Exception {
+        // The lift only moves a player out of what they collide with; a step leaves the
+        // feet and head clear, so the player stands at the point and drops the one block.
+        atFloor().setType(Material.AIR);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        assertEquals(stored, manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("The lift lands on an open trapdoor rather than refusing the plot")
+    void liftStopsAboveAnOpenTrapdoor() throws Exception {
+        // Vanilla calls an open trapdoor solid, so the first clear position is above it.
+        // The floor rule is not applied there: the player drops through onto the chest,
+        // part of the owner's build and above the accepted floor, which beats world spawn.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0),
+                Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
+    }
+
+    /**
+     * A build over the stored point: two chests from the feet up, then {@code floor}, an
+     * air gap, and {@code opening} over it. The lift ends on top of the opening and the
+     * player falls through it onto {@code floor}, or into {@code gap} when that is set.
+     */
+    private void buildOpeningOver(Material floor, Material gap, Material opening,
+                                  BlockShapes.Shape openingShape) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(floor);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 4, 0).setType(gap);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 5, 0), opening, openingShape);
+    }
+
+    static Stream<Arguments> openings() {
+        return Stream.of(
+                Arguments.of(Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN),
+                Arguments.of(Material.OAK_DOOR, BlockShapes.DOOR_OPEN));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening onto the build lands where it falls")
+    void dropThroughAnOpeningOntoTheBuildIsKept(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningOver(Material.OAK_PLANKS, Material.AIR, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 6.0, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening onto magma finds no standing point")
+    void dropThroughAnOpeningOntoMagmaIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningOver(Material.MAGMA_BLOCK, Material.AIR, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening into lava finds no standing point")
+    void dropThroughAnOpeningIntoLavaIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        // Lava is liquid, so the lift climbs past it as it does past the chests.
+        buildOpeningOver(Material.OAK_PLANKS, Material.LAVA, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A drop through an opening out of the build finds no standing point")
+    void dropThroughAnOpeningOutOfTheBuildIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        // The column under the opening is dug out below the step the plot allows: the fall
+        // leaves the build and its depth is unknown.
+        for (int y = MOCK_SURFACE_Y - 1; y <= MOCK_SURFACE_Y + 1; y++) {
+            world.getBlockAt(0, y, 0).setType(Material.AIR);
+        }
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0), opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    /**
+     * A build over the stored point: two chests from the feet up, planks, and a stack of
+     * {@code height} openings on the planks. The lift ends on top of the stack, and the
+     * player falls {@code height} blocks through it onto the planks.
+     */
+    private void buildOpeningStack(int height, Material opening, BlockShapes.Shape shape) {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(Material.OAK_PLANKS);
+        for (int i = 0; i < height; i++) {
+            shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 4 + i, 0), opening, shape);
+        }
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A three-block drop through openings, which does no fall damage, is kept")
+    void threeBlockDropThroughOpeningsIsKept(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningStack(3, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 7.0, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("openings")
+    @DisplayName("A four-block drop through openings, which does fall damage, is refused")
+    void fourBlockDropThroughOpeningsIsRefused(Material opening, BlockShapes.Shape shape)
+            throws Exception {
+        buildOpeningStack(4, opening, shape);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    /*
+     * The drop measured to a floor that is not a full block, and from feet that are not on
+     * a whole block. /sgen setspawn with no coordinates stores the sender's own location,
+     * so a point set while standing on a slab, a carpet or snow has a fractional height.
+     *
+     * The stored point stands on {@code footing}, placed in its own feet block (air means
+     * it stands on the ground below), with a chest over it. On the chest is
+     * {@code landing}, and on that a stack of {@code openings} open trapdoors. The lift
+     * ends on top of the stack, its feet as far above the whole block as the stored
+     * point's, and the player falls through onto the top of {@code landing}: a drop of
+     * 1 + openings + (top of footing) - (top of landing).
+     */
+
+    private Location storedOnFooting(Material footing, BlockShapes.Shape footingShape,
+                                     Material landing, BlockShapes.Shape landingShape,
+                                     int openings) {
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0), footing, footingShape);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.CHEST);
+        shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0), landing, landingShape);
+        for (int i = 0; i < openings; i++) {
+            shapes.place(world.getBlockAt(0, MOCK_SURFACE_Y + 4 + i, 0),
+                    Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        }
+        return new Location(world, 0.5, MOCK_SURFACE_Y + 1.0 + topOf(footingShape), 0.5,
+                90f, 10f);
+    }
+
+    /** The top of the shape, or 0 for an empty one, which is stood on from below. */
+    private static double topOf(BlockShapes.Shape shape) {
+        return shape.boxes().stream().mapToDouble(BoundingBox::getMaxY).max().orElse(0);
+    }
+
+    /** From the feet at the top of the stack down to where the player comes to rest. */
+    private static double dropOf(Location stored, BlockShapes.Shape landingShape,
+                                 int openings) {
+        return stored.getY() + 3 + openings - (MOCK_SURFACE_Y + 3 + topOf(landingShape));
+    }
+
+    /**
+     * Each a drop of exactly 3.0 once both fractional heights are counted, with the height
+     * above the mock surface the player is lifted to.
+     */
+    static Stream<Arguments> exactlyThreeBlockDrops() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.OAK_PLANKS, BlockShapes.FULL, 3, 7.0),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB,
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2, 6.5),
+                Arguments.of(Material.SNOW, BlockShapes.snow(5),
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2, 6.5),
+                Arguments.of(Material.WHITE_CARPET, BlockShapes.CARPET,
+                        Material.WHITE_CARPET, BlockShapes.CARPET, 2, 6.0625),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8),
+                        Material.SNOW, BlockShapes.snow(8), 2, 6.875));
+    }
+
+    /** Each a drop just over 3.0, between 3.0625 and 3.5. */
+    static Stream<Arguments> justOverThreeBlockDrops() {
+        return Stream.of(
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 3),
+                Arguments.of(Material.AIR, BlockShapes.EMPTY,
+                        Material.SNOW, BlockShapes.snow(8), 3),
+                Arguments.of(Material.SNOW, BlockShapes.snow(2),
+                        Material.WHITE_CARPET, BlockShapes.CARPET, 2),
+                Arguments.of(Material.SNOW, BlockShapes.snow(8),
+                        Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB, 2),
+                Arguments.of(Material.OAK_SLAB, BlockShapes.BOTTOM_SLAB,
+                        Material.OAK_PLANKS, BlockShapes.FULL, 3));
+    }
+
+    @ParameterizedTest(name = "from {1} onto {3} through {4} openings")
+    @MethodSource("exactlyThreeBlockDrops")
+    @DisplayName("A drop of exactly three blocks, measured in fractions, is kept")
+    void exactlyThreeBlockFractionalDropIsKept(Material footing, BlockShapes.Shape footingShape,
+                                               Material landing, BlockShapes.Shape landingShape,
+                                               int openings, double standingAbove)
+            throws Exception {
+        Location stored = storedOnFooting(footing, footingShape, landing, landingShape, openings);
+        assertEquals(3.0, dropOf(stored, landingShape, openings), 1e-9);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+
+        // Lifted to the top of the stack, at the stored point's own offset into the block.
+        assertEquals(MOCK_SURFACE_Y + standingAbove, standing.getY(), 1e-9);
+    }
+
+    @ParameterizedTest(name = "from {1} onto {3} through {4} openings")
+    @MethodSource("justOverThreeBlockDrops")
+    @DisplayName("A drop just over three blocks, measured in fractions, is refused")
+    void justOverThreeBlockFractionalDropIsRefused(Material footing,
+                                                   BlockShapes.Shape footingShape,
+                                                   Material landing,
+                                                   BlockShapes.Shape landingShape,
+                                                   int openings) throws Exception {
+        Location stored = storedOnFooting(footing, footingShape, landing, landingShape, openings);
+        double drop = dropOf(stored, landingShape, openings);
+        assertTrue(drop > 3.0 && drop <= 3.5, "drop " + drop);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    // --- Where a player stands on a plot that has been built over --------------------
+
+    private Location storedOrigin() {
+        return new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5, 90f, 10f);
+    }
+
+    @Test
+    @DisplayName("A clear plot is its own standing point")
+    void clearPlotStandsWhereStored() throws Exception {
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        assertEquals(stored, manager.standingPoint(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A built-over plot lifts the player to the first clear position above it")
+    void builtOverPlotLiftsToFirstClearPosition() throws Exception {
+        // Chest at the feet, slab at the head: the first position with both clear is two
+        // blocks up, standing on the slab. Folia's respawn would send them to world spawn.
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.OAK_SLAB);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stored = storedOrigin();
+
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+
+        assertEquals(stored.getX(), standing.getX(), 1e-9);
+        assertEquals(stored.getZ(), standing.getZ(), 1e-9);
+        assertEquals(MOCK_SURFACE_Y + 3.0, standing.getY(), 1e-9);
+        assertEquals(stored.getYaw(), standing.getYaw(), 1e-6);
+        assertEquals(MOCK_SURFACE_Y + 1.0, stored.getY(), 1e-9,
+                "the stored point itself must not be moved");
+    }
+
+    @Test
+    @DisplayName("A gap too short for a player is skipped on the way up")
+    void liftSkipsAOneBlockGap() throws Exception {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 3, 0).setType(Material.OAK_PLANKS);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y + 4.0, standing.getY(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("A lift that would land on something harmful finds no standing point")
+    void liftOntoAHazardIsRefused() throws Exception {
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0).setType(Material.MAGMA_BLOCK);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A column built up to the build limit has no standing point")
+    void columnWithoutClearPositionHasNoStandingPoint() throws Exception {
+        for (int y = MOCK_SURFACE_Y + 1; y < world.getMaxHeight(); y++) {
+            world.getBlockAt(0, y, 0).setType(Material.STONE);
+        }
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("The last clear position below the build limit is still found")
+    void liftReachesTheBuildLimit() throws Exception {
+        int top = world.getMaxHeight() - 2;
+        for (int y = MOCK_SURFACE_Y + 1; y < top; y++) {
+            world.getBlockAt(0, y, 0).setType(Material.STONE);
+        }
+        SpawnManager manager = managerWith(config(0, 8));
+
+        Location standing = manager.standingPoint(storedOrigin()).get(10, TimeUnit.SECONDS);
+
+        assertEquals(top, standing.getBlockY());
     }
 
     @Test
@@ -650,7 +1353,7 @@ class SpawnManagerTest {
         AtomicInteger indices = new AtomicInteger();
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the spiral index must not advance");
         assertEquals(1, res.gridU());
@@ -665,6 +1368,116 @@ class SpawnManagerTest {
                 "repair left the owner's cell: " + res.location().getZ());
     }
 
+    /** Cell {@code index} of the spiral at the fixture's origin and cell size. */
+    private static SpiralCell originCell(int index) {
+        return new SpiralCentre(0, 0, 0, CELL).cell(index);
+    }
+
+    @Test
+    @DisplayName("A repair searches the cell it is given, whatever origin is configured now")
+    void inCellRepairIgnoresTheConfiguredOrigin() throws Exception {
+        PluginConfig config = config(0, 8);
+        config.setOriginX(-1000);
+        SpawnManager manager = managerWith(config);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(CELL + 0.5, res.location().getX(), 1e-9,
+                "the repair must stay on the record's own centre, not index 1 of the moved one");
+        assertEquals(0, res.centre());
+    }
+
+    @Test
+    @DisplayName("A repair searches only as far as its own cell size allows, not the configured one")
+    void inCellRepairUsesTheCellsOwnSize() throws Exception {
+        // A 17-block cell fits no ring at stride 16, so its centre is its only candidate.
+        // The configured 65 fits two, and those candidates are in the next cells over.
+        SpiralCell small = new SpiralCentre(3, 0, 0, 17).cell(1);
+        world.getBlockAt(small.centreX(), MOCK_SURFACE_Y, small.centreZ()).setType(Material.LAVA);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(small).get(10, TimeUnit.SECONDS),
+                "a candidate outside the 17-block cell must never be probed");
+    }
+
+    @Test
+    @DisplayName("A scan keeps the centre of its first cell when the origin moves under it")
+    void scanPinsItsCentreAtTheFirstCell() throws Exception {
+        // Nothing passes, so the scan walks its whole budget and falls back.
+        PluginConfig config = config(100, 4);
+        SpawnManager manager = managerWith(config);
+        List<int[]> asked = new CopyOnWriteArrayList<>();
+        AtomicInteger indices = new AtomicInteger();
+        CellReserver moving = (originX, originZ, cellSize) -> {
+            asked.add(new int[]{originX, originZ, cellSize});
+            // A setcenter landing while the scan is running.
+            config.setOriginX(5000);
+            return new SpiralCentre(0, originX, originZ, cellSize).cell(indices.getAndIncrement());
+        };
+
+        SpawnManager.LocationResult res = assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.allocateNextSafeSpawn(moving).get(10, TimeUnit.SECONDS));
+
+        assertTrue(res.fallback());
+        assertEquals(4, asked.size());
+        for (int[] geometry : asked) {
+            assertEquals(0, geometry[0], "every cell of one scan is on the centre it started on");
+            assertEquals(CELL, geometry[2]);
+        }
+    }
+
+    @Test
+    @DisplayName("Moving the centre after a border exhaustion lets the next join scan again")
+    void movingTheCentreClearsAnExhaustion() {
+        borderAround(100_000, 100_000, 16);
+        int budget = 4;
+        PluginConfig config = config(0, budget);
+        SpawnManager manager = managerWith(config);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.BorderExhausted first = exhaustion(manager, indices);
+        assertTrue(first.message().contains("refused")
+                        && first.message().contains("origin.x, origin.z or cell-size is changed"),
+                "the line says a new origin or cell size also clears it: " + first.message());
+        exhaustion(manager, indices);
+        assertEquals(budget, indices.get(), "refused at the exhausted centre");
+
+        config.setOriginX(1000);
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(), "a moved centre is a spiral nobody has scanned");
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(), "and once it has, it is refused in turn");
+    }
+
+    @Test
+    @DisplayName("A scan that exhausts after the centre moved records the spiral it walked")
+    void exhaustionIsRecordedAgainstTheSpiralTheScanWalked() {
+        borderAround(100_000, 100_000, 16);
+        int budget = 4;
+        PluginConfig config = config(0, budget);
+        SpawnManager manager = managerWith(config);
+        AtomicInteger indices = new AtomicInteger();
+        CellReserver moving = (originX, originZ, cellSize) -> {
+            config.setOriginX(1000);
+            return new SpiralCentre(0, originX, originZ, cellSize).cell(indices.getAndIncrement());
+        };
+
+        SpawnManager.BorderExhausted walked = assertInstanceOf(
+                SpawnManager.BorderExhausted.class, manager.allocateNextSafeSpawn(moving).join());
+        assertEquals(budget, indices.get());
+        assertTrue(walked.message().contains("spiral centre 0 (origin 0, 0, cell-size " + CELL
+                        + ")"), "the line names the spiral walked: " + walked.message());
+        assertTrue(walked.message().contains("the next join scans the spiral configured now"),
+                "and does not claim the moved spiral is refused: " + walked.message());
+        assertFalse(walked.message().contains("refused"), walked.message());
+
+        // The configured spiral is the moved one, which nothing has scanned.
+        exhaustion(manager, indices);
+        assertEquals(2 * budget, indices.get(),
+                "the record must not be keyed on a spiral the scan never walked");
+    }
+
     @Test
     @DisplayName("A cell where every sampled candidate fails resolves to nothing, not to a bad point")
     void inCellRepairGivesUpRatherThanReturningAnUnsafePoint() throws Exception {
@@ -672,8 +1485,745 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(1).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
+    }
+
+    // --- World border ------------------------------------------------------------------
+
+    /**
+     * Confines the world border to a box around the given centre.
+     *
+     * <p>MockBukkit's border spans {@code centre +/- size} rather than the half-size vanilla
+     * uses, so these fixtures state the reach they want and do not convert. What is under
+     * test is which side of the border a candidate falls on, not how the size is measured.
+     */
+    private void borderAround(double centreX, double centreZ, double reach) {
+        world.getWorldBorder().setCenter(centreX, centreZ);
+        world.getWorldBorder().setSize(reach);
+    }
+
+    @Test
+    @DisplayName("A cell outside the world border is skipped even though its terrain is safe")
+    void candidatesOutsideTheBorderAreRejected() throws Exception {
+        // The border reaches x in (45, 85): the whole of cell 0 is outside it, and cell 1's
+        // centre is inside. Terrain everywhere is the mock's default flat, safe surface, so
+        // the border is the only thing that can reject anything here.
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(1, res.index(), "cell 0 lies outside the border, so it must be skipped");
+        assertEquals(CELL + 0.5, res.location().getX(), 1e-9);
+        assertFalse(res.fallback(), "a real point was found; this is not a fallback");
+        assertEquals(12, res.rejections().get(RejectionReason.OUTSIDE_BORDER),
+                "every candidate of the skipped cell should be attributed to the border");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A scan that never reaches inside the border gives up instead of stranding the player")
+    void scanEntirelyOutsideTheBorderGivesUp() {
+        // The border is nowhere near the spiral, so no cell the scan can reach is inside it.
+        // Advancing cannot help: the spiral only grows, so each later cell is further out.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        InlineSpawnManager manager =
+                new InlineSpawnManager(plugin, world, config(0, budget), shapes);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.BorderExhausted exhausted = exhaustion(manager, indices);
+
+        assertTrue(exhausted.message().contains("world border"),
+                "the outcome must name the border: " + exhausted.message());
+        assertEquals(budget, exhausted.cellsProbed(), "every index the scan claimed is counted");
+        assertEquals(budget, indices.get(),
+                "the scan must stop at max-scan-attempts rather than walking outward forever");
+        assertEquals(0, manager.chunkLoads.get(),
+                "the border test must come before the chunk request, or the scan generates "
+                        + "terrain outside the border that no player may stand on");
+    }
+
+    @Test
+    @DisplayName("Border exhaustion completes the future normally, never exceptionally")
+    void borderExhaustionIsAnOutcomeNotAFailure() throws Exception {
+        // An exceptional completion is what put a stack trace in the console for every join.
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+
+        CompletableFuture<SpawnManager.AllocationOutcome> scanned =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        assertFalse(scanned.isCompletedExceptionally(), "the scan that gives up");
+        assertInstanceOf(SpawnManager.BorderExhausted.class, scanned.get(10, TimeUnit.SECONDS));
+
+        CompletableFuture<SpawnManager.AllocationOutcome> refused =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        assertFalse(refused.isCompletedExceptionally(), "the refusal that follows it");
+        SpawnManager.BorderExhausted outcome = assertInstanceOf(
+                SpawnManager.BorderExhausted.class, refused.get(10, TimeUnit.SECONDS));
+        assertEquals(0, outcome.cellsProbed(), "a refusal claims no index");
+    }
+
+    @Test
+    @DisplayName("Border exhaustion is logged once, in plain text, however many joins follow")
+    void borderExhaustionIsLoggedOnce() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+
+        List<LogRecord> border = logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .toList();
+        assertEquals(1, border.size(), "one line for the condition, not one per join");
+        assertEquals(Level.SEVERE, border.get(0).getLevel());
+        assertNull(border.get(0).getThrown(), "the line carries no stack trace");
+    }
+
+    @Test
+    @DisplayName("Scans already in flight that give up against the same border add no log line")
+    void inFlightScansReportTheBorderOnce() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger other = new AtomicInteger(1000);
+        AtomicInteger first = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        // A second join arrives while the first scan is running, before anything has been
+        // recorded, so it scans too. Both give up; the one that finishes second is the one
+        // that must stay quiet.
+        IntSupplier racing = () -> {
+            if (first.get() == 0) {
+                exhaustion(manager, other);
+            }
+            return first.getAndIncrement();
+        };
+        assertInstanceOf(SpawnManager.BorderExhausted.class,
+                assertDoesNotThrow(() -> manager.allocateNextSafeSpawn(racing)
+                        .get(10, TimeUnit.SECONDS)));
+
+        assertEquals(1004, other.get(), "the second join scanned rather than being refused");
+        assertEquals(1, logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .count(), "two scans gave up against one border, and it is reported once");
+    }
+
+    @Test
+    @DisplayName("A border exhausted again after it changed is reported again")
+    void borderExhaustionIsReportedAgainForANewBorder() {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+        // Moved, and still out of reach: a new condition the operator has not been told of.
+        borderAround(-100_000, 100_000, 16);
+        exhaustion(manager, indices);
+
+        assertEquals(2, logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .count());
+    }
+
+    @Test
+    @DisplayName("A border put back where a scan gave up is reported once on its return")
+    void borderReturningToAnExhaustedPlaceIsReportedOnce() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logged = recordLogs();
+
+        exhaustion(manager, indices);
+
+        // Moved somewhere a join succeeds, which leaves the old record where it was.
+        borderAround(0, 0, 1000);
+        allocate(manager, sequentialIndices(indices));
+        int claimed = indices.get();
+
+        // Put back: refused against the old record without scanning, and the operator has
+        // heard nothing about it since the border first moved.
+        borderAround(100_000, 100_000, 16);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+
+        assertEquals(claimed, indices.get(), "the refusals on its return claim no index");
+        List<LogRecord> border = logged.stream()
+                .filter(record -> record.getMessage().contains("world border"))
+                .toList();
+        assertEquals(2, border.size(), "the first report, and one on the border's return");
+        assertEquals(Level.WARNING, border.get(1).getLevel());
+        assertNull(border.get(1).getThrown(), "the line carries no stack trace");
+        assertTrue(border.get(1).getMessage().contains("refused"), border.get(1).getMessage());
+    }
+
+    @Test
+    @DisplayName("A repeat join after border exhaustion claims no further indices")
+    void repeatedAllocationAfterBorderExhaustionBurnsNoIndices() {
+        // The scan cannot succeed and nothing is written for the player, so the next join
+        // arrives unallocated and asks again. Rescanning would advance the spiral by another
+        // max-scan-attempts indices that hold no plot, every join, for every player.
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        exhaustion(manager, indices);
+        assertEquals(budget, indices.get(), "the first scan pays for itself, once");
+
+        // Each repeat must give up the same way rather than placing the player.
+        exhaustion(manager, indices);
+        exhaustion(manager, indices);
+        assertEquals(budget, indices.get(),
+                "a refusal must not claim an index: the spiral stood still across two retries");
+    }
+
+    @Test
+    @DisplayName("Widening the border lets allocation run again without an operator reset")
+    void wideningTheBorderResumesAllocation() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        AtomicInteger indices = new AtomicInteger();
+
+        exhaustion(manager, indices);
+
+        // The refusal is held against the border's geometry, not as a latch: the operator
+        // fixes the border and the next join works, with nothing to clear by hand.
+        borderAround(0, 0, 1000);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation is not refused by an exhaustion the live spiral ran into")
+    void simulationIsNotRefusedByALiveExhaustion() throws Exception {
+        // The border covers the origin cell's centre and nothing a live spiral this far out
+        // can reach, which is the state an operator runs /sgen simulate to understand.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        exhaustion(manager, new AtomicInteger(100));
+
+        // Refusing here would answer the one diagnostic for this failure with a line claiming
+        // nothing is inside the border, while the origin plainly is.
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, report.completed(), "the simulation must still run and report");
+    }
+
+    @Test
+    @DisplayName("A simulation cannot refuse a player allocation the live spiral could still fill")
+    void simulationCannotRefuseALaterAllocation() throws Exception {
+        // The border sits over cell (2,0) and misses the origin, so a simulation counting
+        // from zero exhausts while the cells the live spiral has reached are inside.
+        borderAround(2 * CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+        List<LogRecord> logged = recordLogs();
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+        assertEquals(1, report.borderExhausted(), "the simulation should exhaust near the origin");
+        assertTrue(logged.isEmpty(), "a simulated sample is the run's to report, not the manager's");
+
+        // A read-only diagnostic must not be able to lock allocation out.
+        int insideIndex = indexOfGrid(2, 0);
+        AtomicInteger indices = new AtomicInteger(insideIndex);
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(insideIndex, res.index(), "the joining player's own cell was usable");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "allocated outside the border: " + res.location());
+    }
+
+    @Test
+    @DisplayName("A simulation that runs into the border keeps and reports the samples before it")
+    void simulationReportsAMidRunExhaustion() throws Exception {
+        // The border covers the origin cell's centre and nothing else, so the first sample
+        // is placed and every later one walks its whole budget outside the border.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 4));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 3).get(10, TimeUnit.SECONDS);
+
+        assertEquals(3, report.samples());
+        assertEquals(1, report.completed(), "the sample placed before the exhaustion is kept");
+        assertEquals(1, report.cellsProbed(), "exhausted scans do not count as placement cost");
+        assertEquals(2, report.borderExhausted(), "the run keeps sampling after an exhaustion");
+        assertEquals(2, report.firstExhaustedSample());
+        assertEquals(1, report.firstExhaustedIndex(), "the second sample scanned on from index 1");
+        assertNull(report.failure(), "an exhaustion is an outcome, not a failure");
+        assertTrue(report.toSummaryLine().contains(" exhausted=2"), report.toSummaryLine());
+    }
+
+    @Test
+    @DisplayName("A sample that fails unexpectedly ends the run without discarding its report")
+    void simulationKeepsTheReportWhenASampleFails() throws Exception {
+        IllegalStateException unavailable = new IllegalStateException("scheduler unavailable");
+        AtomicInteger calls = new AtomicInteger();
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+                return calls.incrementAndGet() == 3
+                        ? CompletableFuture.failedFuture(new CompletionException(unavailable))
+                        : super.simulateNextSafeSpawn(indexSupplier);
+            }
+        };
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the failure are kept");
+        assertEquals(3, report.failedSample());
+        assertEquals(unavailable, report.failure(), "the cause is reported unwrapped");
+        assertEquals(3, calls.get(), "the run stops at the failed sample");
+        assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
+                "the smoke test still sees the run finish");
+    }
+
+    @Test
+    @DisplayName("A sample that completes with neither a result nor an error keeps the report")
+    void simulationKeepsTheReportWhenASampleCompletesEmpty() throws Exception {
+        SpawnManager manager = simulatingManager(3, () -> CompletableFuture.completedFuture(null));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the empty one are kept");
+        assertEquals(3, report.failedSample());
+        assertInstanceOf(IllegalStateException.class, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A sample whose result cannot be recorded keeps the report")
+    void simulationKeepsTheReportWhenRecordingASampleThrows() throws Exception {
+        // No rejection map: recording it throws inside the handler that reads the outcome.
+        SpawnManager manager = simulatingManager(3, () -> CompletableFuture.completedFuture(
+                new SpawnManager.LocationResult(new Location(world, 0, 64, 0), 0, 0, 0, 64,
+                        1, 1, false, null)));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(3, report.failedSample());
+        assertInstanceOf(NullPointerException.class, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A sample that throws an Error rather than an exception keeps the report")
+    void simulationKeepsTheReportWhenASampleThrowsAnError() throws Exception {
+        StackOverflowError overflow = new StackOverflowError();
+        SpawnManager manager = simulatingManager(3, () -> {
+            throw overflow;
+        });
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 5).get(10, TimeUnit.SECONDS);
+
+        assertEquals(2, report.completed(), "the samples before the failure are kept");
+        assertEquals(3, report.failedSample());
+        assertEquals(overflow, report.failure());
+        assertKeepsSmokeLines(report);
+    }
+
+    @Test
+    @DisplayName("A failure with no message is named by its class, never as null")
+    void simulationFailureSummaryNamesAMessagelessFailure() {
+        SpawnSimulator.Report report = new SpawnSimulator.Report(5);
+        assertNull(report.failureSummary(), "nothing to summarise before a failure");
+
+        report.fail(3, new IllegalStateException());
+        assertEquals("IllegalStateException", report.failureSummary());
+
+        report.fail(3, new IllegalStateException("  "));
+        assertEquals("IllegalStateException", report.failureSummary());
+
+        report.fail(3, new IllegalStateException("scheduler unavailable"));
+        assertEquals("scheduler unavailable", report.failureSummary());
+    }
+
+    /** A manager whose {@code failingCall}th simulated sample is {@code failing}'s instead. */
+    private SpawnManager simulatingManager(int failingCall,
+            Supplier<CompletableFuture<SpawnManager.AllocationOutcome>> failing) {
+        AtomicInteger calls = new AtomicInteger();
+        return new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
+                return calls.incrementAndGet() == failingCall
+                        ? failing.get()
+                        : super.simulateNextSafeSpawn(indexSupplier);
+            }
+        };
+    }
+
+    /** The lines the CI smoke test greps for, still printed and in their order. */
+    private static void assertKeepsSmokeLines(SpawnSimulator.Report report) {
+        assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
+                report.toRejectionLine());
+        assertTrue(report.toSummaryLine().startsWith("SIMULATE samples=5 "), report.toSummaryLine());
+        assertTrue(report.toSummaryLine().endsWith(" exhausted=0"), report.toSummaryLine());
+    }
+
+    @Test
+    @DisplayName("A simulation that gives up is not refused by its own exhaustion either")
+    void simulationDoesNotRefuseItself() throws Exception {
+        borderAround(100_000, 100_000, 16);
+
+        int budget = 4;
+        SpawnManager manager = managerWith(config(0, budget));
+        AtomicInteger indices = new AtomicInteger();
+
+        for (int run = 1; run <= 2; run++) {
+            SpawnManager.BorderExhausted exhausted = assertInstanceOf(
+                    SpawnManager.BorderExhausted.class,
+                    manager.simulateNextSafeSpawn(sequentialIndices(indices))
+                            .get(10, TimeUnit.SECONDS));
+            assertEquals(budget, exhausted.cellsProbed());
+            assertEquals(run * budget, indices.get(),
+                    "each simulated scan walks its full budget, since none is recorded");
+        }
+    }
+
+    @Test
+    @DisplayName("Only a repair stays in its cell, and only a simulation records no exhaustion")
+    void scanPurposesDifferOnlyWhereTheyShould() {
+        // What each public entry point passes is pinned by the behaviour tests around this
+        // one; this pins what each purpose means, so a new constant has to decide both.
+        assertFalse(SpawnManager.ScanPurpose.PLAYER_ALLOCATION.staysInCell());
+        assertTrue(SpawnManager.ScanPurpose.PLAYER_ALLOCATION.recordsExhaustion());
+
+        assertFalse(SpawnManager.ScanPurpose.SIMULATION.staysInCell());
+        assertFalse(SpawnManager.ScanPurpose.SIMULATION.recordsExhaustion());
+
+        assertTrue(SpawnManager.ScanPurpose.REPAIR.staysInCell());
+        assertTrue(SpawnManager.ScanPurpose.REPAIR.recordsExhaustion());
+    }
+
+    /** The spiral index that lands on a given grid cell. */
+    private static int indexOfGrid(int gridU, int gridV) {
+        for (int index = 0; index < 10_000; index++) {
+            int[] grid = SpiralMath.indexToGrid(index);
+            if (grid[0] == gridU && grid[1] == gridV) {
+                return index;
+            }
+        }
+        throw new AssertionError("no spiral index maps to (" + gridU + ", " + gridV + ")");
+    }
+
+    /** Runs a player allocation that is expected to find no plot, and hands back why. */
+    private SpawnManager.BorderExhausted exhaustion(SpawnManager manager, AtomicInteger indices) {
+        CompletableFuture<SpawnManager.AllocationOutcome> pending =
+                manager.allocateNextSafeSpawn(sequentialIndices(indices));
+        return assertInstanceOf(SpawnManager.BorderExhausted.class,
+                assertDoesNotThrow(() -> pending.get(10, TimeUnit.SECONDS)));
+    }
+
+    /** Collects what the plugin logs from here on, at any level. */
+    private List<LogRecord> recordLogs() {
+        List<LogRecord> records = new CopyOnWriteArrayList<>();
+        plugin.getLogger().addHandler(new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                records.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+        return records;
+    }
+
+    @Test
+    @DisplayName("An in-cell repair of a cell outside the border finds nothing rather than failing")
+    void inCellRepairOutsideTheBorderResolvesToNothing() throws Exception {
+        // Cell 1 sits outside a border drawn around the origin. A repair owns its cell and
+        // cannot leave it, so the honest answer is the same one an unusable cell already
+        // gives: nothing found, assignment untouched, caller sends them to world spawn.
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertNull(manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS),
+                "a cell outside the border holds no usable point");
+    }
+
+    // --- Revalidation against a border shrunk after allocation -------------------------
+
+    @Test
+    @DisplayName("A plot left outside a shrunken border no longer verifies, though its terrain is untouched")
+    void plotOutsideAShrunkenBorderIsUnsafe() throws Exception {
+        // Allocated legally, then the border was drawn in around cell 1 alone. Nothing on
+        // the plot changed, so the border is the only thing that can fail it.
+        Location stored = originCentreSpawn();
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS),
+                "the asynchronous re-check the repair and the respawn lift use must agree");
+    }
+
+    @Test
+    @DisplayName("A plot outside the border is unsafe even when its chunk is not resident")
+    void unloadedPlotOutsideTheBorderIsUnsafe() {
+        // The border needs no chunk, so the synchronous respawn path can answer it rather
+        // than respawning the player onto the plot and correcting afterwards.
+        Location stored = new Location(world, 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        borderAround(CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.isInsideBorder(stored));
+    }
+
+    @Test
+    @DisplayName("A plot still inside the border is judged on its terrain as before")
+    void plotInsideTheBorderIsJudgedAsBefore() throws Exception {
+        Location stored = originCentreSpawn();
+        borderAround(0, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored));
+        assertTrue(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.LAVA);
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored),
+                "being inside the border must not excuse a hazard");
+    }
+
+    @Test
+    @DisplayName("A built-over plot outside the border is not rescued by the lift")
+    void builtOverPlotOutsideTheBorderIsUnsafe() throws Exception {
+        // A chest at the feet is kept, and the respawn handlers would lift the owner on top
+        // of it. The lift only moves along Y, so the column test has to fail the plot here,
+        // before any lift is asked for.
+        Location stored = originCentreSpawn();
+        world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0).setType(Material.CHEST);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        borderAround(0, 0, 20);
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored));
+        Location standing = manager.standingPoint(stored).get(10, TimeUnit.SECONDS);
+        assertEquals(MOCK_SURFACE_Y + 2.0, standing.getY(), 1e-9);
+        assertTrue(world.getWorldBorder().isInside(standing),
+                "a lift must stay in the column the border was checked for: " + standing);
+
+        borderAround(CELL, 0, 20);
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertFalse(manager.revalidate(stored).get(10, TimeUnit.SECONDS));
+    }
+
+    @Test
+    @DisplayName("A plot whose whole cell is outside the border fails and its repair finds nothing")
+    void wholeCellOutsideTheBorderHoldsThePlayer() {
+        // Nothing to move the owner to without taking another cell, which the repair never
+        // does: it resolves to null, and the caller holds them at world spawn and leaves the
+        // record as it is, so the plot comes back if the border is widened again.
+        Location stored = originCentreSpawn();
+        borderAround(3 * CELL, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+        assertNull(manager.findSafeSpawnInCell(originCell(0)).join(),
+                "the repair must not return a point outside the border or outside the cell");
+
+        borderAround(0, 0, 1000);
+        assertEquals(SpawnManager.SpawnVerdict.USABLE, manager.verifyStoredSpawn(stored),
+                "the untouched record must be usable again once the border grows back");
+    }
+
+    @Test
+    @DisplayName("A plot whose cell is only partly outside the border is repaired inside it")
+    void partlyOutsideCellIsRepairedInsideTheBorder() throws Exception {
+        // The border reaches x in (76, 116): cell 1's centre at x=65 is outside it, and the
+        // candidates at x=81 and x=97 are inside. The repair has to land on one of those.
+        world.loadChunk(CELL >> 4, 0);
+        Location stored = new Location(world, CELL + 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+        borderAround(96, 0, 20);
+
+        SpawnManager manager = managerWith(config(0, 8));
+
+        assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(1)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, res.index(), "the repair must stay in the owner's cell");
+        assertTrue(world.getWorldBorder().isInside(res.location()),
+                "repaired outside the border: " + res.location());
+        double bound = CELL / 2.0 + 0.5;
+        assertTrue(Math.abs(res.location().getX() - CELL) <= bound,
+                "repair left the owner's cell: " + res.location().getX());
+        assertTrue(res.rejections().get(RejectionReason.OUTSIDE_BORDER) > 0,
+                "the centre and its neighbours should have been rejected for the border");
+        assertTrue(manager.revalidate(res.location()).get(10, TimeUnit.SECONDS),
+                "the replacement point must pass the same re-check the old one failed");
+    }
+
+    /**
+     * A claim plugin holding exactly one claim, over {@code claim}, recording every square
+     * it is asked about.
+     */
+    private static final class OneClaim implements ClaimLookup {
+        private final CellArea claim;
+        private final List<CellArea> asked = new CopyOnWriteArrayList<>();
+
+        OneClaim(CellArea claim) {
+            this.claim = claim;
+        }
+
+        @Override
+        public boolean overlapsClaim(World in, CellArea area) {
+            asked.add(area);
+            return claim.overlaps(area);
+        }
+    }
+
+    private InlineSpawnManager managerAvoiding(PluginConfig config, ClaimLookup claims) {
+        return new InlineSpawnManager(plugin, world, config, shapes, claims);
+    }
+
+    /** A FIRST_SAFE configuration with a {@code protection:} block. */
+    private PluginConfig configWithProtection(int maxScanAttempts, boolean enabled, int size) {
+        String yaml = """
+                origin:
+                  world: "world"
+                  x: 0
+                  z: 0
+                cell-size: %d
+                placement:
+                  strategy: FIRST_SAFE
+                  stride: %d
+                  max-candidates: 12
+                safety:
+                  min-surface-y: 0
+                  max-scan-attempts: %d
+                protection:
+                  enabled: %b
+                  size: %d
+                """.formatted(CELL, STRIDE, maxScanAttempts, enabled, size);
+        return new PluginConfig(YamlConfiguration.loadConfiguration(new StringReader(yaml)));
+    }
+
+    @Test
+    @DisplayName("A candidate inside an existing claim is passed over for the next one in the cell")
+    void aClaimedCandidateIsSkippedWithinTheCell() throws Exception {
+        // A small claim on the cell centre: the centre's 9x9 square overlaps it, the next
+        // candidate's, 16 blocks east, does not.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-2, -2, 2, 2));
+        InlineSpawnManager manager = managerAvoiding(config(0, 8), claims);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0, res.index(), "one claimed candidate must not discard the cell");
+        assertEquals(STRIDE + 0.5, res.location().getX(), 1e-9);
+        assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(1, manager.chunkLoads.get(),
+                "the claimed candidate is rejected before its chunk is asked for");
+        assertEquals(CellArea.square(0, 0, 9), claims.asked.get(0),
+                "the square tested is protection.size across, 9 by default");
+    }
+
+    @Test
+    @DisplayName("A cell whose every candidate is claimed is skipped without counting as an attempt")
+    void aWhollyClaimedCellIsSkippedAndNotCounted() throws Exception {
+        // Covers every candidate of cell 0 (they reach 32 blocks from its centre) and none
+        // of cell 1's, which start at x = 49 and whose squares start at 45.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-40, -40, 40, 40));
+        // One attempt only: were the claimed cell counted, the scan would give up on it.
+        InlineSpawnManager manager = managerAvoiding(config(0, 1), claims);
+        AtomicInteger indices = new AtomicInteger();
+        List<LogRecord> logs = recordLogs();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(1, res.index(), "the scan moves on to the next cell");
+        assertFalse(res.fallback(), "and settles there as an ordinary result, not a fallback");
+        assertEquals(1, res.cellsProbed(), "the claimed cell is not an attempt");
+        assertEquals(2, indices.get(), "though it used an index, as a skipped overlap does");
+        assertEquals(12, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(1, manager.chunkLoads.get(), "no chunk was loaded for the claimed cell");
+        assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.INFO
+                        && r.getMessage().startsWith("Skipped plot #0,0: every candidate spawn is"
+                        + " inside an existing claim")),
+                "the skip is logged: " + logs.stream().map(LogRecord::getMessage).toList());
+    }
+
+    @Test
+    @DisplayName("Claims are avoided with protection disabled, using protection.size as the square")
+    void claimsAreAvoidedWithProtectionDisabled() throws Exception {
+        // Reached by a 21-block square around the centre and not by a 9-block one, so the
+        // centre is rejected only if the configured size is what is tested. West of the
+        // centre, so the next candidate, 16 blocks east, is clear of it.
+        OneClaim claims = new OneClaim(CellArea.inclusive(-11, -1, -10, 1));
+        InlineSpawnManager manager = managerAvoiding(configWithProtection(8, false, 21), claims);
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0, res.index());
+        assertNotEquals(0.5, res.location().getX(), "the centre's square reaches the claim");
+        assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
+        assertEquals(new CellArea(-10, -10, 11, 11), claims.asked.get(0),
+                "the centre's square is protection.size across, protection enabled or not");
+    }
+
+    @Test
+    @DisplayName("Without a claim plugin, allocation does not look for claims at all")
+    void noClaimPluginMeansNoClaimCheck() throws Exception {
+        SpawnManager manager = managerWith(config(0, 8));
+        AtomicInteger indices = new AtomicInteger();
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(indices));
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.CLAIMED));
+    }
+
+    @Test
+    @DisplayName("An in-cell repair ignores claims, since the cell and its spawn claim are the owner's")
+    void aRepairIgnoresClaims() throws Exception {
+        // Every square anywhere is claimed. A repair that avoided claims would find nothing,
+        // since the owner's own spawn claim sits on the cell's first candidates.
+        ClaimLookup everything = (in, area) -> true;
+        SpawnManager manager = managerAvoiding(config(0, 8), everything);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(0)).get(10, TimeUnit.SECONDS);
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.CLAIMED));
     }
 
     /**

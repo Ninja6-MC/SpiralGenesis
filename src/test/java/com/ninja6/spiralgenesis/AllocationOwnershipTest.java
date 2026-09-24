@@ -5,6 +5,7 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import be.seeseemelk.mockbukkit.UnimplementedOperationException;
 import be.seeseemelk.mockbukkit.WorldMock;
 import be.seeseemelk.mockbukkit.entity.PlayerMock;
+import com.ninja6.spiralgenesis.manager.CellReserver;
 import com.ninja6.spiralgenesis.manager.SpawnManager;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
@@ -21,11 +22,15 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
-import java.util.function.IntSupplier;
+import java.util.logging.Handler;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -110,7 +115,8 @@ class AllocationOwnershipTest {
      * leave these tests passing on a path that never finished.
      */
     private PlayerMock join(String name) {
-        PlayerMock player = new PlayerMock(server, name) {
+        // SessionPlayerMock because a hold reads isConnected(), which PlayerMock throws from.
+        PlayerMock player = new SessionPlayerMock(server, name) {
             @Override
             public CompletableFuture<Boolean> teleportAsync(Location location,
                                                             PlayerTeleportEvent.TeleportCause cause,
@@ -148,10 +154,10 @@ class AllocationOwnershipTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> allocateSpawn(IntSupplier indexSupplier) {
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
             // Consumes an index exactly as a real scan does, so the supplier itself records
             // how many were burned.
-            int index = indexSupplier.getAsInt();
+            int index = cells.reserve(getPluginConfig()).index();
             whileAllocating.accept(this);
             Location where = new Location(Bukkit.getWorlds().get(0), index * 16, 64, 0);
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
@@ -171,6 +177,56 @@ class AllocationOwnershipTest {
         void initSpawnManager() {
             // Deliberately empty.
         }
+    }
+
+    /** Finds no plot for anyone, the way every join does once the border is exhausted. */
+    public static class BorderExhaustedPlugin extends InlinePlugin {
+
+        /** Entries into the scan itself, as opposed to into allocation. */
+        final AtomicInteger scans = new AtomicInteger();
+
+        @Override
+        CompletableFuture<SpawnManager.AllocationOutcome> allocateSpawn(CellReserver cells) {
+            scans.incrementAndGet();
+            return CompletableFuture.completedFuture(new SpawnManager.BorderExhausted(
+                    "Spawn allocation refused: nothing inside the world border.", 0));
+        }
+    }
+
+    @Test
+    @DisplayName("a join that finds no plot inside the border logs no error and frees the player")
+    void borderExhaustedJoinIsQuietAndReleased() {
+        BorderExhaustedPlugin plugin = load(BorderExhaustedPlugin.class);
+        List<LogRecord> logged = new CopyOnWriteArrayList<>();
+        plugin.getLogger().addHandler(new Handler() {
+            @Override
+            public void publish(LogRecord record) {
+                logged.add(record);
+            }
+
+            @Override
+            public void flush() {
+            }
+
+            @Override
+            public void close() {
+            }
+        });
+        PlayerMock player = join("Outside");
+
+        plugin.allocateNow(player, "JAVA");
+        plugin.allocateNow(player, "JAVA");
+
+        assertFalse(plugin.getDataStorage().hasSpawn(player.getUniqueId()), "there was no plot");
+        assertEquals(2, plugin.scans.get(),
+                "the in-flight guard must be released, or the player's next join is ignored");
+        // The manager reports the condition once, when a scan first gives up. The plugin
+        // saying it again per join, as an error with a trace, is what this replaced.
+        assertTrue(logged.stream().noneMatch(record ->
+                        record.getLevel().intValue() >= Level.WARNING.intValue()),
+                "an expected outcome is not a per-join error");
+        assertTrue(logged.stream().noneMatch(record -> record.getThrown() != null),
+                "nothing about it carries a stack trace");
     }
 
     @Test

@@ -31,6 +31,7 @@ MODRINTH = {
     "floodgate": ("floodgate", "bWrNNfkb"),
     "AuthMe": ("authmereloaded", "9js4IEHC"),
     "GriefPrevention": ("griefprevention", "O4o4mKaq"),
+    "Multiverse-Core": ("multiverse-core", "3wmN97b8"),
 }
 
 # plugin.yml key -> the mc-publish dependency kind it corresponds to.

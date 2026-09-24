@@ -28,10 +28,12 @@ import java.util.logging.Logger;
  *       branch on failure for anything except what it prints. The player keeps their plot,
  *       their teleport and their respawn point whatever a protection plugin does.</li>
  *   <li><b>Nothing is deleted unless a caller asked in as many words.</b> The provider's
- *       release call is reachable from exactly one place - {@link #handOffStaleClaim} with
- *       {@code releaseOld} set - and every default path in the plugin passes {@code false}.
- *       That is what makes "the default never deletes anything" a property of one method
- *       rather than a promise repeated at five call sites.</li>
+ *       release call is reachable only through {@link #releaseQuietly}, which has two
+ *       callers: {@link #handOffStaleClaim} with {@code releaseOld} set, and the
+ *       {@code /sgen release-all confirm} job. Every default path in the plugin passes
+ *       {@code false} to the first and never reaches the second. That is what makes "the
+ *       default never deletes anything" a property of one method rather than a promise
+ *       repeated at five call sites.</li>
  * </ul>
  *
  * <h2>Threading</h2>
@@ -107,7 +109,34 @@ public final class SpawnProtector {
      * @return what the provider did; never {@code null}, and never a thrown exception
      */
     public ClaimResult protect(UUID owner, Location spawn, String context) {
+        return protect(owner, spawn, context, false);
+    }
+
+    /**
+     * {@link #protect} for a spawn allocation has just chosen: first allocation and
+     * {@code /sgen reassign}.
+     *
+     * <p>The one difference is how an overlap is reported. Allocation rejects every
+     * candidate whose square overlaps an existing claim wherever the claim plugin is
+     * installed, so an overlap here means a claim was made between the scan and the
+     * placement, and the player now stands in somebody's claim without one of their own.
+     * That is logged at {@code WARNING}. The player still keeps the spawn, as on every other
+     * path: moving them again would be a second allocation nobody asked for.
+     */
+    public ClaimResult protectAllocated(UUID owner, Location spawn, String context) {
+        return protect(owner, spawn, context, true);
+    }
+
+    private ClaimResult protect(UUID owner, Location spawn, String context, boolean allocated) {
         ClaimResult result = protectQuietly(owner, spawn);
+        if (allocated && result.outcome() == ClaimOutcome.ALREADY_CLAIMED) {
+            logger.warning("No spawn claim for " + owner + " (" + context + "): "
+                    + (result.hasDetail() ? result.detail() : "the square is already claimed.")
+                    + " The claim appeared after allocation chose this plot, so the player is"
+                    + " placed inside it without a claim of their own. Move them with"
+                    + " /sgen reassign if the claim is not theirs.");
+            return result;
+        }
         switch (result.outcome()) {
             case CREATED -> logger.info("Claimed the " + size() + "x" + size()
                     + " spawn square for " + owner + " (" + context + ")"
@@ -129,7 +158,9 @@ public final class SpawnProtector {
             // overlap at a new point from a repeat, a cost with nothing to buy. INFO rather
             // than WARNING because nothing malfunctioned: WARNING is what this class says
             // when the provider refuses or breaks, and spending it on an ordinary outcome
-            // is how a server owner learns to skim past the real ones.
+            // is how a server owner learns to skim past the real ones. The two allocation
+            // paths do not reach this line: they come through protectAllocated, where an
+            // overlap means a claim appeared after the scan avoided every claim it saw.
             case ALREADY_CLAIMED -> logger.info("No spawn claim for " + owner + " ("
                     + context + "): " + (result.hasDetail() ? result.detail()
                     : "the square is already claimed.")
@@ -200,9 +231,11 @@ public final class SpawnProtector {
      * by the time anybody reassigns anybody. Deleting it silently as a side effect of an
      * unrelated command is not recoverable, and an operator who did want it gone has all
      * the time in the world to say so; an operator who did not cannot get it back. So the
-     * old square is left standing and named, and {@code releaseOld} is the only path that
-     * can delete anything - reached from {@code /sgen reassign <player> release} and from
-     * nowhere else.
+     * old square is left standing and named, and {@code releaseOld} is the only way this
+     * method deletes anything - reached from {@code /sgen reassign <player> release} and
+     * from nowhere else. The one other delete path in the plugin is
+     * {@code /sgen release-all confirm}, which calls {@link #releaseQuietly} directly and
+     * never comes through here.
      *
      * @param owner      the player whose spawn moved
      * @param ownerName  what to call them in the line, since an operator typed a name and
@@ -234,18 +267,7 @@ public final class SpawnProtector {
                     + (hint == null || hint.isEmpty() ? "" : " " + hint);
         }
 
-        ReleaseResult result;
-        try {
-            result = current().release(oldSpawn, size(), owner);
-            if (result == null) {
-                result = ReleaseResult.of(ReleaseOutcome.REFUSED, "the provider returned no result.");
-            }
-        } catch (Throwable t) {
-            logger.log(Level.WARNING, "The protection provider threw while releasing the old spawn "
-                    + "claim for " + owner + ". It is still standing.", t);
-            result = ReleaseResult.of(ReleaseOutcome.REFUSED,
-                    "the provider threw " + t.getClass().getSimpleName());
-        }
+        ReleaseResult result = releaseQuietly(owner, oldSpawn);
 
         String where = describe(oldSpawn);
         return switch (result.outcome()) {
@@ -261,6 +283,38 @@ public final class SpawnProtector {
             case PROVIDER_UNAVAILABLE -> "The protection provider went away before the old spawn "
                     + "claim at " + where + " could be released; it is still standing.";
         };
+    }
+
+    /**
+     * Gives back the square this plugin would have claimed around {@code spawn}, and says
+     * nothing about it.
+     *
+     * <p>The one call into the provider's release. The provider decides whether what is
+     * there is recognisably the square it would have created for exactly this owner and the
+     * configured size, and answers {@link ReleaseOutcome#NOT_OURS} otherwise, so a caller
+     * never has to make that judgement itself. Shared by {@code /sgen reassign <player>
+     * release} and {@code /sgen release-all confirm} so the two cannot come to disagree about
+     * what counts as ours.
+     *
+     * @param owner the player the square was claimed for
+     * @param spawn the spawn point the square was centred on
+     * @return what the provider did; never {@code null}, and never a thrown exception
+     */
+    public ReleaseResult releaseQuietly(UUID owner, Location spawn) {
+        if (owner == null || spawn == null || spawn.getWorld() == null) {
+            return ReleaseResult.of(ReleaseOutcome.REFUSED, "the spawn point could not be resolved.");
+        }
+        try {
+            ReleaseResult result = current().release(spawn, size(), owner);
+            return result == null
+                    ? ReleaseResult.of(ReleaseOutcome.REFUSED, "the provider returned no result.")
+                    : result;
+        } catch (Throwable t) {
+            logger.log(Level.WARNING, "The protection provider threw while releasing the spawn "
+                    + "claim for " + owner + ". It is still standing.", t);
+            return ReleaseResult.of(ReleaseOutcome.REFUSED,
+                    "the provider threw " + t.getClass().getSimpleName());
+        }
     }
 
     /** A location as an operator reads it: block coordinates and the world's name. */
