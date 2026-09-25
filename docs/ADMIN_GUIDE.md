@@ -1153,14 +1153,17 @@ because the command that releases them is part of the plugin.
 **If protection is off now but was on earlier, switch it back on first.**
 `/sgen release-all` refuses to run unless spawn protection is active at the moment it is
 used, and says there are no spawn claims to release - even though the claims made while
-it was on are still standing. Set `protection.enabled: true` again, with the same
-`protection.size` and `protection.claim-as` the claims were made with, and run
-`/sgen reload`; switching it on does not claim anything for existing players by itself. A
-claim is released only when it still matches the configured square and ownership exactly
-(see below), so a different size leaves every one of them standing, and under
-`ADMIN_CLAIM` a player's claim is reported as not ours. `/sgen release-all` never
-releases claims made under `protection.claim-as: PLAYER_CLAIM`, whatever the setting is
-now: it refuses under `PLAYER_CLAIM`, and passes over player claims under `ADMIN_CLAIM`.
+it was on are still standing. Set `protection.enabled: true` and
+`protection.provider: GRIEF_PREVENTION` again, with the same `protection.size` and
+`protection.claim-as` the claims were made with, and run `/sgen reload`; switching it on
+does not claim anything for existing players by itself. The provider matters as much as
+the switch: `NONE`, or a misspelled name, which falls back to `NONE`, leaves protection
+inactive with `enabled: true`. A claim is released only when it still matches the
+configured square and ownership exactly (see below), so a different size leaves every one
+of them standing, and under `ADMIN_CLAIM` a player's claim is reported as not ours.
+`/sgen release-all` never releases claims made under `protection.claim-as: PLAYER_CLAIM`,
+whatever the setting is now: it refuses under `PLAYER_CLAIM`, and passes over player
+claims under `ADMIN_CLAIM`.
 
 Under the default `protection.claim-as: ADMIN_CLAIM` every spawn claim is an
 administrative claim, and players cannot abandon one. Without help an uninstall would be

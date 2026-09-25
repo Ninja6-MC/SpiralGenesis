@@ -681,10 +681,14 @@ public class SpawnManager {
 
     /**
      * {@link #worldSpawnPoint} for a caller that owns the chunk world spawn is in, answered
-     * inline. {@link #ownsWorldSpawn} says whether the caller does.
+     * inline in the column of {@code spawn}.
+     *
+     * @param spawn world spawn as returned by {@link #ownedWorldSpawn}, not read again: a
+     *              {@code /setworldspawn} in between would move the search into a chunk
+     *              the caller was never checked to own
      */
-    public Location worldSpawnPointNow() {
-        return worldSpawnPointAt(world.getSpawnLocation());
+    public Location worldSpawnPointNow(Location spawn) {
+        return worldSpawnPointAt(spawn);
     }
 
     /** The search behind {@link #worldSpawnPoint}, in the column of {@code spawn}. */
@@ -731,15 +735,18 @@ public class SpawnManager {
     }
 
     /**
-     * Whether the current thread may call {@link #worldSpawnPointNow}: the chunk is
-     * resident, so nothing is loaded to answer, and this thread owns it. On Paper that is
-     * the main thread; on Folia it is the region holding world spawn, which a thread
-     * handling somebody's respawn usually is not.
+     * World spawn, when the current thread may pass it to {@link #worldSpawnPointNow}: the
+     * chunk is resident, so nothing is loaded to answer, and this thread owns it. On Paper
+     * that is the main thread; on Folia it is the region holding world spawn, which a
+     * thread handling somebody's respawn usually is not.
+     *
+     * @return a copy of the location checked, so a later {@code /setworldspawn} cannot move
+     *         it, or {@code null} when this thread may not search there
      */
-    public boolean ownsWorldSpawn() {
-        Location spawn = world.getSpawnLocation();
+    public Location ownedWorldSpawn() {
+        Location spawn = world.getSpawnLocation().clone();
         return isChunkResident(spawn)
-                && ownsChunk(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4);
+                && ownsChunk(spawn.getBlockX() >> 4, spawn.getBlockZ() >> 4) ? spawn : null;
     }
 
     /**

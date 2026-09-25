@@ -161,9 +161,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     /**
      * How many times a repair has moved each player onto a repaired plot; see
-     * {@link #repairMoves}. Written and compared on the player's own thread. Holds only
-     * players whose plot was repaired while they stood in the world, so it is left to grow
-     * with them rather than cleared on quit.
+     * {@link #repairMoves}. Written and compared on the player's own thread, and dropped
+     * when they quit; see {@link #forgetRepairMoves}.
      */
     private final Map<UUID, Integer> repairMoves = new ConcurrentHashMap<>();
 
@@ -1237,6 +1236,15 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public int repairMoves(UUID uuid) {
         return repairMoves.getOrDefault(uuid, 0);
+    }
+
+    /**
+     * Drops a player's {@link #repairMoves} count when they quit. Everything that writes or
+     * compares it runs on the player's own scheduler, which is retired with them, so no
+     * pending {@link #settleAtWorldSpawn} can read the count after this.
+     */
+    public void forgetRepairMoves(UUID uuid) {
+        repairMoves.remove(uuid);
     }
 
     private void moveToWorldSpawn(Player player, World world, Location from,

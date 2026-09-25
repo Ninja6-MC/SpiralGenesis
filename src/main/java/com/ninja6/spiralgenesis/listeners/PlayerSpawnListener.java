@@ -101,12 +101,16 @@ public class PlayerSpawnListener implements Listener {
     /**
      * Forgets a player who left. A respawn whose point did not fail leaves its entry in
      * {@link #respawnEventSeen} until the next death, which a player who never comes back
-     * does not have. A deferred task that would still read the entry is retired with the
-     * player, so nothing is lost by dropping it.
+     * does not have, and the plugin's count of repair moves
+     * ({@link SpiralGenesisPlugin#repairMoves(UUID)}) would otherwise last until restart.
+     * A deferred task that would still read either is retired with the player, so nothing
+     * is lost by dropping them.
      */
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
-        respawnEventSeen.remove(event.getPlayer().getUniqueId());
+        UUID uuid = event.getPlayer().getUniqueId();
+        respawnEventSeen.remove(uuid);
+        plugin.forgetRepairMoves(uuid);
     }
 
     /**
@@ -454,8 +458,9 @@ public class PlayerSpawnListener implements Listener {
         if (!world.equals(manager.getWorld())) {
             return stored;
         }
-        if (manager.ownsWorldSpawn()) {
-            Location standing = manager.worldSpawnPointNow();
+        Location owned = manager.ownedWorldSpawn();
+        if (owned != null) {
+            Location standing = manager.worldSpawnPointNow(owned);
             if (standing != null) {
                 return standing;
             }

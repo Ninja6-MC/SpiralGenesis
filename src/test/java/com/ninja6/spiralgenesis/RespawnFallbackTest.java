@@ -307,21 +307,21 @@ class RespawnFallbackTest {
 
         @Override
         public CompletableFuture<Location> worldSpawnPoint() {
-            return CompletableFuture.completedFuture(worldSpawnPointNow());
+            return CompletableFuture.completedFuture(
+                    worldSpawnPointNow(world.getSpawnLocation()));
         }
 
         @Override
-        public Location worldSpawnPointNow() {
+        public Location worldSpawnPointNow(Location spawn) {
             if (noWorldSpawnPoint) {
                 return null;
             }
-            return worldSpawnStanding == null ? world.getSpawnLocation()
-                    : worldSpawnStanding.clone();
+            return worldSpawnStanding == null ? spawn : worldSpawnStanding.clone();
         }
 
         @Override
-        public boolean ownsWorldSpawn() {
-            return ownsWorldSpawn;
+        public Location ownedWorldSpawn() {
+            return ownsWorldSpawn ? world.getSpawnLocation().clone() : null;
         }
 
         @Override
@@ -1225,6 +1225,27 @@ class RespawnFallbackTest {
         assertEquals(1, player.teleports.size(), String.valueOf(player.teleports));
         assertEquals(other, player.teleports.get(0).getWorld());
         assertSameBlock(other.getSpawnLocation(), player.teleports.get(0));
+    }
+
+    @Test
+    @DisplayName("a player who quits after a repair moved them leaves no count behind")
+    void quitForgetsTheRepairMoves() {
+        SpiralGenesisPlugin plugin = load();
+        manager.plotSafe = false;
+        RespawnPlayer player = join(plugin, plot());
+
+        plugin.repairSpawn(player, plugin.getDataStorage().getRecord(player.getUniqueId()),
+                true);
+        Location repaired = new Location(world, 30.5, 64, 30.5);
+        manager.cellSearch.complete(new SpawnManager.LocationResult(repaired, 3, 0, 0, 64,
+                1, 1, false, java.util.Map.of(), 0));
+        player.tick();
+        assertEquals(List.of(repaired), player.teleports);
+        assertEquals(1, plugin.repairMoves(player.getUniqueId()));
+
+        server.getPluginManager().callEvent(new PlayerQuitEvent(player, "left"));
+
+        assertEquals(0, plugin.repairMoves(player.getUniqueId()));
     }
 
     /** The listener's record of routed respawns, which has no accessor to read it by. */
