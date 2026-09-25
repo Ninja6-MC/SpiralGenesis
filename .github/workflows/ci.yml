@@ -89,8 +89,26 @@ jobs:
       - name: Run Tests
         run: ./gradlew test --no-daemon
 
+      # Every build on this workflow produces a snapshot jar, and until now every one of
+      # them carried the same literal "1.0.0-SNAPSHOT" - indistinguishable from any other
+      # snapshot, so there was no way to tell which commit a jar installed on a test
+      # server actually was. `git describe` names the commit relative to the nearest tag
+      # (`v1.0.0-alpha.2-6-g5c8e374`: 6 commits past v1.0.0-alpha.2, at 5c8e374), which is
+      # exactly what distinguishes one snapshot from the next. The leading `v` is stripped
+      # because plugin.yml's version has never carried one. `--always` falls back to a
+      # bare abbreviated hash on a checkout with no tags at all, so this cannot fail the
+      # step; `fetch-depth: 0` on the checkout above is what makes the tags reachable.
+      - name: Determine Snapshot Version
+        id: version
+        run: |
+          VERSION="$(git describe --tags --always | sed 's/^v//')"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Snapshot version: $VERSION"
+
       - name: Build Shadow JAR
-        run: ./gradlew shadowJar --no-daemon
+        env:
+          PLUGIN_VERSION: ${{ steps.version.outputs.version }}
+        run: ./gradlew shadowJar -PpluginVersion="$PLUGIN_VERSION" --no-daemon
 
       # The stand-in login plugin. Built here rather than in the smoke job so the fixture
       # is compiled once against the same API as the plugin it is testing.
