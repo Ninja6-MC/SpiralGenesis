@@ -1305,6 +1305,50 @@ class SpawnManagerTest {
     }
 
     @Test
+    @DisplayName("World spawn moved after the ownership check is searched where it was checked")
+    void worldSpawnMovedAfterTheOwnershipCheckKeepsTheCheckedColumn() {
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            boolean isChunkResident(Location location) {
+                return true;
+            }
+
+            @Override
+            boolean ownsChunk(int chunkX, int chunkZ) {
+                return chunkX == 0 && chunkZ == 0;
+            }
+        };
+        world.setSpawnLocation(0, MOCK_SURFACE_Y, 0);
+
+        Location owned = manager.ownedWorldSpawn();
+        // A /setworldspawn into another chunk between the check and the search.
+        world.setSpawnLocation(100, MOCK_SURFACE_Y, 100);
+        Location found = manager.worldSpawnPointNow(owned);
+
+        assertEquals(0.5, found.getX(), 1e-9);
+        assertEquals(0.5, found.getZ(), 1e-9);
+    }
+
+    @Test
+    @DisplayName("World spawn in a chunk this thread does not own is not offered for an inline search")
+    void worldSpawnInAnUnownedChunkIsNotOffered() {
+        SpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            boolean isChunkResident(Location location) {
+                return true;
+            }
+
+            @Override
+            boolean ownsChunk(int chunkX, int chunkZ) {
+                return false;
+            }
+        };
+        world.setSpawnLocation(0, MOCK_SURFACE_Y, 0);
+
+        assertNull(manager.ownedWorldSpawn());
+    }
+
+    @Test
     @DisplayName("A world spawn over lava has no standing point")
     void worldSpawnOverLavaHasNoStandingPoint() throws Exception {
         // Solid below, lava in the spawn block: every clear position above has lava

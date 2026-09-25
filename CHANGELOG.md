@@ -20,9 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   first such position below it when world spawn is in the air. A respawn that cannot
   check world spawn inline, because the thread handling it does not own that chunk, still
   respawns at the stored block and is moved once placed, unless something has moved the
-  player on by then. When nothing in the column passes, the stored block is used as
-  before and a warning names `/setworldspawn`. A player still on the death screen is
-  unchanged: their plot is cleared as their respawn point and the server's own world
+  player on by then. Either way world spawn is read once, so a `/setworldspawn` while the
+  position is found cannot move the search into a chunk the thread was never checked to
+  own, which Folia would reject. When nothing in the column passes, the stored block is
+  used as before and a warning names `/setworldspawn`. A player still on the death screen
+  is unchanged: their plot is cleared as their respawn point and the server's own world
   spawn search places them, on Paper and Folia alike. Nothing here depends on
   GriefPrevention.
 - **A repaired plot no longer lands inside a neighbour's claim.** A revalidation repair
