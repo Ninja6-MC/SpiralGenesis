@@ -95,13 +95,23 @@ jobs:
       # server actually was. `git describe` names the commit relative to the nearest tag
       # (`v1.0.0-alpha.2-6-g5c8e374`: 6 commits past v1.0.0-alpha.2, at 5c8e374), which is
       # exactly what distinguishes one snapshot from the next. The leading `v` is stripped
-      # because plugin.yml's version has never carried one. `--always` falls back to a
-      # bare abbreviated hash on a checkout with no tags at all, so this cannot fail the
-      # step; `fetch-depth: 0` on the checkout above is what makes the tags reachable.
+      # because plugin.yml's version has never carried one. `--match 'v[0-9]*'` keeps
+      # describe from landing on some other reachable tag this repo never intended as a
+      # version marker; `--long` keeps the `-N-g<sha>` suffix even when a commit sits
+      # exactly on a tag, so a CI snapshot can never print the same string as the release
+      # build of that tag. `fetch-depth: 0` on the checkout above fetches tags for every
+      # trigger this job runs under - checked on push, pull_request and merge_group, all
+      # three describe correctly. The `if` guards the one remaining case, a checkout with
+      # no `v[0-9]*` tag reachable at all, with a fallback that cannot be mistaken for a
+      # release version.
       - name: Determine Snapshot Version
         id: version
         run: |
-          VERSION="$(git describe --tags --always | sed 's/^v//')"
+          if RAW_VERSION="$(git describe --tags --long --match 'v[0-9]*' 2>/dev/null)"; then
+            VERSION="${RAW_VERSION#v}"
+          else
+            VERSION="0.0.0-SNAPSHOT-g$(git rev-parse --short HEAD)"
+          fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Snapshot version: $VERSION"
 
