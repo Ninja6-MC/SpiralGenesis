@@ -89,6 +89,9 @@ jobs:
       - name: Run Tests
         run: ./gradlew test --no-daemon
 
+      - name: Test Release Candidate Validation
+        run: python3 -m unittest discover -s scripts/tests -p 'test_release_*.py'
+
       # Every build on this workflow produces a snapshot jar, and until now every one of
       # them carried the same literal "1.0.0-SNAPSHOT" - indistinguishable from any other
       # snapshot, so there was no way to tell which commit a jar installed on a test

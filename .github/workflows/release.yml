@@ -1,275 +1,106 @@
 name: Publish Release
 
 on:
-  push:
-    tags:
-      - 'v*.*.*'
-      - 'v*.*.*-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag
+        required: true
+        type: string
+      candidate_run_id:
+        description: Successful Verify Release Candidate run ID
+        required: true
+        type: string
 
-# Top-level default. The `publish` job below overrides this with `contents: write`, which
-# it needs to create the GitHub release - a job's permissions REPLACE the workflow's on a
-# normal run, they are not capped by it. The cap only applies to a reusable workflow call.
-# So this line costs the publisher nothing and scopes anything added later to reads.
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   publish:
-    name: Build and Publish Release
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
+    name: Promote verified candidate
     runs-on: ubuntu-latest
-
-    # Nothing used to stand between pushing a tag and three public artefacts - a GitHub
-    # release, a Modrinth version and a Hangar version - and publishing to a registry is
-    # not something you can take back. The environment adds the missing pause: it carries
-    # a required reviewer, so a tag starts the run and the run then waits for approval.
-    #
-    # It is also where MODRINTH_TOKEN and HANGAR_API_TOKEN live, as environment secrets on
-    # `release` rather than repository secrets, so only this job, once approved, can read
-    # them and no OTHER workflow can. Within this job, each token is mapped into the env of
-    # only the steps that need it, never the job's env, so the build and the tests never
-    # see either.
-    #
-    # The environment is scoped to 'v*' tags, which is the only ref this workflow
-    # triggers on anyway - so the policy restates the trigger rather than narrowing it.
     environment: release
-
     permissions:
+      actions: read
       contents: write
-
     steps:
-      # First, so a malformed tag fails in seconds rather than after a toolchain setup.
-      # The `v*.*.*-*` trigger glob accepts any suffix, so `v1.0.0-whatever` would reach
-      # this job and fall through the channel mapping below into `release`. The tier a
-      # tag publishes to is decided here, so the tag itself has to be exact.
-      - name: Validate Tag Format
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
         run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          if [[ ! "$TAG_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]]; then
-            echo "Tag '$TAG_NAME' is not a valid release tag."
-            echo
-            echo "Expected vMAJOR.MINOR.PATCH, optionally followed by"
-            echo "-alpha.N, -beta.N or -rc.N. For example:"
-            echo "  v1.0.0"
-            echo "  v1.0.0-beta.1"
-            echo
-            echo "Delete the tag, then re-tag with the correct format:"
-            echo "  git tag -d $TAG_NAME && git push origin :refs/tags/$TAG_NAME"
-            exit 1
-          fi
-          echo "Tag '$TAG_NAME' is valid."
-
-      # Which registries this run can publish to. Secrets cannot be read in an `if`, so this
-      # step maps them into its OWN env - visible to this script only - and writes back a
-      # plain true/false per registry. The values are tested for emptiness and never printed.
-      # Runs before the checkout, so no repository code executes with either token in reach.
-      - name: Detect Registry Tokens
-        id: tokens
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Check release notes
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output release-notes.md
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$RELEASE_TAG" -f target_commitish="$(git rev-parse HEAD)" --jq .body >> release-notes.md
+      - name: Require registry credentials
         env:
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
         run: |
-          if [ -n "$MODRINTH_TOKEN" ]; then MODRINTH=true; else MODRINTH=false; fi
-          if [ -n "$HANGAR_API_TOKEN" ]; then HANGAR=true; else HANGAR=false; fi
-          {
-            echo "modrinth=$MODRINTH"
-            echo "hangar=$HANGAR"
-          } >> "$GITHUB_OUTPUT"
-          echo "Modrinth token configured: $MODRINTH; Hangar token configured: $HANGAR"
-
-      - name: Checkout Code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 0
-
-      # `gradle/wrapper/gradle-wrapper.jar` is an executable committed to the repository
-      # and run by every job that calls ./gradlew, and no reviewer can read a diff of it.
-      # This checksums it against Gradle's published releases, which is the accepted
-      # answer - deleting the jar is not, the wrapper has to stay.
-      #
-      # Before anything that could execute it, and in every workflow that runs ./gradlew.
-      # Validating after the fact would prove only that the jar which already ran was the
-      # right one.
-      #
-      # The check reaches services.gradle.org, and that call has no retry of its own.
-      # It failed twice on 2026-08-25 with ENETUNREACH and ETIMEDOUT, on unrelated pull
-      # requests, and a re-run cleared it both times. Because the step runs early, a
-      # transient failure costs the whole job; and because the same step guards
-      # release.yml, it can fail a tagged release and force the publish steps to be
-      # re-run. So it is attempted twice before the job is allowed to fail.
-      #
-      # Pinning the expected checksum into this repository would remove the network call
-      # rather than soften it, and was rejected: the guarantee this check provides is
-      # that the checksum comes from a source an attacker editing this repository cannot
-      # also edit. A committed checksum can be changed in the same pull request as the
-      # jar it describes.
-      - name: Validate Gradle Wrapper
-        id: wrapper
-        continue-on-error: true
-        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-
-      # ETIMEDOUT arrives with its own delay built in, but ENETUNREACH returns instantly,
-      # so retrying straight away would reach the same unreachable network microseconds
-      # later and prove nothing. Give a brief outage time to clear.
-      - name: Wait Before Revalidating
-        if: steps.wrapper.outcome == 'failure'
-        run: sleep 15
-
-      # Only reached when the first attempt failed. This one is not tolerated: a wrapper
-      # that fails validation twice fails the job.
-      - name: Validate Gradle Wrapper (retry)
-        if: steps.wrapper.outcome == 'failure'
-        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-
-      - name: Set up Java 21
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
-        with:
-          java-version: '21'
-          distribution: 'temurin'
-
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
-
-      - name: Extract Tag & Release Channel
-        id: vars
-        run: |
-          TAG_NAME="${GITHUB_REF#refs/tags/}"
-          VERSION="${TAG_NAME#v}"
-          echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          # Everything before the first hyphen: 1.0.0-beta.1 -> 1.0.0. Used to find the
-          # changelog entry, which is written per version rather than per pre-release.
-          echo "baseVersion=${VERSION%%-*}" >> $GITHUB_OUTPUT
-
-          # Hangar channel names are capitalised and must already exist on the project.
-          if [[ "$TAG_NAME" =~ alpha ]]; then
-            echo "channel=alpha" >> $GITHUB_OUTPUT
-            echo "hangarChannel=Alpha" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          elif [[ "$TAG_NAME" =~ beta|rc ]]; then
-            echo "channel=beta" >> $GITHUB_OUTPUT
-            echo "hangarChannel=Beta" >> $GITHUB_OUTPUT
-            echo "prerelease=true" >> $GITHUB_OUTPUT
-          else
-            echo "channel=release" >> $GITHUB_OUTPUT
-            echo "hangarChannel=Release" >> $GITHUB_OUTPUT
-            echo "prerelease=false" >> $GITHUB_OUTPUT
-          fi
-
-      # A stable release tagged while CHANGELOG.md still says only [Unreleased] would
-      # otherwise publish to three registries with no release notes and nobody noticing.
-      - name: Check Changelog And Collect Release Notes
+          test -n "$MODRINTH_TOKEN" || { echo 'MODRINTH_TOKEN is required'; exit 1; }
+          test -n "$HANGAR_API_TOKEN" || { echo 'HANGAR_API_TOKEN is required'; exit 1; }
+      - name: Check existing destinations
+        id: destinations
         env:
-          VERSION: ${{ steps.vars.outputs.version }}
-          BASE_VERSION: ${{ steps.vars.outputs.baseVersion }}
-          PRERELEASE: ${{ steps.vars.outputs.prerelease }}
-        run: |
-          extract() {
-            awk -v header="## [$1]" '
-              index($0, header) == 1 { found = 1; next }
-              found && /^## / { exit }
-              found { print }
-            ' CHANGELOG.md
-          }
-
-          # An exact pre-release heading wins if one exists, otherwise the heading for
-          # the version being worked towards.
-          NOTES="$(extract "$VERSION")"
-          [ -z "${NOTES//[[:space:]]/}" ] && NOTES="$(extract "$BASE_VERSION")"
-
-          if [ -z "${NOTES//[[:space:]]/}" ]; then
-            if [ "$PRERELEASE" != "true" ]; then
-              echo "CHANGELOG.md has no '## [$BASE_VERSION]' section."
-              echo
-              echo "A stable release must document what changed. Move the [Unreleased]"
-              echo "entries under a '## [$BASE_VERSION]' heading, merge that to main,"
-              echo "and re-tag."
-              exit 1
-            fi
-            echo "No changelog section for $VERSION; pre-releases may ship without one."
-            NOTES="See the GitHub release for this version."
-          fi
-
-          mkdir -p build
-          printf '%s\n' "$NOTES" > build/release-notes.md
-          echo "Release notes:"
-          cat build/release-notes.md
-
-      # The wrapper script is not guaranteed to carry the executable bit in the
-      # index (notably when committed from Windows), so set it explicitly.
-      - name: Ensure Gradle Wrapper Is Executable
-        run: chmod +x ./gradlew
-
-      # Never publish an artifact whose tests have not passed.
-      - name: Run Tests
-        run: ./gradlew test --no-daemon
-
-      - name: Build Release JAR
-        run: ./gradlew shadowJar -PpluginVersion=${{ steps.vars.outputs.version }} --no-daemon
-
-      - name: Generate Checksums
-        working-directory: build/libs
-        run: |
-          for file in *.jar; do
-            sha256sum "$file" > "${file}.sha256"
-          done
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
-        with:
-          tag_name: ${{ steps.vars.outputs.tag }}
-          name: "SpiralGenesis ${{ steps.vars.outputs.tag }} (${{ steps.vars.outputs.channel }})"
-          draft: false
-          prerelease: ${{ steps.vars.outputs.prerelease == 'true' }}
-          generate_release_notes: true
-          files: |
-            build/libs/*.jar
-            build/libs/*.sha256
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        run: python3 scripts/release_promotion.py destinations --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+      - name: Publish GitHub release
+        if: steps.destinations.outputs.github == 'absent'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # Both publish steps are skipped when their token is not configured, so a release
-      # still reaches GitHub while the registry projects are being set up. Secrets cannot
-      # be read directly in an `if`, hence the Detect Registry Tokens step above. The
-      # Modrinth token reaches mc-publish as an input only.
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" candidate/* --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title "SpiralGenesis $RELEASE_TAG (${{ steps.destinations.outputs.channel }})" --notes-file release-notes.md $(python3 scripts/release_promotion.py prerelease --tag "$RELEASE_TAG")
+      - name: Recheck before Modrinth
+        if: steps.destinations.outputs.modrinth == 'absent'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+        run: |
+          test -n "$MODRINTH_TOKEN" || { echo 'MODRINTH_TOKEN is required'; exit 1; }
+          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
       - name: Publish to Modrinth
-        if: steps.tokens.outputs.modrinth == 'true'
+        if: steps.destinations.outputs.modrinth == 'absent'
         uses: Kira-NT/mc-publish@52307b03863581dec6b652b83e597aec02ebb075 # v3.3.1
         with:
           modrinth-id: spiralgenesis
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
-          name: SpiralGenesis ${{ steps.vars.outputs.version }}
-          version: ${{ steps.vars.outputs.version }}
-          version-type: ${{ steps.vars.outputs.channel }}
-          changelog-file: build/release-notes.md
-          # Modrinth content rule 5 asks that every version declare its dependencies.
-          # mc-publish reads them from the plugin metadata by default, but `softdepend`
-          # in plugin.yml carries Bukkit plugin names rather than Modrinth project ids,
-          # and nothing maps one to the other - which is why both versions published
-          # before this was added carry an empty dependency list. The ids are pinned
-          # here explicitly so the mapping cannot be guessed wrong.
-          #
-          # All four are `optional`, matching `softdepend`: the plugin loads and works
-          # with none of them installed. scripts/modrinth-dependencies.py holds the
-          # name-to-id mapping and fails CI when this list and plugin.yml disagree.
+          name: SpiralGenesis ${{ fromJSON(steps.destinations.outputs.version_json) }}
+          version: ${{ fromJSON(steps.destinations.outputs.version_json) }}
+          version-type: ${{ steps.destinations.outputs.channel }}
+          changelog-file: release-notes.md
           dependencies: |
             floodgate(optional){modrinth:bWrNNfkb}
             griefprevention(optional){modrinth:O4o4mKaq}
             authmereloaded(optional){modrinth:9js4IEHC}
             multiverse-core(optional){modrinth:3wmN97b8}
-          # The sources and javadoc jars are not built by `shadowJar`, but exclude them
-          # explicitly so a future build change cannot quietly upload them as the plugin.
-          files: |
-            build/libs/*.jar
-            !build/libs/*-sources.jar
-            !build/libs/*-javadoc.jar
+          files: candidate/*.jar
           loaders: |
             paper
             purpur
             folia
-          # The 26 series is listed explicitly rather than as a wildcard: those
-          # releases are numbered 26.1, 26.1.1, 26.1.2, 26.2, so `26.x` does not
-          # describe them the way `1.21.x` describes 1.21.1 through 1.21.11.
           game-versions: |
             1.20.x
             1.21.x
@@ -277,29 +108,31 @@ jobs:
             26.1.1
             26.1.2
             26.2
-
-      # HANGAR_API_TOKEN is in this step's env only; the Gradle plugin reads it from there.
-      #
-      # The resource page is synced from docs/modrinth-description.md in this same step, so
-      # the token reaches no other step, and only after the version upload succeeded: a
-      # failed upload exits before the sync. A failed sync fails the step and the job,
-      # because a stale store page is a release defect, but the version stays published and
-      # the notice written before the sync says so. After a failed sync, run the sync task by
-      # hand (RELEASE_PROCESS.md) rather than re-running the job, whose upload would be
-      # rejected as a duplicate before the sync is reached.
+      - name: Validate Gradle wrapper for Hangar
+        if: steps.destinations.outputs.hangar == 'absent'
+        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - name: Set up Java 21 for Hangar
+        if: steps.destinations.outputs.hangar == 'absent'
+        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Setup Gradle for Hangar
+        if: steps.destinations.outputs.hangar == 'absent'
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - name: Publish to Hangar
-        if: steps.tokens.outputs.hangar == 'true'
+        if: steps.destinations.outputs.hangar == 'absent'
         env:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
-          VERSION: ${{ steps.vars.outputs.version }}
-          HANGAR_CHANNEL: ${{ steps.vars.outputs.hangarChannel }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          VERSION: ${{ fromJSON(steps.destinations.outputs.version_json) }}
+          HANGAR_CHANNEL: ${{ steps.destinations.outputs.hangar_channel }}
         run: |
-          ./gradlew publishPluginPublicationToHangar \
-            -PpluginVersion="$VERSION" \
-            -PhangarChannel="$HANGAR_CHANNEL" \
-            --no-daemon
-          echo "::notice title=Hangar::$VERSION is published to the Hangar $HANGAR_CHANNEL channel."
-          if ! ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon; then
-            echo "::error title=Hangar page sync::$VERSION is published, but the resource page was not synced. Run the sync by hand as described in RELEASE_PROCESS.md; do not re-run this job."
-            exit 1
-          fi
+          set -euo pipefail
+          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
+          test -n "$HANGAR_API_TOKEN" || { echo 'HANGAR_API_TOKEN is required'; exit 1; }
+          mkdir -p build
+          cp release-notes.md build/release-notes.md
+          chmod +x gradlew
+          ./gradlew publishPluginPublicationToHangar -PpluginVersion="$VERSION" -PhangarChannel="$HANGAR_CHANNEL" -PreleaseCandidateJar="candidate/SpiralGenesis-$VERSION.jar" --no-daemon
+          ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon

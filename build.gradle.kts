@@ -124,7 +124,11 @@ hangarPublish {
 
         platforms {
             paper {
-                jar.set(tasks.shadowJar.flatMap { it.archiveFile })
+                // The publisher supplies the downloaded, validated candidate. No archive
+                // task is attached to Hangar's publication graph.
+                jar.set(providers.gradleProperty("releaseCandidateJar").map {
+                    layout.projectDirectory.file(it)
+                })
                 platformVersions.set(
                     providers.gradleProperty("hangarPlatformVersions")
                         .orElse("1.20.x,1.21.x,26.1,26.1.1,26.1.2,26.2")
@@ -172,6 +176,17 @@ hangarPublish {
                         text.substringAfter("-->").trim()
                     }
             )
+        }
+    }
+}
+
+gradle.taskGraph.whenReady {
+    if (allTasks.any { it.name == "publishPluginPublicationToHangar" }) {
+        check(providers.gradleProperty("releaseCandidateJar").isPresent) {
+            "Hangar publication requires -PreleaseCandidateJar=<verified candidate>"
+        }
+        check(allTasks.none { it.name in setOf("shadowJar", "jar", "build", "assemble") }) {
+            "Hangar publication must not build or package a JAR"
         }
     }
 }
