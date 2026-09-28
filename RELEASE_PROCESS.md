@@ -66,9 +66,11 @@ The candidate and verifier jobs have `contents: read`, no registry credentials
 and no public publishing step. Only the `release` environment job has
 `contents: write`. `MODRINTH_TOKEN` and `HANGAR_API_TOKEN` must exist as
 **environment secrets** on `release`, with `Create versions`, `Read projects`
-and `Read versions` for Modrinth and `create_version`, `edit_page` and
-`read_projects` for Hangar. The Hangar key must belong to a project member;
+and `Read versions` for Modrinth and `create_version` and `edit_page` for
+Hangar. The Hangar key must cover the project and belong to a project member;
 reconciliation exchanges it for a session and verifies project membership.
+The permission and version lookup endpoints used here check project access and
+visibility; they do not require a separate `view_public_info` key permission.
 Do not add equivalent repository
 or organisation secrets. The protected environment requires a maintainer
 reviewer and tag restriction; verify those settings in the repository UI before
