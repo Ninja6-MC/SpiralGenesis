@@ -30,6 +30,7 @@ gradlew.bat     text eol=crlf
 *.md            text eol=lf
 *.mjs           text eol=lf
 *.py            text eol=lf
+*.gradle.kts    text eol=lf
 
 # Two files that no extension-based pattern reaches. LICENSE is extensionless by
 # convention, and a pattern for .gitattributes has to name it literally. Both check out
