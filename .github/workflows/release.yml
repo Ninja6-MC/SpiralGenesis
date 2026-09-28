@@ -11,6 +11,16 @@ on:
         description: Successful Verify Release Candidate run ID
         required: true
         type: string
+      modrinth_absence_confirmed:
+        description: Confirm the intended version is absent from the private Modrinth dashboard
+        required: true
+        default: false
+        type: boolean
+      hangar_absence_confirmed:
+        description: Confirm the intended version is absent from the private Hangar dashboard including deleted versions
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -20,7 +30,33 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  approval-summary:
+    if: github.ref == format('refs/tags/{0}', inputs.tag)
+    name: Review promotion identity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record requested promotion and manual confirmation
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          MODRINTH_ABSENCE_CONFIRMED: ${{ inputs.modrinth_absence_confirmed }}
+          HANGAR_ABSENCE_CONFIRMED: ${{ inputs.hangar_absence_confirmed }}
+          SOURCE: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 && ( "$MODRINTH_ABSENCE_CONFIRMED" == true || "$HANGAR_ABSENCE_CONFIRMED" == true ) ]]; then
+            echo 'Manual absence confirmation requires a new dispatch for each attempt.'
+            exit 1
+          fi
+          {
+            echo '## Promotion awaiting release environment review'
+            printf 'Repository: `%s`\n\nTag: `%s`\n\nSource: `%s`\n\nCandidate run: `%s`\n\nPublisher run/attempt: `%s/%s`\n\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$SOURCE" "$CANDIDATE_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'Manual Modrinth absence confirmation: **%s**\n\n' "$MODRINTH_ABSENCE_CONFIRMED"
+            printf 'Manual Hangar absence confirmation: **%s**\n\n' "$HANGAR_ABSENCE_CONFIRMED"
+            echo 'A true confirmation attests that this exact tag/version has no existing private, draft, scheduled, unlisted or deleted version in the corresponding registry dashboard. It applies only to this dispatch and candidate. Review before approving the release environment.'
+          } >> "$GITHUB_STEP_SUMMARY"
   publish:
+    needs: approval-summary
     if: github.ref == format('refs/tags/{0}', inputs.tag)
     name: Promote verified candidate
     runs-on: ubuntu-latest
@@ -64,7 +100,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-        run: python3 scripts/release_promotion.py destinations --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          MODRINTH_ABSENCE_CONFIRMED: ${{ inputs.modrinth_absence_confirmed }}
+          HANGAR_ABSENCE_CONFIRMED: ${{ inputs.hangar_absence_confirmed }}
+        run: |
+          set -euo pipefail
+          confirmation=()
+          if [[ "$MODRINTH_ABSENCE_CONFIRMED" == true ]]; then
+            [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo 'Manual confirmation requires a new dispatch'; exit 1; }
+            confirmation+=(--modrinth-absence-confirmed)
+          fi
+          if [[ "$HANGAR_ABSENCE_CONFIRMED" == true ]]; then
+            [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo 'Manual confirmation requires a new dispatch'; exit 1; }
+            confirmation+=(--hangar-absence-confirmed)
+          fi
+          python3 scripts/release_promotion.py destinations --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT" "${confirmation[@]}"
       - name: Publish GitHub release
         if: steps.destinations.outputs.github == 'absent'
         env:

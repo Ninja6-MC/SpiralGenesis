@@ -38,6 +38,17 @@ list.
 5. Dispatch **Publish Release** on the new tag ref with the exact tag and
    candidate run ID, for example
    `gh workflow run release.yml --ref v1.2.3 -f tag=v1.2.3 -f candidate_run_id=123456789 -R Ninja6-MC/SpiralGenesis`.
+   For a new Modrinth upload, first check the private project dashboard for
+   the exact intended version, including drafts, scheduled and unlisted
+   versions. Only if none exists, include
+   `-f modrinth_absence_confirmed=true`. The default is false. This manual
+   confirmation applies only to this tag, source, candidate and first attempt
+   of this dispatch; a rerun cannot reuse it. The preapproval job summary
+   records that identity and confirmation for the maintainer to review.
+   Hangar's authenticated API also hides soft-deleted versions. Check its
+   private dashboard, including deleted versions, and include
+   `-f hangar_absence_confirmed=true` only when this intended version does not
+   exist. This confirmation has the same identity and attempt restrictions.
    The run waits for the protected `release` environment. The
    maintainer reviews the candidate manifest, evidence and declared
    destinations and approves it in the browser. Automation must not approve
@@ -54,8 +65,11 @@ list.
 The candidate and verifier jobs have `contents: read`, no registry credentials
 and no public publishing step. Only the `release` environment job has
 `contents: write`. `MODRINTH_TOKEN` and `HANGAR_API_TOKEN` must exist as
-**environment secrets** on `release`, with `Create versions` for Modrinth and
-`create_version` plus `edit_page` for Hangar. Do not add equivalent repository
+**environment secrets** on `release`, with `Create versions`, `Read projects`
+and `Read versions` for Modrinth and `create_version`, `edit_page` and
+`read_projects` for Hangar. The Hangar key must belong to a project member;
+reconciliation exchanges it for a session and verifies project membership.
+Do not add equivalent repository
 or organisation secrets. The protected environment requires a maintainer
 reviewer and tag restriction; verify those settings in the repository UI before
 the first promotion. The publisher fails if either token is absent.
@@ -79,19 +93,39 @@ Dispatch **Publish Release** again with the same tag and candidate run ID to
 resume a failed run. Before writing, it checks existing destinations. A GitHub
 release is complete only if its source, prerelease flag, exact asset list and
 downloaded JAR digest match. A Modrinth version is complete only if its
-version type, filename and registry SHA-256 match. Complete destinations are
+version type and filename match and its downloaded JAR's SHA-256 matches the
+manifest. Modrinth supplies SHA-1/SHA-512 metadata, not SHA-256; the publisher
+computes SHA-256 from the consumer download. It also looks up the retained candidate's
+SHA-512 to recover an identical nonlisted upload. Aggregate project/version
+APIs omit drafts and unlisted versions even for members; a hash lookup cannot
+find a conflicting hidden upload. No matching version therefore stops unless
+the maintainer explicitly confirmed absence in the private dashboard for this
+dispatch. This is a manual reconciliation input, not automatic absence
+verification. Modrinth can silently fall back to anonymous visibility for an
+invalid token or missing read scopes; the dashboard check must use the
+maintainer's project-member session. A complete Modrinth version must be
+`listed` and readable through the anonymous consumer API. Complete destinations are
 skipped; absent ones receive the retained candidate. A conflicting version,
 unavailable API, incomplete asset or mismatched digest stops the run without
 replacement.
 
-Hangar's public version API exposes the JAR digest and download URL. The
-publisher compares version, channel, filename, declared SHA-256 and the
+Hangar's authenticated version API exposes hidden versions to project members,
+along with the JAR digest and download URL. The publisher compares version,
+channel, filename, declared SHA-256 and the
 downloaded consumer JAR. A mismatch stops for manual reconciliation. If a
 Hangar page sync alone failed, run
 `./gradlew syncPluginPublicationMainResourcePagePageToHangar` from the tagged
 source with a Hangar key carrying `edit_page`, then compare the public page to
 `docs/modrinth-description.md`. Do not rerun a version upload against a
-present Hangar version. Resolve any mismatched public bytes through the
+present Hangar version. A draft or scheduled Modrinth version, or a nonpublic
+Hangar version, stops after byte reconciliation for manual status recovery;
+it is never treated as an absent upload. Missing credentials, authentication
+failures and uncertain private-version access also stop before any upload.
+Hangar's authenticated 404 cannot rule out a soft-deleted version. It requires
+the explicit private-dashboard absence confirmation before uploading, even
+after project membership is verified. A complete Hangar version must have
+`public` visibility and be readable through the anonymous consumer API.
+Resolve any mismatched public bytes through the
 registry's own support or removal process before another promotion.
 
 GitHub, Modrinth and Hangar expose the published JAR or its SHA-256 for
