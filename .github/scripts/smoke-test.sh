@@ -176,6 +176,8 @@ echo "eula=true" > eula.txt
 # up as a changed number rather than as new terrain.
 cat > server.properties <<PROPS
 online-mode=false
+white-list=false
+enforce-whitelist=false
 level-type=minecraft\\:normal
 level-seed=$LEVEL_SEED
 view-distance=4

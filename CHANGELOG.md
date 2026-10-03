@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Paper 26.3 CI coverage, including a real player passing through the allocation gate,
+  unsafe-plot repair after respawn, and retrying a refused plot teleport.
+
 ### Fixed
 - **A player held at world spawn is no longer placed inside it.** When a plot was unsafe
   and the in-cell repair found no replacement, or the respawn handler held a player off

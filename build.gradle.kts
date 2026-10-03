@@ -50,7 +50,12 @@ repositories {
 // plugin, and so it can never be picked up by shadowJar and shipped.
 sourceSets {
     create("testLimbo")
-    create("botClient")
+    create("botClient") {
+        java.srcDir("src/botClientProtocol/java")
+    }
+    create("botClient26") {
+        java.srcDir("src/botClient/java")
+    }
 }
 
 dependencies {
@@ -100,6 +105,7 @@ dependencies {
     // A real protocol client, for driving an actual player connection in CI. From the
     // GeyserMC repository already declared above for Floodgate.
     "botClientImplementation"("org.geysermc.mcprotocollib:protocol:1.21.11-SNAPSHOT")
+    "botClient26Implementation"("org.geysermc.mcprotocollib:protocol:26.3-SNAPSHOT")
 }
 
 // Hangar publication. Everything is driven by properties and the HANGAR_API_TOKEN
@@ -315,6 +321,21 @@ tasks {
         // Runs as its own process against a live server, so unlike the plugin it does need
         // its dependencies inside it.
         from(configurations["botClientRuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) })
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+        exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "module-info.class")
+    }
+
+    // A separate client keeps the 1.21.11 regression runs on their own wire protocol.
+    register<Jar>("botClient26Jar") {
+        archiveBaseName.set("GateProbeBot-26.3")
+        archiveClassifier.set("")
+        archiveVersion.set("")
+        destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
+        manifest { attributes["Main-Class"] = "com.ninja6.botclient.GateProbeBot" }
+        from(sourceSets["botClient26"].output)
+        // Runs as its own process against a live server, so unlike the plugin it does need
+        // its dependencies inside it.
+        from(configurations["botClient26RuntimeClasspath"].map { if (it.isDirectory) it else zipTree(it) })
         duplicatesStrategy = DuplicatesStrategy.EXCLUDE
         exclude("META-INF/*.SF", "META-INF/*.DSA", "META-INF/*.RSA", "module-info.class")
     }
