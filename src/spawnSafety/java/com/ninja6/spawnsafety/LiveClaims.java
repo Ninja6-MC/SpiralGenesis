@@ -31,12 +31,23 @@ final class LiveClaims {
             result.claim.setPermission(trusted.toString(), ClaimPermission.Build);
             gp.dataStore.saveClaim(result.claim);
         }
-        if (trusted != null || owner.equals(SpawnSafetyPlugin.BOT_ID)) {
+        if (trusted != null || SpawnSafetyPlugin.BOT_ID.equals(owner)) {
             allowed = result.claim;
         }
+        org.bukkit.Bukkit.getLogger().info("SPAWNSAFETY claim owner=" + owner
+                + " trusted=" + trusted + " centre=" + x + "," + z);
         Claim actual = gp.dataStore.getClaimAt(new Location(world, x, 100, z), true, null);
         if (actual != result.claim) {
             throw new IllegalStateException("Created claim is absent from live lookup");
+        }
+    }
+
+    void checkAllocationPremises(World world) {
+        Claim centre = gp.dataStore.getClaimAt(new Location(world, 0, 100, 0), true, null);
+        Claim edge = gp.dataStore.getClaimAt(new Location(world, -4, 100, 0), true, null);
+        Claim admin = gp.dataStore.getClaimAt(new Location(world, 16, 100, 0), true, null);
+        if (centre != null || edge == null || edge.ownerID == null || admin == null || admin.ownerID != null) {
+            throw new IllegalStateException("Missing edge-only foreign claim or administrative claim premise");
         }
     }
 

@@ -50,7 +50,7 @@ cat > plugins/SpiralGenesis/config.yml <<'CONFIG'
 cell-size: 64
 placement:
   stride: 16
-  max-candidates: 3
+  max-candidates: 4
 allocation:
   trigger: ON_JOIN
 protection:

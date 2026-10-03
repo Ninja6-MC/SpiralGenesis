@@ -78,21 +78,25 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
         world.setStorm(false);
         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "gamerule minecraft:spawn_mobs false");
         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "gamerule minecraft:fire_spread_radius_around_player 0");
-        // Three candidates in a 64-block cell. Clear above all floors so generated trees
+        // Four candidates in a 64-block cell. Clear above all floors so generated trees
         // and terrain cannot make a claimed point accidentally fail a terrain check.
         platform(0, 0);
         platform(16, 0);
         platform(16, 16);
+        platform(0, 16);
         platform(80, 0);
         world.setSpawnLocation(80, 100, 0);
-        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "gamerule minecraft:spawn_radius 0");
+        Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "gamerule minecraft:respawn_radius 0");
         boolean installed = Bukkit.getPluginManager().isPluginEnabled("GriefPrevention");
         require(installed == !mode.equals("none"), "Optional GP presence differs from requested mode");
         if (installed) {
             claims = new LiveClaims();
-            // A foreign claim covering the first viable allocation candidate must force
-            // allocation elsewhere, even with automatic spawn protection disabled.
-            claims.create(world, 0, 0, FOREIGN, null);
+            // The centre is unclaimed, but the left edge of its 9x9 spawn square touches
+            // a foreign claim. The next candidate is an administrative claim. Both must
+            // be skipped even with automatic spawn protection disabled.
+            claims.create(world, -9, 0, FOREIGN, null);
+            claims.create(world, 16, 0, null, null);
+            claims.checkAllocationPremises(world);
         }
         require(!YamlConfiguration.loadConfiguration(recordFile()).contains("players." + BOT_ID),
                 "Reused player data would bypass allocation");
@@ -113,7 +117,7 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
         Player bot = bot();
         require(bot.getGameMode() == GameMode.SURVIVAL, "Bot must take real survival damage");
         initialX = mode.equals("none") ? 0 : 16;
-        initialZ = 0;
+        initialZ = mode.equals("none") ? 0 : 16;
         checkAt(initialX, 100, initialZ);
         checkRecord(initialX, initialZ);
         if (claims != null) {
@@ -129,20 +133,20 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
 
     private void prepareRepair() {
         require(claims != null, "Claim repair requires real GP");
-        // The claimed centre remains safe terrain; the assigned second candidate becomes
-        // lava. Only the third candidate is both safe and permitted for this owner.
+        // The edge-claimed centre and administrative second candidate remain safe terrain;
+        // the assigned third candidate becomes lava. The fourth is the permitted control.
         require(bot().teleport(new Location(world, 80.5, 100, 0.5)), "Cannot stage bot before repair");
         ruin(initialX, initialZ);
-        claims.create(world, 16, 16, mode.equals("own") ? BOT_ID : FOREIGN,
+        claims.create(world, 0, 16, mode.equals("own") ? BOT_ID : FOREIGN,
                 mode.equals("trusted") ? BOT_ID : null);
     }
 
     private void checkRepair() throws Exception {
-        checkAt(16, 100, 16);
-        checkRecord(16, 16);
-        claims.checkSquare(new Location(world, 16, 100, 16), true);
+        checkAt(0, 100, 16);
+        checkRecord(0, 16);
+        claims.checkSquare(new Location(world, 0, 100, 16), true);
         checkObservation();
-        storedX = 16;
+        storedX = 0;
         storedZ = 16;
     }
 
@@ -153,6 +157,7 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
         ruin(0, 0);
         ruin(16, 0);
         ruin(16, 16);
+        ruin(0, 16);
         for (int x = 77; x <= 83; x++) {
             for (int z = -3; z <= 3; z++) {
                 for (int y = 100; y <= 103; y++) {
