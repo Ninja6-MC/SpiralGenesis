@@ -103,8 +103,10 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
     }
 
     private void platform(int centreX, int centreZ) {
-        for (int x = centreX - 9; x <= centreX + 9; x++) {
-            for (int z = centreZ - 9; z <= centreZ + 9; z++) {
+        // Candidates sit at chunk corners. Prepare their whole chunk as well as a margin
+        // on the negative side, so chunk terrain measurements see a level surface.
+        for (int x = centreX - 9; x <= centreX + 15; x++) {
+            for (int z = centreZ - 9; z <= centreZ + 15; z++) {
                 for (int y = 100; y < world.getMaxHeight(); y++) {
                     world.getBlockAt(x, y, z).setType(Material.AIR, false);
                 }
