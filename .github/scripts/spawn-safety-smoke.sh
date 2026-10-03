@@ -38,6 +38,8 @@ fi
 printf 'eula=true\n' > eula.txt
 cat > server.properties <<'PROPERTIES'
 online-mode=false
+white-list=false
+enforce-whitelist=false
 server-ip=127.0.0.1
 view-distance=3
 simulation-distance=3
