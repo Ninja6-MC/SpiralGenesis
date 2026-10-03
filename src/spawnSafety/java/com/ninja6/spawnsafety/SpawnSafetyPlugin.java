@@ -2,6 +2,7 @@ package com.ninja6.spawnsafety;
 
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
+import org.bukkit.HeightMap;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
@@ -85,6 +86,7 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
         platform(16, 16);
         platform(0, 16);
         platform(80, 0);
+        verifyPreparedTerrain();
         world.setSpawnLocation(80, 100, 0);
         Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "gamerule minecraft:respawn_radius 0");
         boolean installed = Bukkit.getPluginManager().isPluginEnabled("GriefPrevention");
@@ -170,12 +172,25 @@ public final class SpawnSafetyPlugin extends JavaPlugin implements Listener {
         require(world.getBlockAt(80, 100, 0).getType().isSolid(), "World spawn was not obstructed");
     }
 
-    private void ruin(int x, int z) {
-        for (int dx = -5; dx <= 5; dx++) {
-            for (int dz = -5; dz <= 5; dz++) {
-                world.getBlockAt(x + dx, 99, z + dz).setType(Material.LAVA, false);
+    private void verifyPreparedTerrain() {
+        // Check every column of the prepared candidate chunks, independently of which
+        // columns a terrain scanner happens to sample. All candidates must start viable.
+        for (int x = 0; x < 32; x++) {
+            for (int z = 0; z < 32; z++) {
+                require(world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES) == 99
+                        && world.getBlockAt(x, 99, z).getType() == Material.STONE
+                        && world.getBlockAt(x, 100, z).isPassable()
+                        && world.getBlockAt(x, 101, z).isPassable(),
+                        "Prepared terrain is not a flat, clear stone floor at " + x + "," + z);
             }
         }
+        getLogger().info("SPAWNSAFETY terrain verified all candidate chunks floor=99 headroom=clear");
+    }
+
+    private void ruin(int x, int z) {
+        // One lethal floor column is sufficient to invalidate the stored point. Keep the
+        // other columns safe so repairing elsewhere proves claim policy, not lava spread.
+        world.getBlockAt(x, 99, z).setType(Material.LAVA, false);
     }
 
     private void kill() {
