@@ -68,13 +68,14 @@ public final class GateProbeBot {
 
     public static void main(String[] args) throws Exception {
         if (args.length < 4) {
-            System.err.println("usage: GateProbeBot <host> <port> <username> <seconds>");
+            System.err.println("usage: GateProbeBot <host> <port> <username> <seconds> [idle]");
             System.exit(2);
         }
         String host = args[0];
         int port = Integer.parseInt(args[1]);
         String username = args[2];
         long seconds = Long.parseLong(args[3]);
+        boolean idle = args.length > 4 && args[4].equals("idle");
 
         AtomicReference<double[]> position = new AtomicReference<>();
         AtomicBoolean inGame = new AtomicBoolean();
@@ -141,7 +142,7 @@ public final class GateProbeBot {
         int steps = 0;
         while (System.nanoTime() < deadline && finished.getCount() > 0 && inGame.get()) {
             double[] at = position.get();
-            if (at != null) {
+            if (at != null && !idle) {
                 // Horizontal only. The gate ignores descent, because at least one limbo
                 // implementation declines to pin a falling player, so a vertical step would
                 // prove nothing either way.

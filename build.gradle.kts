@@ -50,6 +50,7 @@ repositories {
 // plugin, and so it can never be picked up by shadowJar and shipped.
 sourceSets {
     create("testLimbo")
+    create("spawnSafety")
     create("botClient") {
         java.srcDir("src/botClientProtocol/java")
     }
@@ -101,6 +102,9 @@ dependencies {
 
     // The stand-in login plugin compiles against the same server API and bundles nothing.
     "testLimboCompileOnly"("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+
+    "spawnSafetyCompileOnly"("io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT")
+    "spawnSafetyCompileOnly"("com.github.TechFortress:GriefPrevention:16.18.2")
 
     // A real protocol client, for driving an actual player connection in CI. From the
     // GeyserMC repository already declared above for Floodgate.
@@ -305,6 +309,14 @@ tasks {
         archiveVersion.set("")
         destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
         from(sourceSets["testLimbo"].output)
+    }
+
+    register<Jar>("spawnSafetyJar") {
+        archiveBaseName.set("SpawnSafety")
+        archiveClassifier.set("")
+        archiveVersion.set("")
+        destinationDirectory.set(layout.buildDirectory.dir("test-fixtures"))
+        from(sourceSets["spawnSafety"].output)
     }
 
     /**
