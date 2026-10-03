@@ -7,6 +7,7 @@ import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
 import org.geysermc.mcprotocollib.network.factory.ClientNetworkSessionFactory;
 import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.MinecraftProtocol;
+import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientTickEndPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundLoginPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundRespawnPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerCombatKillPacket;
@@ -148,6 +149,8 @@ public final class GateProbeBot {
                 double x = at[0] + step[0];
                 double z = at[2] + step[1];
                 session.send(new ServerboundMovePlayerPosPacket(true, false, x, at[1], z));
+                // 26.3 rejects a second position packet before the client ends its tick.
+                session.send(ServerboundClientTickEndPacket.INSTANCE);
                 // Optimistic local update. If the server disagrees - a limbo pinning us, a
                 // block in the way, or an allocation teleporting us - it says so with a
                 // position packet, which the listener above writes back over this.
