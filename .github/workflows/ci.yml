@@ -117,7 +117,7 @@ jobs:
       # The stand-in login plugin. Built here rather than in the smoke job so the fixture
       # is compiled once against the same API as the plugin it is testing.
       - name: Build Test Fixtures
-        run: ./gradlew testLimboJar botClientJar --no-daemon
+        run: ./gradlew testLimboJar botClientJar botClient26Jar --no-daemon
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -276,6 +276,28 @@ jobs:
             platform: paper
             minecraft: '26.2'
             java: '25'
+          - label: 'paper 26.3'
+            platform: paper
+            minecraft: '26.3'
+            java: '25'
+          - label: 'paper 26.3 real player through the gate'
+            platform: paper
+            minecraft: '26.3'
+            java: '25'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            bot_jar: 'GateProbeBot-26.3.jar'
+            samples: '5'
+          - label: 'paper 26.3 refused teleport is re-asserted'
+            platform: paper
+            minecraft: '26.3'
+            java: '25'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            bot_jar: 'GateProbeBot-26.3.jar'
+            teleport_cancel: 'true'
+            bot_held_seconds: '20'
+            samples: '5'
           - label: 'folia 26.2'
             platform: folia
             minecraft: '26.2'
@@ -436,7 +458,7 @@ jobs:
           fi
           BOT=""
           if [ -n "${{ matrix.bot }}" ]; then
-            BOT="$(find fixture -name 'GateProbeBot*.jar' | head -1)"
+            BOT="$(find fixture -name '${{ matrix.bot_jar || 'GateProbeBot.jar' }}' | head -1)"
             # Same reasoning as above: an empty argument would silently drop every
             # real-player assertion and still report success.
             if [ -z "$BOT" ]; then

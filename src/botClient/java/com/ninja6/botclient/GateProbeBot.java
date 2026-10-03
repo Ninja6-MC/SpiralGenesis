@@ -7,13 +7,10 @@ import org.geysermc.mcprotocollib.network.event.session.SessionAdapter;
 import org.geysermc.mcprotocollib.network.factory.ClientNetworkSessionFactory;
 import org.geysermc.mcprotocollib.network.packet.Packet;
 import org.geysermc.mcprotocollib.protocol.MinecraftProtocol;
-import org.geysermc.mcprotocollib.protocol.data.game.ClientCommand;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundLoginPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.ClientboundRespawnPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerCombatKillPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.clientbound.entity.player.ClientboundPlayerPositionPacket;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.ServerboundClientCommandPacket;
-import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.level.ServerboundAcceptTeleportationPacket;
 import org.geysermc.mcprotocollib.protocol.packet.ingame.serverbound.player.ServerboundMovePlayerPosPacket;
 
 import java.util.Locale;
@@ -100,7 +97,7 @@ public final class GateProbeBot {
                     // the server discards our movement packets outright, so without this the
                     // bot appears to walk and the server never fires PlayerMoveEvent - which
                     // looks exactly like a gate that refuses to open.
-                    s.send(new ServerboundAcceptTeleportationPacket(pos.getId()));
+                    s.send(BotWirePackets.acceptTeleport(pos));
 
                     // The server's authoritative position. It arrives on join and again
                     // every time the server moves us - which is what SpiralGenesis does when
@@ -115,7 +112,7 @@ public final class GateProbeBot {
                     // respawn; nothing server-side fires PlayerRespawnEvent until that
                     // arrives. Sending it immediately is what makes a death testable at all.
                     report("died");
-                    s.send(new ServerboundClientCommandPacket(ClientCommand.RESPAWN));
+                    s.send(BotWirePackets.respawn());
                 } else if (packet instanceof ClientboundRespawnPacket) {
                     // The position that follows this is where the server decided to put us,
                     // which for SpiralGenesis is the whole answer to "where do I respawn".
