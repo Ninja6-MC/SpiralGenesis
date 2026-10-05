@@ -57,7 +57,7 @@ jobs:
       - name: Validate Gradle Wrapper
         id: wrapper
         continue-on-error: true
-        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       # ETIMEDOUT arrives with its own delay built in, but ENETUNREACH returns instantly,
       # so retrying straight away would reach the same unreachable network microseconds
@@ -70,7 +70,7 @@ jobs:
       # that fails validation twice fails the job.
       - name: Validate Gradle Wrapper (retry)
         if: steps.wrapper.outcome == 'failure'
-        uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       - name: Set up Java 21
         uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
@@ -79,7 +79,7 @@ jobs:
           distribution: 'temurin'
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+        uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
 
       # The wrapper script is not guaranteed to carry the executable bit in the
       # index (notably when committed from Windows), so set it explicitly.
