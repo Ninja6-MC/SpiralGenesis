@@ -141,7 +141,7 @@ hangarPublish {
                 })
                 platformVersions.set(
                     providers.gradleProperty("hangarPlatformVersions")
-                        .orElse("1.20.x,1.21.x,26.1,26.1.1,26.1.2,26.2")
+                        .orElse("1.20.x,1.21.x,26.1,26.1.1,26.1.2,26.2,26.3")
                         .map { versions -> versions.split(",").map(String::trim).filter(String::isNotEmpty) }
                 )
                 // The softdepend list in plugin.yml, all optional, matching the Modrinth

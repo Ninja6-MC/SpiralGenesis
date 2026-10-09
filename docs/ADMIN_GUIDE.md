@@ -968,6 +968,15 @@ players who joined in between.
 Writes are coalesced and flushed off the main thread. To reset a single player, use
 `/sgen reassign <player>` rather than editing the file by hand.
 
+### Format stability and rollback
+
+The `data.yml` format is frozen as of 1.0.0-beta.1: later releases read what this one
+writes, and a change to it is a breaking change that needs a major version. Upgrading from
+1.0.0-alpha.1 or 1.0.0-alpha.2 is in place and needs no migration step. Before upgrading,
+stop the server and copy `plugins/SpiralGenesis` somewhere safe. To roll back, stop the
+server, restore that copy and start the older jar. Do not put a `data.yml` written by a
+newer version under an older jar; that is not supported.
+
 ### When `data.yml` cannot be read
 
 A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.

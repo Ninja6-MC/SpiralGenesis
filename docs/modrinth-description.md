@@ -18,7 +18,8 @@ operator gives them one with `/sgen reassign`.
 
 ## Quick start
 
-1. **Requirements:** Paper 1.20 or newer, a Paper fork such as Purpur, or Folia.
+1. **Requirements:** Paper 1.20 or newer, a Paper fork such as Purpur, or Folia (on the
+   versions listed under Compatibility).
    Java 21 for Minecraft 1.20 and 1.21; Minecraft 26.1 and newer require the server
    to run on Java 25, which is Mojang's requirement rather than this plugin's.
 2. Drop `SpiralGenesis-x.y.z.jar` into your server's `plugins/` folder.
@@ -196,16 +197,19 @@ in the [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/A
 
 | | Supported |
 | :--- | :--- |
-| Paper, Purpur and other Paper forks | Yes 1.20.x, 1.21.x, 26.x |
-| Folia | Yes 1.20.x, 1.21.x, 26.x |
+| Paper, Purpur and other Paper forks | Yes 1.20.x, 1.21.x, 26.1 to 26.3 |
+| Folia | Yes 1.20.4, 1.21.11, 26.2 (the versions CI boots); no Folia 26.3 build exists, so it is not declared |
 | Spigot / CraftBukkit | No - allocation needs Paper's async chunk and teleport APIs |
 | Fabric / NeoForge | No - mod loaders, not plugin platforms |
 | Velocity / BungeeCord | No - proxies have no world to allocate in; install on the backend servers |
 
 Built against the 1.20.4 API, which newer servers still accept. CI boots the plugin on
-Paper and Folia at both ends of the supported range - 1.20.4 and 26.2 - and runs allocation
-against real generated terrain on each, so the range is checked on every change rather than
-assumed.
+Paper at 1.20.4, 1.21.11, 26.2 and 26.3, and on Folia at 1.20.4, 1.21.11 and 26.2, and runs
+allocation against real generated terrain on each, so the range is checked on every change
+rather than assumed. Paper 26.3 is also verified with real clients in CI and in isolated
+runs; a long soak on 26.3 is planned for 1.0.0. Folia support is limited to the versions
+listed above, and the Modrinth and Hangar version lists cannot express that split, so
+treat them as the Paper range.
 
 Minecraft 26.1 and newer refuse to start on anything below **Java 25**. That is a server
 requirement from Mojang, not this plugin: the jar is Java 21 bytecode, which a Java 25
