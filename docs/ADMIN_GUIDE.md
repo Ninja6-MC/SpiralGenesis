@@ -972,7 +972,11 @@ Writes are coalesced and flushed off the main thread. To reset a single player, 
 
 The `data.yml` format is frozen as of 1.0.0-beta.1: later releases read what this one
 writes, and a change to it is a breaking change that needs a major version. Upgrading from
-1.0.0-alpha.1 or 1.0.0-alpha.2 is in place and needs no migration step. Before upgrading,
+1.0.0-alpha.1 or 1.0.0-alpha.2 is in place and needs no migration step. An upgrade from
+1.0.0-alpha.1 also takes the 1.0.0-alpha.2 changes: an `origin.world` that names no loaded
+world stops allocation until corrected, and the owner of a spawn claim created under
+`ADMIN_CLAIM` cannot `/trust` anyone on it until `/sgen protect` repairs it (see
+`CHANGELOG.md`, 1.0.0-alpha.2). Before upgrading,
 stop the server and copy `plugins/SpiralGenesis` somewhere safe. To roll back, stop the
 server, restore that copy and start the older jar. Do not put a `data.yml` written by a
 newer version under an older jar; that is not supported.

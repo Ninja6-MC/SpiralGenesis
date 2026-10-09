@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [1.0.0-beta.1]
+## [1.0.0-beta.1] - 2026-10-10
 
 **Compatibility.** Paper, Purpur and other Paper forks: Minecraft 1.20.x, 1.21.x and 26.1
 to 26.3. Folia: 1.20.4, 1.21.11 and 26.2, the versions CI boots; there is no official Folia
@@ -20,8 +20,11 @@ and Java 21 is enough for 1.20 and 1.21.
 
 **The `data.yml` format is frozen as of this release.** Later releases will read what this
 one writes, and changing the format will be a breaking change that waits for a major
-version. **Upgrading** from 1.0.0-alpha.1 or 1.0.0-alpha.2 is in place: no migration step
-and no configuration change. Stop the server and copy `plugins/SpiralGenesis` before you
+version. **Upgrading** from 1.0.0-alpha.1 or 1.0.0-alpha.2 is in place and needs no
+migration step. An upgrade from 1.0.0-alpha.1 also takes the changes in the
+1.0.0-alpha.2 upgrade notes: a server whose `origin.world` does not name a loaded world
+stops allocating until the name is corrected, and the owner of a spawn claim created under
+`ADMIN_CLAIM` cannot `/trust` anyone on it until `/sgen protect` repairs it. Stop the server and copy `plugins/SpiralGenesis` before you
 upgrade. **Rolling back** means stopping the server, restoring that copy and starting the
 older jar; this was verified to restore `data.yml` byte for byte. Putting a `data.yml`
 written by this version or a later one under an older jar is not supported.

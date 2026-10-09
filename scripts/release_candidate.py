@@ -13,7 +13,7 @@ from pathlib import Path
 TAG = re.compile(r"^v([0-9]+)\.([0-9]+)\.([0-9]+)(?:-(alpha|beta|rc)\.([0-9]+))?$")
 SHA = re.compile(r"^[0-9a-f]{40}$")
 DESTINATIONS = ["github", "modrinth", "hangar"]
-TESTS = ["gradle-test"] + [f"{platform}-{version}-smoke" for version in ("1.20.4", "1.21.11", "26.2") for platform in ("paper", "folia")]
+TESTS = ["gradle-test"] + [f"{platform}-{version}-smoke" for version in ("1.20.4", "1.21.11", "26.2") for platform in ("paper", "folia")] + ["paper-26.3-smoke"]
 
 
 def details(tag):

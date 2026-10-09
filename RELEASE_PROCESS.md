@@ -26,7 +26,8 @@ list.
    version, channel, workflow run ID and attempt, JAR artifact ID, complete
    filename and SHA-256 list, and GitHub/Modrinth/Hangar destinations. The smoke
    jobs download that artifact, inspect its descriptor and main class, and boot
-   it on Paper and Folia at 1.20.4, 1.21.11 and 26.2. Only when all six pass
+   it on Paper and Folia at 1.20.4, 1.21.11 and 26.2, and on Paper at 26.3.
+   Only when all seven pass
    does the run retain passing evidence bound to the manifest digest and
    candidate identity.
 3. Record the successful candidate run ID. Do not rerun a failed candidate:
