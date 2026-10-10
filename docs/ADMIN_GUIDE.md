@@ -976,10 +976,10 @@ writes, and a change to it is a breaking change that needs a major version. Upgr
 1.0.0-alpha.1 also takes the 1.0.0-alpha.2 changes: an `origin.world` that names no loaded
 world stops allocation until corrected, and the owner of a spawn claim created under
 `ADMIN_CLAIM` cannot `/trust` anyone on it until `/sgen protect` repairs it (see
-`CHANGELOG.md`, 1.0.0-alpha.2). Before upgrading,
-stop the server and copy `plugins/SpiralGenesis` somewhere safe. To roll back, stop the
-server, restore that copy and start the older jar. Do not put a `data.yml` written by a
-newer version under an older jar; that is not supported.
+`CHANGELOG.md`, 1.0.0-alpha.2). Before upgrading, stop the server and copy
+`plugins/SpiralGenesis` somewhere safe. To roll back, stop the server, restore that copy
+and start the older jar. Do not put a `data.yml` written by a newer version under an
+older jar; that is not supported.
 
 ### When `data.yml` cannot be read
 
