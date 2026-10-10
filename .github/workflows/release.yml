@@ -158,6 +158,7 @@ jobs:
             26.1.1
             26.1.2
             26.2
+            26.3
       - name: Validate Gradle wrapper for Hangar
         if: steps.destinations.outputs.hangar == 'absent'
         uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
