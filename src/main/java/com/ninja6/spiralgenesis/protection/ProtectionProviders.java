@@ -146,6 +146,18 @@ public final class ProtectionProviders {
      * plugin's {@code softdepend:} carries the same spelling, which is what guarantees it
      * has already enabled by the time this runs.
      */
+    public static ClaimInspector createClaimInspector(Plugin plugin) {
+        try {
+            if (isFolia() || !isGriefPreventionPresent()) {
+                return ClaimInspector.UNAVAILABLE;
+            }
+            return GriefPreventionClaimInspector.live(plugin.getLogger());
+        } catch (Throwable t) {
+            plugin.getLogger().log(Level.WARNING, "Could not bind claim inspection", t);
+            return ClaimInspector.UNAVAILABLE;
+        }
+    }
+
     private static boolean isGriefPreventionPresent() {
         try {
             return Bukkit.getPluginManager()

@@ -11,6 +11,16 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class ClaimResultTest {
 
     @Test
+    void structuredChangesDoNotDependOnLogText() {
+        for (ClaimChange change : ClaimChange.values()) {
+            ClaimResult result = new ClaimResult(ClaimOutcome.ALREADY_CLAIMED, "same text", change);
+            assertEquals(change != ClaimChange.UNCHANGED, result.changed());
+            assertEquals(change, result.change());
+        }
+        assertFalse(ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED).changed());
+    }
+
+    @Test
     @DisplayName("A missing detail is normalised to empty rather than carried as null")
     void testDetailNormalised() {
         ClaimResult result = ClaimResult.of(ClaimOutcome.REFUSED, null);

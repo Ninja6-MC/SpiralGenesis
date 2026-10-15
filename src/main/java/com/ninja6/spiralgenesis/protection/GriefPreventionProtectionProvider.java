@@ -472,9 +472,10 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
                     && matches(covering, centre, requestedSize, owner) == null
                     && trustOwner(gp, covering, owner);
             if (repaired) {
-                return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering)
+                return new ClaimResult(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering)
                         + " Its owner has been granted the permissions a spawn claim carries "
-                        + "but this one was missing, so they can now manage trust on it.");
+                        + "but this one was missing, so they can now manage trust on it.",
+                        ClaimChange.ACCESS_REPAIRED);
             }
             return ClaimResult.of(ClaimOutcome.ALREADY_CLAIMED, describeOverlap(covering));
         }
@@ -529,12 +530,13 @@ public final class GriefPreventionProtectionProvider implements ProtectionProvid
                     + "in, or another plugin cancelled the creation.");
         }
 
-        if (ownership == ClaimOwnership.ADMIN_CLAIM) {
-            trustOwner(gp, result.claim, owner);
-        }
-        return ClaimResult.of(ClaimOutcome.CREATED, "claim " + result.claim.getID() + ", "
+        boolean trusted = ownership != ClaimOwnership.ADMIN_CLAIM
+                || missingOwnerPermissions(level -> result.claim.hasExplicitPermission(owner, level)).isEmpty()
+                || trustOwner(gp, result.claim, owner);
+        return new ClaimResult(ClaimOutcome.CREATED, "claim " + result.claim.getID() + ", "
                 + requestedSize + "x" + requestedSize + " at " + centre.getBlockX() + ","
-                + centre.getBlockZ() + " in " + world.getName());
+                + centre.getBlockZ() + " in " + world.getName(),
+                trusted ? ClaimChange.CREATED_TRUSTED : ClaimChange.CREATED_TRUST_FAILED);
     }
 
     /**

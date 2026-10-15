@@ -14,10 +14,15 @@ import java.util.Objects;
  * @param outcome what happened, and the only field worth a decision
  * @param detail  provider wording for the log, empty when there is nothing to add
  */
-public record ClaimResult(ClaimOutcome outcome, String detail) {
+public record ClaimResult(ClaimOutcome outcome, String detail, ClaimChange change) {
+
+    public ClaimResult(ClaimOutcome outcome, String detail) {
+        this(outcome, detail, ClaimChange.UNCHANGED);
+    }
 
     public ClaimResult {
         Objects.requireNonNull(outcome, "outcome");
+        Objects.requireNonNull(change, "change");
         detail = (detail == null) ? "" : detail;
     }
 
@@ -34,6 +39,10 @@ public record ClaimResult(ClaimOutcome outcome, String detail) {
     /** Whether the ground is now reserved as a direct result of this call. */
     public boolean isCreated() {
         return outcome == ClaimOutcome.CREATED;
+    }
+
+    public boolean changed() {
+        return change != ClaimChange.UNCHANGED;
     }
 
     /** Whether a detail string is present, so a caller can word its log line either way. */
