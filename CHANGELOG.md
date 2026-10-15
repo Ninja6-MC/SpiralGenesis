@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `/sgen me` reports a player's spawn coordinates, distance, respawn-point status,
+  actual claim bounds and named access without administrative permission.
+- Configurable chat notices for plot placement and claim creation or repaired access,
+  with independent automatic-notice switches and legacy colour support.
+
+### Fixed
+- `/sgen info <player>` now includes actual claim bounds and access, and floors
+  negative block coordinates correctly.
+
 ## [1.0.0-beta.1] - 2026-10-10
 
 **Compatibility.** Paper, Purpur, other Paper forks and Folia: Minecraft 1.20.x, 1.21.x

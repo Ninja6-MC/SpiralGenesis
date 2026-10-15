@@ -8,6 +8,8 @@ import com.ninja6.spiralgenesis.config.ClaimOwnership;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.manager.SpawnSimulator;
 import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
+import com.ninja6.spiralgenesis.protection.ClaimResult;
+import com.ninja6.spiralgenesis.messages.PlotInformation;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
@@ -25,6 +27,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
@@ -84,6 +87,20 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("me")
+                && sender.hasPermission("spiralgenesis.me")) {
+            if (!(sender instanceof Player player) || args.length != 1) {
+                plugin.plotInformation().messages().send(sender, "usage", Map.of());
+            } else {
+                player.getScheduler().run(plugin, task -> plugin.plotInformation().show(player), null);
+            }
+            return true;
+        }
+        if (args.length == 0 && !sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)
+                && sender.hasPermission("spiralgenesis.me")) {
+            plugin.plotInformation().messages().send(sender, "help", Map.of());
+            return true;
+        }
         if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
             sender.sendMessage(ChatColor.RED + "You do not have permission to execute SpiralGenesis commands.");
             return true;
@@ -217,7 +234,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         // A command handler runs on the server thread, which is the thread the provider
         // requires and the thread the spawn was just written from, so the claim goes in
         // directly rather than through a scheduler hop that would only separate the two.
-        plugin.getSpawnProtector().protect(target.getUniqueId(), loc, "sgen setspawn");
+        ClaimResult claim = plugin.getSpawnProtector().protect(target.getUniqueId(), loc, "sgen setspawn");
+        plugin.plotInformation().notify(target, loc,
+                previous == null || !PlotInformation.sameBlock(previous, loc), claim);
         // No release flag here, unlike reassign, and it is the argument grammar that decides
         // that rather than a different answer to the same question. `setspawn` already ends
         // in an optional `[x y z]`, so a trailing literal token after it could not be told
@@ -378,7 +397,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 // the main thread wherever a real provider exists - and not in the teleport
                 // callback below, which resolves on whichever thread finished the teleport
                 // and would breach the provider's threading contract.
-                plugin.getSpawnProtector().protectAllocated(target.getUniqueId(), res.location(),
+                ClaimResult claim = plugin.getSpawnProtector().protectAllocated(target.getUniqueId(), res.location(),
                         "sgen reassign");
                 String staleNotice = plugin.getSpawnProtector().handOffStaleClaim(
                         target.getUniqueId(), target.getName(), oldSpawn, res.location(), release,
@@ -412,6 +431,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 }
 
                 target.setRespawnLocation(res.location(), true);
+                plugin.plotInformation().notify(target, res.location(), true, claim);
                 target.teleportAsync(res.location()).thenAccept(success -> {
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to plot " +
                             res.plotLabel() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
@@ -730,8 +750,14 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                     + "none; set by hand with setspawn");
         }
         sender.sendMessage(ChatColor.YELLOW + "Spawn Location: " + ChatColor.WHITE +
-                (int) record.x() + ", " + (int) record.y() + ", " + (int) record.z()
+                PlotInformation.blockLocation(record).getBlockX() + ", " + PlotInformation.blockLocation(record).getBlockY() + ", " + PlotInformation.blockLocation(record).getBlockZ()
                 + " (" + record.worldName() + ")");
+        plugin.inspectPlot(record, uuid, claim -> reply(sender, () -> {
+            if (plugin.storageFailureNotice() == null
+                    && record.equals(plugin.getDataStorage().getRecord(uuid))) {
+                plugin.plotInformation().sendClaim(sender, claim, args[1]);
+            }
+        }));
     }
 
     /**
@@ -869,6 +895,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
     }
 
     private void sendHelp(CommandSender sender) {
+        if (sender.hasPermission("spiralgenesis.me")) {
+            plugin.plotInformation().messages().send(sender, "help", Map.of());
+        }
         sender.sendMessage(ChatColor.GOLD + "=== SpiralGenesis Admin Commands ===");
         sender.sendMessage(ChatColor.YELLOW + "/sgen setcenter [x z]" + ChatColor.WHITE + " - Sets the global origin.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen setspawn <player> [x y z]" + ChatColor.WHITE + " - Sets a player's spawn.");
@@ -889,7 +918,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (!sender.hasPermission(SpiralGenesisPlugin.ADMIN_PERMISSION)) {
-            return Collections.emptyList();
+            return sender.hasPermission("spiralgenesis.me") && args.length == 1
+                    && "me".startsWith(args[0].toLowerCase(Locale.ROOT))
+                    ? List.of("me") : Collections.emptyList();
         }
 
         if (args.length == 1) {
@@ -899,6 +930,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 if (sub.startsWith(args[0].toLowerCase())) {
                     matches.add(sub);
                 }
+            }
+            if (sender.hasPermission("spiralgenesis.me") && "me".startsWith(args[0].toLowerCase(Locale.ROOT))) {
+                matches.add("me");
             }
             return matches;
         }

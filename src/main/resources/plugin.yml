@@ -24,12 +24,16 @@ softdepend:
 
 commands:
   sgen:
-    description: SpiralGenesis administrative commands
+    description: SpiralGenesis plot information and administrative commands
     aliases: [spiralgenesis]
-    permission: spiralgenesis.admin
-    usage: /sgen <setcenter|setspawn|allocate|reassign|protect|release-all|tp|info|simulate|reload>
+    usage: /sgen <me|setcenter|setspawn|allocate|reassign|protect|release-all|tp|info|simulate|reload>
 
 permissions:
+  spiralgenesis.me:
+    description: Allows players to inspect their own spawn plot and protection.
+    default: true
   spiralgenesis.admin:
     description: Allows full administration of SpiralGenesis plots, centers, and configuration.
     default: op
+    children:
+      spiralgenesis.me: true

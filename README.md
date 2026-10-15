@@ -153,7 +153,8 @@ alone unless you are deliberately resetting the grid.
 
 ## Commands
 
-All commands require the `spiralgenesis.admin` permission (default: operators).
+`/sgen me` requires `spiralgenesis.me` (default: everyone). All administrative
+commands require `spiralgenesis.admin` (default: operators).
 `/spiralgenesis` works as an alias for `/sgen`.
 
 | Command | What it does |
@@ -167,7 +168,8 @@ All commands require the `spiralgenesis.admin` permission (default: operators).
 | `/sgen protect` | Spawn protection only. Claim the spawn square for players allocated before protection was switched on. Safe to run twice. |
 | `/sgen release-all confirm` | Spawn protection only. Release the spawn claim around every player's current plot, when uninstalling from a server that has had protection on. Refused under `PLAYER_CLAIM`. See [Uninstalling](docs/ADMIN_GUIDE.md#11-uninstalling). |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
-| `/sgen info <player>` | Show a player's plot number, grid cell and coordinates. |
+| `/sgen info <player>` | Show a player's plot number, grid cell, coordinates and actual claim access. |
+| `/sgen me` | Show your plot, distance, respawn-point status and actual claim access. |
 | `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
 | `/sgen reload` | Reload `config.yml`. |
 
@@ -303,3 +305,15 @@ independent implementation.
 <p align="center">
   <sub>A <a href="https://github.com/Ninja6-MC">Ninja6</a> project.</sub>
 </p>
+
+### Finding your spawn plot
+
+Players can use `/sgen me` to see their spawn coordinates, horizontal distance,
+current respawn-point status and actual GriefPrevention claim bounds and named
+access. The command uses `spiralgenesis.me` (default: true). Administrative commands
+still require `spiralgenesis.admin`.
+
+Allocation and changed claims produce chat notices. Servers can customise the
+`messages` section of `config.yml`, including legacy `&` colours, or independently
+turn off automatic plot and claim notices. `/sgen me` remains available. Protection
+information is unavailable on Folia or without GriefPrevention.
