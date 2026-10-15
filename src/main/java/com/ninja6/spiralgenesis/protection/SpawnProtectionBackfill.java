@@ -73,6 +73,12 @@ public final class SpawnProtectionBackfill {
     /** One stored spawn to be claimed. */
     private record Pending(UUID owner, StoredSpawn record) { }
 
+    @FunctionalInterface
+    public interface ChangeListener {
+        void changed(UUID owner, Location spawn, ClaimResult result);
+    }
+
+    private final ChangeListener changes;
     private final SpawnProtector protector;
     private final List<Pending> queue;
 
@@ -100,6 +106,12 @@ public final class SpawnProtectionBackfill {
      * @param records   every stored assignment, as {@code data.yml} has it right now
      */
     public SpawnProtectionBackfill(SpawnProtector protector, Map<UUID, StoredSpawn> records) {
+        this(protector, records, (owner, spawn, result) -> { });
+    }
+
+    public SpawnProtectionBackfill(SpawnProtector protector, Map<UUID, StoredSpawn> records,
+                                   ChangeListener changes) {
+        this.changes = changes;
         this.protector = protector;
         this.queue = new ArrayList<>(records.size());
         for (Map.Entry<UUID, StoredSpawn> entry : records.entrySet()) {
@@ -172,6 +184,9 @@ public final class SpawnProtectionBackfill {
         }
 
         ClaimResult result = protector.protectQuietly(pending.owner(), spawn);
+        if (result.changed()) {
+            changes.changed(pending.owner(), spawn, result);
+        }
         switch (result.outcome()) {
             case CREATED -> created++;
             case ALREADY_CLAIMED -> skipped++;

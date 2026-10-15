@@ -150,3 +150,32 @@ protection:
   #                size above.
   # An unrecognised name falls back to ADMIN_CLAIM, logged at warning.
   claim-as: ADMIN_CLAIM
+
+# Player plot information. Reload with /sgen reload; blank templates suppress a line.
+# Legacy & colour codes work on Java and through Geyser. Placeholders are literal:
+# plot: {world}, {x}, {y}, {z}; distance: {distance}; claim: {player}, {width}, {depth},
+# {min_x}, {max_x}, {min_z}, {max_z}. Bounds include both end blocks.
+# Automatic switches do not disable /sgen me or /sgen info.
+messages:
+  allocation-notices: true
+  claim-notices: true
+  plot: '&6Your spawn plot: &f{world} at {x}, {y}, {z}. Use /sgen me to check it.'
+  respawn-plot: '&eThis plot is your respawn point. A bed or respawn anchor replaces it.'
+  respawn-other: '&eYour current respawn point is not this plot.'
+  distance: '&eHorizontal distance: &f{distance} blocks.'
+  different-world: '&eYour plot is in another world; distance is unavailable.'
+  no-plot: '&eYou have no recorded spawn plot.'
+  storage-unavailable: '&cYour plot information is temporarily unavailable. Please try again later.'
+  usage: '&eUsage: /sgen me (in game)'
+  help: '&e/sgen me &f- Shows your spawn plot and protection.'
+  bounds: '&6Claim: &f{width} x {depth} blocks; X {min_x} to {max_x}, Z {min_z} to {max_z} (inclusive).'
+  build: '&e{player} has build access, including containers and beds.'
+  no-build: '&e{player} does not have named build access on this claim.'
+  manage: '&e{player} can manage trust here: /trust, /containertrust, /accesstrust and /untrust.'
+  no-manage: '&e{player} does not have named permission to manage trust on this claim.'
+  admin: '&eThis is an administrative claim. Players cannot resize, subdivide or abandon it.'
+  owner: '&e{player} owns this claim. Normal GriefPrevention claim commands apply.'
+  trusted: '&eThis claim belongs to another player; {player}''s named access is shown above.'
+  outside: '&eThis spawn claim does not protect blocks outside these bounds.'
+  no-claim: '&eNo claim owned by or explicitly trusting {player} covers the spawn column.'
+  unavailable: '&eProtection information is unavailable.'

@@ -15,6 +15,10 @@ import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.protection.NoOpProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProvider;
 import com.ninja6.spiralgenesis.protection.ProtectionProviders;
+import com.ninja6.spiralgenesis.protection.ClaimInspector;
+import com.ninja6.spiralgenesis.protection.ClaimInspection;
+import com.ninja6.spiralgenesis.protection.ClaimResult;
+import com.ninja6.spiralgenesis.messages.PlotInformation;
 import com.ninja6.spiralgenesis.config.ClaimOwnership;
 import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
@@ -108,6 +112,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * failed claim never costs a player their plot.
      */
     private ProtectionProvider protectionProvider = NoOpProtectionProvider.INSTANCE;
+    private volatile ClaimInspector claimInspector = ClaimInspector.UNAVAILABLE;
 
     /**
      * The one object every protection call in the plugin goes through.
@@ -183,6 +188,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         this.floodgateHook = new FloodgateHook();
         this.authMeHook = new AuthMeHook();
         this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
+        this.claimInspector = ProtectionProviders.createClaimInspector(this);
         // getProtectionProvider() rather than the field, so a test that overrides the getter
         // to inject a provider is reaching every call site rather than none of them.
         this.spawnProtector = new SpawnProtector(getLogger(), this::getProtectionProvider,
@@ -297,6 +303,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // are all reloadable, and the minimum-size check the provider makes at construction
         // is only correct for the size it was constructed with.
         this.protectionProvider = ProtectionProviders.create(this, pluginConfig);
+        this.claimInspector = ProtectionProviders.createClaimInspector(this);
         // Cleared so an operator-initiated reload always re-reports the bind outcome. The
         // suppression exists to keep the per-join retry quiet, and an administrator who has
         // just edited the file and reloaded is owed the answer whether or not the name they
@@ -901,7 +908,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         //
         // Allocation has already steered around every claim it could see, so a claim in the
         // way here was made after the scan chose the plot, and is reported at warning.
-        getSpawnProtector().protectAllocated(player.getUniqueId(), plot, "first allocation");
+        ClaimResult claim = getSpawnProtector().protectAllocated(player.getUniqueId(), plot, "first allocation");
+        plotInformation().notify(player, plot, true, claim);
     }
 
     /**
@@ -1173,7 +1181,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 // anything is claimed. The old square is left standing, as on every path that
                 // moves a spawn, and unlike the commands this one has no output to say so in,
                 // so the log carries it.
-                getSpawnProtector().protect(uuid, res.location(), "revalidation repair");
+                ClaimResult claim = getSpawnProtector().protect(uuid, res.location(), "revalidation repair");
+                plotInformation().notify(player, res.location(),
+                        !PlotInformation.sameBlock(record, res.location()), claim);
                 String stale = getSpawnProtector().handOffStaleClaim(uuid, player.getName(),
                         stored, res.location(), false, null);
                 if (stale != null) {
@@ -1531,6 +1541,23 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         handlePlayerFirstJoin(player, clientType);
     }
 
+    public PlotInformation plotInformation() { return new PlotInformation(this); }
+
+    /** Inspect on the spawn region, then let the caller schedule delivery on its recipient. */
+    public void inspectPlot(StoredSpawn record, UUID player, Consumer<ClaimInspection> reply) {
+        Location spawn = record.toLocation();
+        if (spawn == null || claimInspector == ClaimInspector.UNAVAILABLE) {
+            reply.accept(ClaimInspection.unavailable());
+            return;
+        }
+        try {
+            getServer().getRegionScheduler().execute(this, spawn,
+                    () -> reply.accept(claimInspector.inspect(spawn, player)));
+        } catch (Throwable failure) {
+            reply.accept(ClaimInspection.unavailable());
+        }
+    }
+
     /**
      * What an operator is told about failed storage, in chat or in reply to a command, or
      * {@code null} if storage is readable. One wording for every place that says it.
@@ -1613,7 +1640,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return null;
         }
         SpawnProtectionBackfill job = new SpawnProtectionBackfill(getSpawnProtector(),
-                dataStorage.getAllRecords());
+                dataStorage.getAllRecords(), (owner, spawn, result) ->
+                        plotInformation().notify(Bukkit.getPlayer(owner), spawn, false, result));
         if (!backfill.compareAndSet(null, job)) {
             return null;
         }
