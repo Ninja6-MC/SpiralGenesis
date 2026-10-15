@@ -186,6 +186,18 @@ and exactly which safety rule did the rejecting.
 
 ---
 
+### Finding your spawn plot
+
+Players can use `/sgen me` to see their spawn coordinates, horizontal distance,
+current respawn-point status and actual GriefPrevention claim bounds and named
+access. The command uses `spiralgenesis.me` (default: true). Administrative commands
+still require `spiralgenesis.admin`.
+
+Allocation and changed claims produce chat notices. Servers can customise the
+`messages` section of `config.yml`, including legacy `&` colours, or independently
+turn off automatic plot and claim notices. `/sgen me` remains available. Protection
+information is unavailable on Folia or without GriefPrevention.
+
 ## How the spiral works
 
 The first plot, #0,0, lands on the centre. Each following plot moves one cell along an
@@ -305,15 +317,3 @@ independent implementation.
 <p align="center">
   <sub>A <a href="https://github.com/Ninja6-MC">Ninja6</a> project.</sub>
 </p>
-
-### Finding your spawn plot
-
-Players can use `/sgen me` to see their spawn coordinates, horizontal distance,
-current respawn-point status and actual GriefPrevention claim bounds and named
-access. The command uses `spiralgenesis.me` (default: true). Administrative commands
-still require `spiralgenesis.admin`.
-
-Allocation and changed claims produce chat notices. Servers can customise the
-`messages` section of `config.yml`, including legacy `&` colours, or independently
-turn off automatic plot and claim notices. `/sgen me` remains available. Protection
-information is unavailable on Folia or without GriefPrevention.
