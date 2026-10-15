@@ -5,19 +5,26 @@ import java.util.Objects;
 /**
  * The answer to a single {@link ProtectionProvider#reserve} call.
  *
- * <p>The {@link ClaimOutcome} is the part callers branch on. The detail is free text from
+ * <p>Callers branch on {@link ClaimOutcome} for the reservation result and on
+ * {@link ClaimChange} for creation or repaired access. The detail is free text from
  * the provider for the log line and nothing else: never parsed, never switched on, and
  * never shown to a player. It exists because {@link ClaimOutcome#REFUSED} and
  * {@link ClaimOutcome#BELOW_MINIMUM_SIZE} are only actionable when the reason travels with
  * them.
  *
- * @param outcome what happened, and the only field worth a decision
+ * @param outcome the reservation result
  * @param detail  provider wording for the log, empty when there is nothing to add
+ * @param change  structured creation or access-repair information, independent of detail
  */
-public record ClaimResult(ClaimOutcome outcome, String detail) {
+public record ClaimResult(ClaimOutcome outcome, String detail, ClaimChange change) {
+
+    public ClaimResult(ClaimOutcome outcome, String detail) {
+        this(outcome, detail, ClaimChange.UNCHANGED);
+    }
 
     public ClaimResult {
         Objects.requireNonNull(outcome, "outcome");
+        Objects.requireNonNull(change, "change");
         detail = (detail == null) ? "" : detail;
     }
 
@@ -34,6 +41,11 @@ public record ClaimResult(ClaimOutcome outcome, String detail) {
     /** Whether the ground is now reserved as a direct result of this call. */
     public boolean isCreated() {
         return outcome == ClaimOutcome.CREATED;
+    }
+
+    /** Whether this call created a claim or repaired access to an existing one. */
+    public boolean changed() {
+        return change != ClaimChange.UNCHANGED;
     }
 
     /** Whether a detail string is present, so a caller can word its log line either way. */

@@ -140,6 +140,25 @@ public final class ProtectionProviders {
     }
 
     /**
+     * Builds read-only claim inspection independently of {@code protection.enabled}.
+     *
+     * @param plugin this plugin, for its logger
+     * @return an inspector; never null and never throwing on use; {@link ClaimInspector#UNAVAILABLE}
+     *         on Folia, without enabled GriefPrevention, or when binding fails
+     */
+    public static ClaimInspector createClaimInspector(Plugin plugin) {
+        try {
+            if (isFolia() || !isGriefPreventionPresent()) {
+                return ClaimInspector.UNAVAILABLE;
+            }
+            return GriefPreventionClaimInspector.live(plugin.getLogger());
+        } catch (Throwable t) {
+            plugin.getLogger().log(Level.WARNING, "Could not bind claim inspection", t);
+            return ClaimInspector.UNAVAILABLE;
+        }
+    }
+
+    /**
      * Whether GriefPrevention is installed and enabled.
      *
      * <p>The name is GriefPrevention's own {@code plugin.yml} {@code name:}, and this

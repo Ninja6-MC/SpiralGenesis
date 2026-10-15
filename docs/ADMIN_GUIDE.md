@@ -1300,3 +1300,58 @@ authoritative reference — this guide describes behaviour, not line numbers.
 
 Unit tests for the maths and configuration logic live under
 `src/test/java/com/ninja6/spiralgenesis/`.
+
+## Player plot information
+
+`/sgen me` lets a player inspect their own stored plot without administrative access.
+It reports block coordinates, horizontal distance in the same world, whether their
+current respawn point is the plot, and actual claim bounds and named permissions.
+A bed or respawn anchor can replace the plot as their respawn point. No teleport is
+provided. `/sgen info <player>` includes the same claim inspection for operators;
+coordinates round down correctly on negative axes.
+
+`spiralgenesis.me` defaults to true and is a child of `spiralgenesis.admin`. Operators
+can deny it to ordinary players without changing administrative permissions. Every
+administrative subcommand, help entry and completion remains admin-only. Ordinary
+players see only `me`.
+
+Inspection works even when `protection.enabled` is false. It reads the most specific
+claim at the stored spawn column, including subdivisions and inherited named trust
+where allowed. Public trust alone does not make a claim the player's. A claim clipping
+only an edge of the configured square is not a claim at the spawn. Bounds are the
+current inclusive X/Z bounds, not a reconstruction from `protection.size`. Missing
+claims and unavailable information are separate states. GriefPrevention absent or
+disabled, Folia, an unloaded world or a failed lookup means information is unavailable.
+Inspection does not alter claims or trust.
+
+Automatic plot notices follow successful allocation, owed placement after a
+disconnect, reassignment and changed spawn coordinates. Claim notices follow creation
+or repaired access, using inspection rather than assuming a successful trust grant.
+Unchanged claims and teleport retries do not repeat claim notices. Backfill notifies
+online players outside its claim-processing work; offline players can use `/sgen me`
+when they return. Failed storage writes send no notices. Automatic notices omit claim
+text when inspection is unavailable; explicit inspection states this limitation.
+
+### Message configuration
+
+All new messages are in `messages` in `config.yml` and reload with `/sgen reload`.
+Existing configurations use bundled defaults for missing keys. An empty template
+suppresses that line. Legacy `&` colour codes are supported; no hover or click
+interaction is required, so the text is usable through Geyser.
+
+| Setting or placeholder | Meaning |
+| --- | --- |
+| `messages.allocation-notices` | Automatic plot notices, default true |
+| `messages.claim-notices` | Automatic creation/access-repair notices, default true |
+| `{world}`, `{x}`, `{y}`, `{z}` | Stored world and floored block coordinates in `plot` |
+| `{distance}` | Rounded horizontal block distance in `distance` |
+| `{player}` | Player whose claim access is shown, in claim templates |
+| `{width}`, `{depth}` | Actual inclusive dimensions in claim templates |
+| `{min_x}`, `{max_x}`, `{min_z}`, `{max_z}` | Actual inclusive claim bounds |
+
+Neither automatic switch disables `/sgen me` or operator inspection. Build access
+includes containers and beds; trust commands appear only with named Manage access.
+A trusted player on someone else's player-owned claim is not described as its owner.
+The boundary warning refers only to this claim; surrounding land may have other
+protection. Administrative spawn permissions do not allow resizing, subdivision or
+abandonment.
