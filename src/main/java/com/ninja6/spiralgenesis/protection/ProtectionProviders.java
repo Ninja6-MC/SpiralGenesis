@@ -140,11 +140,11 @@ public final class ProtectionProviders {
     }
 
     /**
-     * Whether GriefPrevention is installed and enabled.
+     * Builds read-only claim inspection independently of {@code protection.enabled}.
      *
-     * <p>The name is GriefPrevention's own {@code plugin.yml} {@code name:}, and this
-     * plugin's {@code softdepend:} carries the same spelling, which is what guarantees it
-     * has already enabled by the time this runs.
+     * @param plugin this plugin, for its logger
+     * @return an inspector; never null and never throwing on use; {@link ClaimInspector#UNAVAILABLE}
+     *         on Folia, without enabled GriefPrevention, or when binding fails
      */
     public static ClaimInspector createClaimInspector(Plugin plugin) {
         try {
@@ -158,6 +158,13 @@ public final class ProtectionProviders {
         }
     }
 
+    /**
+     * Whether GriefPrevention is installed and enabled.
+     *
+     * <p>The name is GriefPrevention's own {@code plugin.yml} {@code name:}, and this
+     * plugin's {@code softdepend:} carries the same spelling, which is what guarantees it
+     * has already enabled by the time this runs.
+     */
     private static boolean isGriefPreventionPresent() {
         try {
             return Bukkit.getPluginManager()
