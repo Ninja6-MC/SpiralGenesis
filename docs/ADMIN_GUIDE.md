@@ -1270,6 +1270,7 @@ Worth running once on a staging server before going live:
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
 | Visiting a griefed plot | Pour lava on a plot, then `/sgen tp <player>`. | Warned that it is no longer safe, and teleported there anyway. |
 | Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
+| Arrival hint | Join as a new player with GriefPrevention and `protection.enabled: true`. | Action-bar coordinates, claim bounds and tool tip; claim edges drawn once; hint fades a few seconds after walking off. |
 
 ---
 
@@ -1348,6 +1349,11 @@ interaction is required, so the text is usable through Geyser.
 | `{player}` | Player whose claim access is shown, in claim templates |
 | `{width}`, `{depth}` | Actual inclusive dimensions in claim templates |
 | `{min_x}`, `{max_x}`, `{min_z}`, `{max_z}` | Actual inclusive claim bounds |
+| `messages.arrival.enabled` | Arrival hint in the action bar, default true |
+| `messages.arrival.show-claim-edges` | Draw the claim's edges once on arrival, default true |
+| `messages.arrival.linger-seconds` | How long the hint stays after the player first moves, default 5 |
+| `messages.arrival.max-seconds` | Hard cap on the hint, default 30 |
+| `{tool}` | GriefPrevention's `config_claims_investigationTool`, in `arrival-tip` |
 
 Neither automatic switch disables `/sgen me` or operator inspection. Build access
 includes containers and beds; trust commands appear only with named Manage access.
@@ -1355,3 +1361,35 @@ A trusted player on someone else's player-owned claim is not described as its ow
 The boundary warning refers only to this claim; surrounding land may have other
 protection. Administrative spawn permissions do not allow resizing, subdivision or
 abandonment.
+
+### Arrival hint
+
+Each arrival at the stored plot starts a hint in the action bar: first allocation,
+placement owed after a disconnect, reassignment, and a respawn routed to the plot. A
+bed or anchor respawn, a teleport retry and a refused storage write start nothing, and
+neither does a teleport that did not complete. The hint is re-sent about once a second
+on the player's own scheduler, so it stays readable through Geyser.
+
+It is built from three templates joined with a space: `arrival-plot` always, and
+`arrival-claim` and `arrival-tip` only when inspection finds a claim of the player's at
+the spawn column. With no claim of theirs, or with inspection unavailable, the hint
+shows the coordinates alone and suggests no protection. The tip names the item set in
+GriefPrevention's `config_claims_investigationTool` (a stick by default) and is left
+out if that cannot be read. A blank template is skipped.
+
+The hint stays while the player is in the block column they arrived in; turning and
+moving up or down within it do not count. After their first move out of it, it stays
+for `linger-seconds` and then stops, and it never runs longer than `max-seconds`, so a
+player who goes idle is not left under it. Quitting, dying and changing world end it,
+and a new arrival replaces a running hint rather than adding another. Moving the plot
+with a command ends it at the next refresh.
+
+With `show-claim-edges` on, the claim's edges are drawn once on arrival using
+GriefPrevention's own boundary visualisation, seen only by that player. This is
+skipped silently on Folia, without GriefPrevention, or if GriefPrevention throws.
+The switches and timings are independent of `allocation-notices` and `claim-notices`
+and are read at each arrival, so `/sgen reload` applies them to the next one.
+
+On Folia a death respawn through an intact plot respawn point fires no event the plugin
+can see, so no hint follows it there; a respawn whose point had failed and that the
+plugin routes back to the plot does show one.

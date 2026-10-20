@@ -7,7 +7,10 @@ import me.ryanhamshire.GriefPrevention.Claim;
 import me.ryanhamshire.GriefPrevention.ClaimPermission;
 import me.ryanhamshire.GriefPrevention.TestClaims;
 import org.bukkit.Location;
+import org.bukkit.Material;
+import org.bukkit.entity.Player;
 import org.junit.jupiter.api.*;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
@@ -71,5 +74,48 @@ class GriefPreventionClaimInspectorTest {
         assertEquals(ClaimInspection.Status.UNAVAILABLE,
                 ProtectionProviders.createClaimInspector(MockBukkit.createMockPlugin())
                         .inspect(new Location(world, 0, 0, 0), player).status());
+    }
+
+    @Test void edgesAreDrawnOnlyForAClaimOfThePlayers() {
+        Player viewer = MockBukkit.getMock().addPlayer();
+        List<Claim> drawn = new ArrayList<>();
+        Claim[] at = {TestClaims.claim(world, -5, -5, 5, 5, null,
+                List.of(viewer.getUniqueId().toString()), 1)};
+        ClaimInspector inspector = new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> at[0], () -> Material.STICK, (p, claim) -> drawn.add(claim));
+        Location spawn = new Location(world, 0.5, 64, 0.5);
+        inspector.showEdges(spawn, viewer);
+        assertEquals(List.of(at[0]), drawn);
+        at[0] = TestClaims.claim(world, -5, -5, 5, 5, UUID.randomUUID(), List.of("public"), 2);
+        inspector.showEdges(spawn, viewer);
+        at[0] = null;
+        inspector.showEdges(spawn, viewer);
+        assertEquals(1, drawn.size());
+
+        ClaimInspector throwing = new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> { throw new NoClassDefFoundError("visualization moved"); },
+                () -> Material.STICK, (p, claim) -> drawn.add(claim));
+        assertDoesNotThrow(() -> throwing.showEdges(spawn, viewer));
+        ClaimInspector failingDraw = new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> TestClaims.claim(world, -5, -5, 5, 5, viewer.getUniqueId(), List.of(), 3),
+                () -> Material.STICK, (p, claim) -> { throw new IllegalStateException("off thread"); });
+        assertDoesNotThrow(() -> failingDraw.showEdges(spawn, viewer));
+        assertDoesNotThrow(() -> ClaimInspector.UNAVAILABLE.showEdges(spawn, viewer));
+    }
+
+    @Test void investigationToolIsTheConfiguredOne() {
+        assertEquals("stick", new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> null, () -> Material.STICK, (p, claim) -> { }).investigationTool());
+        assertEquals("golden hoe", new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> null, () -> Material.GOLDEN_HOE, (p, claim) -> { }).investigationTool());
+        assertNull(new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> null, () -> null, (p, claim) -> { }).investigationTool());
+        assertNull(new GriefPreventionClaimInspector(Logger.getAnonymousLogger(),
+                ignored -> null, () -> { throw new NoSuchFieldError("moved"); },
+                (p, claim) -> { }).investigationTool());
+        // GriefPrevention is not running in the suite, so the live reader finds no instance.
+        assertNull(new GriefPreventionClaimInspector(Logger.getAnonymousLogger(), ignored -> null)
+                .investigationTool());
+        assertNull(ClaimInspector.UNAVAILABLE.investigationTool());
     }
 }
