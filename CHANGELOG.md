@@ -29,9 +29,20 @@ player's plot; it places no structures, and the ones already placed stay in the 
 existing `config.yml` is not rewritten: the new `structure` and `messages` keys it lacks
 take their defaults, so spawn plot structures stay off while plot and claim notices and
 the arrival hint are on.
+
+The first start of this version, and every `/sgen reload`, creates
+`plugins/SpiralGenesis/structures/` with the three default `.nbt` templates, even with
+structures off. A copy already there is never overwritten, and the folder left behind
+after a rollback does no harm. A structure is placed only when a plot is first allocated,
+so a plot allocated while 1.0.0-beta.1 was running after a rollback never gets one
+automatically once this version is back; `/sgen structure <player> place` places it.
+
 `/sgen me` is available to every player by default through `spiralgenesis.me`, which
 `spiralgenesis.admin` includes; negate `spiralgenesis.me` to withhold it. The
-administrative subcommands still require `spiralgenesis.admin`.
+administrative subcommands still require `spiralgenesis.admin`. `/sgen` no longer has a
+command-level permission, so every player now sees it in tab completion and the command
+list, but only `me` is usable without `spiralgenesis.admin`; a player with
+`spiralgenesis.me` negated gets the plugin's no-permission message.
 
 ### Added
 - `/sgen me` reports a player's spawn coordinates, distance, respawn-point status,
