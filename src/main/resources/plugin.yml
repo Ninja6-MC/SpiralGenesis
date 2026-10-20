@@ -26,7 +26,7 @@ commands:
   sgen:
     description: SpiralGenesis plot information and administrative commands
     aliases: [spiralgenesis]
-    usage: /sgen <me|setcenter|setspawn|allocate|reassign|protect|release-all|tp|info|simulate|reload>
+    usage: /sgen <me|setcenter|setspawn|allocate|reassign|protect|release-all|tp|info|structure|simulate|reload>
 
 permissions:
   spiralgenesis.me:

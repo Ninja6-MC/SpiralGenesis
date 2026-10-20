@@ -82,6 +82,13 @@ public class YamlDataStorage implements DataStorage {
     private static final String CENTRE_KEY = "centre";
 
     /**
+     * Top-level table of structures placed on plots, {@code centre: {index: {...}}}; see
+     * {@link PlacedStructure}. Added after 1.0.0-beta.1, whose reader neither reads nor
+     * drops it: it writes back the whole file it loaded.
+     */
+    private static final String STRUCTURES_KEY = "structures";
+
+    /**
      * Suffix for the copy of an unreadable file. UTC and colon-free, because a colon is not
      * a legal file-name character on Windows.
      */
@@ -160,6 +167,9 @@ public class YamlDataStorage implements DataStorage {
      */
     private final Map<Integer, Map<Long, Map<UUID, StoredSpawn>>> plotsByCell =
             new HashMap<>();
+
+    /** Structures placed on plots, by plot, guarded by {@link #yamlLock}. */
+    private final Map<CellKey, PlacedStructure> structures = new HashMap<>();
 
     /** Points set by hand, which are tested by their column, guarded by {@link #yamlLock}. */
     private final Map<UUID, StoredSpawn> manualPoints = new HashMap<>();
@@ -452,12 +462,61 @@ public class YamlDataStorage implements DataStorage {
             }
             activeCentre = storedActive;
             reindexPlots();
+            structures.clear();
+            structures.putAll(readStructures(loaded.getConfigurationSection(STRUCTURES_KEY),
+                    warnings));
             this.yaml = loaded;
         }
         for (String warning : warnings) {
             plugin.getLogger().warning(warning);
         }
         return earliestAssigned;
+    }
+
+    /**
+     * The structure table of a loaded file. An entry that cannot be read is skipped and
+     * reported, and stays in the file as it was: it is only ever replaced by a new placement
+     * on the same plot.
+     */
+    private static Map<CellKey, PlacedStructure> readStructures(ConfigurationSection table,
+                                                                List<String> warnings) {
+        Map<CellKey, PlacedStructure> read = new HashMap<>();
+        if (table == null) {
+            return read;
+        }
+        for (String centreKey : table.getKeys(false)) {
+            ConfigurationSection centre = table.getConfigurationSection(centreKey);
+            int centreId = parseId(centreKey);
+            if (centre == null || centreId < 0) {
+                warnings.add("Skipping malformed structure entry '" + centreKey + "' in data.yml.");
+                continue;
+            }
+            for (String indexKey : centre.getKeys(false)) {
+                ConfigurationSection sec = centre.getConfigurationSection(indexKey);
+                int index = parseId(indexKey);
+                if (sec == null || index < 0 || !sec.isString("world") || !sec.isInt("x")
+                        || !sec.isInt("y") || !sec.isInt("z")) {
+                    warnings.add("Skipping malformed structure entry '" + centreKey + "."
+                            + indexKey + "' in data.yml.");
+                    continue;
+                }
+                read.put(new CellKey(centreId, index), new PlacedStructure(
+                        sec.getString("file", ""), sec.getString("world"), sec.getInt("x"),
+                        sec.getInt("y"), sec.getInt("z"), sec.getString("rotation", "NONE"),
+                        String.valueOf(sec.get("placed-at", "")), sec.getString("player", "")));
+            }
+        }
+        return read;
+    }
+
+    /** A non-negative integer key, or -1. */
+    private static int parseId(String key) {
+        try {
+            int id = Integer.parseInt(key.strip());
+            return id < 0 ? -1 : id;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
     }
 
     /** The centre table of a loaded file, skipping and reporting any entry it cannot use. */
@@ -517,6 +576,7 @@ public class YamlDataStorage implements DataStorage {
             nameIndex.clear();
             plotsByCell.clear();
             manualPoints.clear();
+            structures.clear();
             dirty.set(false);
         }
 
@@ -823,6 +883,38 @@ public class YamlDataStorage implements DataStorage {
                 return true;
             }
             yaml.set("players." + uuid + "." + PLACEMENT_OWED_KEY, null);
+        }
+        dirty.set(true);
+        return true;
+    }
+
+    @Override
+    public PlacedStructure getStructure(int centre, int index) {
+        synchronized (yamlLock) {
+            return failure != null ? null : structures.get(new CellKey(centre, index));
+        }
+    }
+
+    @Override
+    public boolean recordStructure(int centre, int index, PlacedStructure structure) {
+        synchronized (yamlLock) {
+            if (failure != null) {
+                return false;
+            }
+            structures.put(new CellKey(centre, index), structure);
+            if (yaml == null) {
+                return true;
+            }
+            String path = STRUCTURES_KEY + "." + centre + "." + index;
+            yaml.set(path, null);
+            yaml.set(path + ".file", structure.file());
+            yaml.set(path + ".world", structure.world());
+            yaml.set(path + ".x", structure.x());
+            yaml.set(path + ".y", structure.y());
+            yaml.set(path + ".z", structure.z());
+            yaml.set(path + ".rotation", structure.rotation());
+            yaml.set(path + ".placed-at", structure.placedAt());
+            yaml.set(path + ".player", structure.player());
         }
         dirty.set(true);
         return true;

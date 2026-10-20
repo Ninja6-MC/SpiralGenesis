@@ -734,6 +734,11 @@ public class SpawnManager {
         return world;
     }
 
+    /** The existing claims this manager steers around. */
+    public ClaimLookup getClaimLookup() {
+        return claims;
+    }
+
     /**
      * World spawn, when the current thread may pass it to {@link #worldSpawnPointNow}: the
      * chunk is resident, so nothing is loaded to answer, and this thread owns it. On Paper

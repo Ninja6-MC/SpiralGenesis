@@ -12,7 +12,9 @@ import com.ninja6.spiralgenesis.protection.ClaimResult;
 import com.ninja6.spiralgenesis.messages.PlotInformation;
 import com.ninja6.spiralgenesis.protection.SpawnProtectionBackfill;
 import com.ninja6.spiralgenesis.protection.SpawnProtector;
+import com.ninja6.spiralgenesis.storage.PlacedStructure;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
+import com.ninja6.spiralgenesis.structure.SpawnStructures;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
@@ -77,7 +79,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
     /** Subcommands that depend on stored records, and are refused while storage is failed. */
     private static final Set<String> STORAGE_SUBCOMMANDS =
-            Set.of("setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info");
+            Set.of("setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info",
+                    "structure");
+
+    /** The word {@code structure} needs before it changes any block. */
+    private static final String PLACE_TOKEN = "place";
 
     private final SpiralGenesisPlugin plugin;
 
@@ -130,6 +136,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             case "release-all" -> handleReleaseAll(sender, args);
             case "tp" -> handleTp(sender, args);
             case "info" -> handleInfo(sender, args);
+            case "structure" -> handleStructure(sender, args);
             case "simulate" -> handleSimulate(sender, args);
             case "reload" -> handleReload(sender);
             default -> sendHelp(sender);
@@ -432,6 +439,8 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
 
                 target.setRespawnLocation(res.location(), true);
                 plugin.plotInformation().notify(target, res.location(), true, claim);
+                // A fresh plot, so this is its first allocation; after the write and the claim.
+                plugin.getStructures().placeForAllocation(target.getUniqueId(), target.getName());
                 target.teleportAsync(res.location()).thenAccept(success -> {
                     if (Boolean.TRUE.equals(success)) {
                         plugin.arrivalHints().arrived(target);
@@ -764,6 +773,57 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
     }
 
     /**
+     * Reports a player's spawn plot structure, and checks or places the configured template
+     * there on demand.
+     *
+     * <p>Without {@code place} it changes nothing: it says whether the plot has a recorded
+     * structure and runs every placement rule as a dry run, so a template can be tried on
+     * one plot before {@code structure.enabled} is turned on. With it, the template is placed
+     * now, under the same rules as on allocation, unless the plot already has one. Works for
+     * offline players, from the stored record. Gated on {@code spiralgenesis.admin} like
+     * every other subcommand.
+     */
+    private void handleStructure(CommandSender sender, String[] args) {
+        if (args.length < 2 || args.length > 3
+                || (args.length == 3 && !args[2].equalsIgnoreCase(PLACE_TOKEN))) {
+            sender.sendMessage(ChatColor.RED + "Usage: /sgen structure <player> [" + PLACE_TOKEN + "]");
+            return;
+        }
+        UUID uuid = resolveUuid(args[1]);
+        StoredSpawn record = uuid == null ? null : plugin.getDataStorage().getRecord(uuid);
+        if (record == null) {
+            sender.sendMessage(ChatColor.RED + "Player " + args[1] + " has no recorded genesis spawn.");
+            return;
+        }
+        String name = record.playerName() == null || record.playerName().isEmpty()
+                ? args[1] : record.playerName();
+        boolean place = args.length == 3;
+        if (record.onSpiral()) {
+            PlacedStructure placed =
+                    plugin.getDataStorage().getStructure(record.centre(), record.index());
+            sender.sendMessage(ChatColor.YELLOW + "Plot " + record.plotLabel() + ": "
+                    + ChatColor.WHITE + (placed == null ? "no recorded structure."
+                            : SpawnStructures.describe(placed) + "."));
+            if (placed != null && !place) {
+                return;
+            }
+        }
+        if (!plugin.getPluginConfig().getStructure().enabled()) {
+            sender.sendMessage(ChatColor.GRAY + "structure.enabled is false, so new plots get no"
+                    + " structure; this command still works on one plot.");
+        }
+        if (!place) {
+            sender.sendMessage(ChatColor.YELLOW + "Checking " + plugin.getPluginConfig()
+                    .getStructure().file() + " on that plot without changing anything...");
+        }
+        plugin.getStructures().placeNow(uuid, name, !place, outcome -> reply(sender, () ->
+                sender.sendMessage((outcome.placed() || (!place && outcome.wouldPlace())
+                        ? ChatColor.GREEN : ChatColor.RED) + outcome.message()
+                        + (!place && outcome.wouldPlace() ? " Run /sgen structure " + args[1]
+                                + " " + PLACE_TOKEN + " to place it." : ""))));
+    }
+
+    /**
      * Runs allocation repeatedly against the live world and reports the aggregate, without
      * involving a player or touching the live spiral index.
      *
@@ -914,6 +974,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 + " - Releases the spawn claim around every player's current plot, for uninstalling.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen tp <player>" + ChatColor.WHITE + " - Teleports to a player's plot.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen info <player>" + ChatColor.WHITE + " - Inspects player's genesis plot.");
+        sender.sendMessage(ChatColor.YELLOW + "/sgen structure <player> [" + PLACE_TOKEN + "]"
+                + ChatColor.WHITE + " - Reports a plot's structure and checks the template there; '"
+                + PLACE_TOKEN + "' places it now.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen simulate <count>" + ChatColor.WHITE + " - Measures allocation against live terrain.");
         sender.sendMessage(ChatColor.YELLOW + "/sgen reload" + ChatColor.WHITE + " - Reloads configuration.");
     }
@@ -927,7 +990,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         }
 
         if (args.length == 1) {
-            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info", "simulate", "reload");
+            List<String> subs = Arrays.asList("setcenter", "setspawn", "allocate", "reassign", "protect", "release-all", "tp", "info", "structure", "simulate", "reload");
             List<String> matches = new ArrayList<>();
             for (String sub : subs) {
                 if (sub.startsWith(args[0].toLowerCase())) {
@@ -940,7 +1003,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
             return matches;
         }
 
-        if (args.length == 2 && Arrays.asList("setspawn", "allocate", "reassign", "tp", "info").contains(args[0].toLowerCase())) {
+        if (args.length == 2 && Arrays.asList("setspawn", "allocate", "reassign", "tp", "info", "structure").contains(args[0].toLowerCase())) {
             List<String> playerNames = new ArrayList<>();
             for (Player p : Bukkit.getOnlinePlayers()) {
                 if (p.getName().toLowerCase().startsWith(args[1].toLowerCase())) {
@@ -956,6 +1019,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
         if (args.length == 3 && "reassign".equals(args[0].toLowerCase())
                 && RELEASE_FLAG.startsWith(args[2].toLowerCase())) {
             return List.of(RELEASE_FLAG);
+        }
+
+        if (args.length == 3 && "structure".equals(args[0].toLowerCase())
+                && PLACE_TOKEN.startsWith(args[2].toLowerCase())) {
+            return List.of(PLACE_TOKEN);
         }
 
         if (args.length == 2 && "release-all".equals(args[0].toLowerCase())

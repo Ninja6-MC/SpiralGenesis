@@ -939,6 +939,9 @@ under the default `FIRST_ACTION`, on their first uncancelled action after they n
 and at once on joining under `ON_JOIN` and for Bedrock players. The key is then removed.
 It is absent from every other record, and a record without it is not owed anything.
 
+A top-level `structures` table records the structure placed on each plot, when spawn plot
+structures are on; see [Spawn plot structures](#spawn-plot-structures).
+
 `centres` records every spiral the server has allocated on. Moving `origin.x` or
 `origin.z` (including with `/sgen setcenter`) or changing `cell-size` does not move the
 plots already handed out, so it starts a new centre with the next free id and its own
@@ -998,8 +1001,8 @@ Instead the plugin stays enabled and storage is marked failed:
   data.yml could not be read`, and is allocated without having to act again once storage
   recovers. This includes returning players, since no record of their plot can be read.
 * Operators with `spiralgenesis.admin` are told in chat when they join, with the name of
-  the copy. `/sgen setspawn`, `allocate`, `reassign`, `protect`, `tp` and `info` are refused
-  with the same message; `setcenter`, `simulate` and `reload` still work.
+  the copy. `/sgen setspawn`, `allocate`, `reassign`, `protect`, `tp`, `info` and `structure`
+  are refused with the same message; `setcenter`, `simulate` and `reload` still work.
 
 To recover, repair `data.yml` or restore it from a backup, then run `/sgen reload`. A
 reload that reads it clears the failure and allocates every held player. A reload that
@@ -1270,6 +1273,7 @@ Worth running once on a staging server before going live:
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
 | Visiting a griefed plot | Pour lava on a plot, then `/sgen tp <player>`. | Warned that it is no longer safe, and teleported there anyway. |
 | Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |
+| Spawn plot structure | Set `structure.enabled: true`, `/sgen reload`, join with a new account. | The hut stands on the new plot, the player spawns inside it, and `/sgen structure <player>` reports it. |
 | Arrival hint | Join as a new player with GriefPrevention and `protection.enabled: true`. | Action-bar coordinates, claim bounds and tool tip; claim edges drawn once; hint fades a few seconds after walking off. |
 
 ---
@@ -1298,9 +1302,177 @@ authoritative reference — this guide describes behaviour, not line numbers.
 | Claim release | `protection/SpawnClaimRelease.java` | `/sgen release-all`, a bounded slice per tick | §11 |
 | Commands | `commands/SpiralCommand.java` | `/sgen` command tree and permissions | — |
 | Configuration | `config/PluginConfig.java` | `config.yml` parsing, clamping, validation | §3, §4 |
+| Spawn plot structures | `structure/SpawnStructures.java` | Loads the template, checks the placement rules, places once per plot | Spawn plot structures |
+| Template geometry | `structure/Placement.java` | Rotation, offset and footprint of a template on a plot | Spawn plot structures |
 
 Unit tests for the maths and configuration logic live under
 `src/test/java/com/ninja6/spiralgenesis/`.
+
+## Spawn plot structures
+
+SpiralGenesis can place a small structure on each new spawn plot, from a vanilla structure
+file (`.nbt`) the server provides: a landmark that marks the plot in the world and gives a
+first shelter. It is off by default (`structure.enabled: false`) and changes nothing until
+it is switched on.
+
+Three templates ship in the jar and are copied to `plugins/SpiralGenesis/structures/` on first
+start, and only when absent, so an edited copy is never overwritten:
+
+| File | Size (W x H x L) | Spawn spot (`structure.offset`) | Needs `protection.size` |
+| :--- | :--- | :--- | :--- |
+| `spawn-hut.nbt` (default) | 7 x 6 x 7 | 3, 1, 3: centre of the floor | 7 or more; fits the default 9 |
+| `spawn-tower.nbt` | 9 x 19 x 9 | 3, 1, 4: beside the ladder | 11 or more |
+| `spawn-marker.nbt` | 3 x 7 x 3 | 1, 1, 1: centre of the floor | 3 or more; the template for small claims |
+
+The hut is a cobblestone room with a full floor, doors east and west, a bed and a wall
+torch. The tower is a cobblestone column with a ladder up to an enclosed room with a bed,
+and torches on the column. Its spawn spot is beside the column rather than under it, one
+block off the template's centre, so its blocks reach five blocks east of the spawn and it
+needs an 11x11 square around it. The marker is a 3x3 open spiral of cobblestone slabs
+around a central column with a bed and a torch on top, centred on the spawn, so it fits
+even the smallest claim (`protection.size: 3`). Being open-sided, it stores every air cell
+in its box, so terrain inside the box is cleared and cannot block the spawn or the steps.
+The hut and tower are lit so no hostile mob can spawn inside. All three contain no
+entities and no container contents, and are saved at data version 3700 (1.20.4), so they
+load on every supported version. They are original work for this project and ship under
+the repository licence; the source schematics and the conversion script are in
+[`tools/structures/`](../tools/structures/README.md).
+
+### When and how often
+
+* **Once per plot**, on its first allocation, and on the fresh plot `/sgen reassign` gives.
+  The placement is recorded in `data.yml` under the plot (see below), so respawns, a
+  reassignment, reloads and restarts never place it again.
+* **Never removed or rebuilt.** Releasing a plot, reassigning its player, lowering
+  `protection.size` or switching structures off leaves a placed structure standing. The
+  player may have changed it; it is theirs.
+* **After the plot is settled.** The storage write has succeeded and the claim step has
+  returned before anything is placed. The blocks are then placed on the thread that owns the
+  plot's region (Folia), once its chunks are loaded, a few plots per tick within the same
+  budget as `/sgen protect`.
+* **Never in the way.** A plot where the structure does not fit is skipped with one log
+  line, `No structure placed on plot #0,4 for <player>: <reason>.`, and the player keeps
+  their plot and spawn exactly as allocated. A skipped plot is not retried by itself; an
+  operator can place it with `/sgen structure <player> place`.
+
+### Placement rules
+
+1. **The floor replaces the ground.** The template's bottom layer goes where the block the
+   player stands on is, so the spawn is one block above it. Template blocks replace natural
+   terrain: dirt, grass, stone, sand, gravel, leaves, logs, plants and snow.
+2. **Never replaced:** bedrock, and any block with a block entity (chests, barrels,
+   furnaces, signs, spawners, beds and so on). If one is where the template would place a
+   block, the plot is skipped.
+3. **Outside air leaves terrain alone.** Positions the file does not store, which for the
+   shipped templates is all the air around the building, are not touched: trees, hills and
+   anything else around it stay as they are.
+4. **Enclosed air clears.** Air stored inside rooms is placed, so grass, flowers, leaves or
+   a hillside inside the room are cleared and the room is usable.
+5. **Slopes:** where the ground under the floor is missing, `structure.terrain: SKIP` (the
+   default) skips the plot, and `FOUNDATION` fills straight down from the floor to the
+   ground with `structure.foundation-block`, at most `structure.foundation-depth` blocks
+   (8 by default). Deeper than that, the plot is skipped.
+6. **Height:** a template that would reach past the world's build height, or below its
+   floor, is skipped.
+7. **Claims:** every block has to be inside the `protection.size` square around the spawn,
+   whether protection is on or not, since that is also the square allocation keeps clear of
+   other claims. When protection is active it also has to be inside the player's actual
+   claim at the spawn, as GriefPrevention reports it just before placing; a claim resized
+   smaller since it was made skips the plot. It must never reach into a claim that is not
+   the player's.
+8. **The spawn stays safe.** After placing, the spawn is checked with the same rule a
+   stored spawn is held to on respawn, and its feet and head blocks must be clear. If it
+   fails, every changed block is put back and the plot keeps its spawn.
+
+`structure.rotation` turns the template per plot: `NONE` (the default), `RANDOM` (one of the
+four quarter turns) or `FACING_CENTRE`, which turns the template's west side (negative X)
+toward the plot's spiral centre. Build a custom template with its entrance on the west side
+if you use `FACING_CENTRE`. The spawn spot turns with the template, so the player always
+stands where `structure.offset` says.
+
+### Building your own
+
+1. **Build it** anywhere, keeping the footprint within `protection.size` (9x9 by default)
+   measured around the block the player will stand in; leaving a block or two of margin is
+   recommended. Light the inside so mobs cannot spawn, make sure the player cannot be
+   trapped, and leave out entities and container contents.
+2. **Save it with a structure block.** `/give @s structure_block`, place it, set it to SAVE
+   mode, name it (for example `myhut`), set the relative position and size to cover the build
+   (up to 48x48x48), and press SAVE. The file is written to
+   `<world>/generated/minecraft/structures/myhut.nbt`. Only the positions you build are
+   stored; any air inside the box is stored too, so fill the surrounding air with structure
+   void if it should leave terrain alone. An open-sided build, such as the shipped marker,
+   is the opposite case: store all its air, so terrain inside the box cannot block the spawn
+   or the way up.
+3. **A WorldEdit schematic** (`.schem`) is not read directly. Convert it in game: paste it
+   into a flat test area with `//schem load <name>` and `//paste`, then save that area with a
+   structure block as in step 2. No other tool is needed. The shipped templates were
+   converted with `tools/structures/schem_to_nbt.py` instead, which leaves out the air around
+   a building; its `--keep-all-air` option stores every air cell in the box, for open-sided
+   builds like the marker.
+4. **Install it.** Copy the `.nbt` into `plugins/SpiralGenesis/structures/`, set
+   `structure.file: myhut.nbt`, set `structure.offset` to the block the player should stand
+   in relative to the template's origin (the structure block's corner, which is 0, 0, 0; the
+   layer below it is the floor), set `structure.enabled: true` and run `/sgen reload`.
+   `structure.file` is a plain file name in that folder; a path is refused.
+5. **Check it.**
+   * At startup and on every `/sgen reload` with `structure.enabled: true`, the log says
+     `Spawn plot structure: myhut.nbt (needs a 7x7 square; protection.size 9) ...` when it
+     fits. If its blocks reach further from the spawn spot than `protection.size` allows, a
+     warning names both sizes and says structures will be skipped. A missing, unreadable or
+     empty file is one warning too. Nothing is logged per player, and allocation is never
+     affected.
+   * `/sgen structure <player>` tries the template on one player's plot without changing
+     anything and says whether it would be placed, or why not. It works with
+     `structure.enabled: false`, so you can try a template before switching it on.
+     `/sgen structure <player> place` then places it on that plot.
+   * A plot whose actual claim is too small, or whose spawn would not be safe, is skipped with
+     a log line rather than failing allocation.
+6. **Versions.** A template saved on your server's version works there and on later
+   versions, not on older ones: the server upgrades older structure data when it loads it but
+   cannot read data saved by a newer version. The shipped templates are saved on 1.20.4 so
+   they work on every supported version.
+7. **What never happens.** A structure is placed once per plot on first allocation, never
+   placed again, and never removed when a plot is released, its player is reassigned or the
+   size is lowered.
+
+As a worked example with a known-good file, switching to the shipped tower on a 9x9 claim
+logs that it needs 11x11; set `protection.size: 11` (new claims only, see section 6) and
+`structure.offset` to `x: 3, y: 1, z: 4`, then `/sgen reload`.
+
+### `/sgen structure`
+
+| Command | Does |
+| :--- | :--- |
+| `/sgen structure <player>` | Reports the structure recorded on the player's plot, if any. Without one, runs every placement rule as a dry run and says whether the configured template would be placed. |
+| `/sgen structure <player> place` | Places the configured template on that plot now, under the same rules. Refused when the plot already has a recorded structure. |
+
+Both work for offline players, from their stored record, and need `spiralgenesis.admin`
+like every other admin subcommand; there is no separate permission node. A point set with
+`/sgen setspawn` is on no spiral plot and gets no structure. Both are refused while
+`data.yml` cannot be read.
+
+### What `data.yml` records
+
+```yaml
+structures:
+  '0':            # spiral centre
+    '4':          # plot index on it, here plot #0,4
+      file: spawn-hut.nbt
+      world: world
+      x: 497      # the template's origin after rotation; y is its floor layer
+      y: 71
+      z: -3
+      rotation: NONE
+      placed-at: '2026-10-20T10:15:00Z'
+      player: JavaCrafter
+```
+
+The table is keyed by plot, not by player, so a plot keeps its record when its player is
+reassigned. It was added after 1.0.0-beta.1 without changing anything that version writes.
+1.0.0-beta.1 does not read it and keeps it unchanged when it saves, because it writes back
+the whole file it loaded, so rolling back to it is safe. Under 1.0.0-beta.1 no structures
+are placed, and plots it allocates have no record.
 
 ## Player plot information
 
