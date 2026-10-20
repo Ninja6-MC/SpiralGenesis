@@ -241,6 +241,7 @@ HUT_X=1000; TOWER_X=1040; PROBE_Z=1000; PROBE_Y=151
 # ("An unexpected error occurred"): the console runs on the global region, which may not
 # read a region's blocks. There the plugin's own outcome lines are what is asserted.
 if [[ "$PLATFORM" == "folia" ]]; then STRUCTURE_CHECKS=0; else STRUCTURE_CHECKS=17; fi
+STRUCTURE_SETUP_ERROR=""
 if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
     mkdir -p plugins/SpiralGenesis
     rm -rf plugins/SpiralGenesis/structures
@@ -507,22 +508,53 @@ if [[ "$booted" -eq 1 ]]; then
             done
             return 1
         }
+        # Sends one console command at a time and waits for its reply, resending it until
+        # the reply matches $2 or $4 seconds pass. A reply matching $3 (the chunk is not
+        # loaded yet) or no reply within five seconds is retried; every command used here is
+        # idempotent. Fixed sleeps were not enough: on Folia 1.20.4 the forceloaded chunks
+        # can still be loading when the first fill arrives, which answers "That position is
+        # not loaded" and leaves the plot without its platform.
+        console_until() {
+            local command="$1" ok="$2" retry="$3" deadline=$((SECONDS + $4)) start reply
+            while (( SECONDS < deadline )); do
+                start="$(wc -l < server.log)"
+                echo "$command" >&3 || true
+                for ((j = 0; j < 10; j++)); do
+                    sleep 0.5
+                    reply="$(tail -n +"$((start + 1))" server.log)"
+                    grep -qE "$ok" <<<"$reply" && return 0
+                    grep -qE "$retry" <<<"$reply" && break
+                done
+                sleep 1
+            done
+            return 1
+        }
+        NOT_LOADED='That position is not loaded'
+        FILLED='Successfully filled [0-9]+ block|No blocks were filled'
+        STRUCTURE_SETUP_ERROR=""
         echo "forceload add $((HUT_X - 10)) $((PROBE_Z - 10)) $((TOWER_X + 10)) $((PROBE_Z + 10))" >&3 || true
-        sleep 5
         for x in $HUT_X $TOWER_X; do
-            echo "fill $((x - 6)) $((PROBE_Y - 2)) $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y - 1)) $((PROBE_Z + 6)) minecraft:stone" >&3 || true
-            echo "fill $((x - 6)) $PROBE_Y $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y + 20)) $((PROBE_Z + 6)) minecraft:air" >&3 || true
+            console_until "fill $((x - 6)) $((PROBE_Y - 2)) $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y - 1)) $((PROBE_Z + 6)) minecraft:stone" \
+                "$FILLED" "$NOT_LOADED" 90 \
+                || STRUCTURE_SETUP_ERROR="the stone platform at X=$x was never filled"
+            console_until "fill $((x - 6)) $PROBE_Y $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y + 20)) $((PROBE_Z + 6)) minecraft:air" \
+                "$FILLED" "$NOT_LOADED" 90 \
+                || STRUCTURE_SETUP_ERROR="the air above the platform at X=$x was never cleared"
         done
-        # Folia runs each of these on the region that owns it, in no fixed order, so the
-        # markers wait until the platforms are done rather than being cleared by them.
-        sleep 3
         # Markers: one inside each room, which must clear, and one where the template stores
-        # nothing, which must stay.
-        echo "setblock $HUT_X $((PROBE_Y + 1)) $((PROBE_Z + 1)) minecraft:gold_block" >&3 || true
-        echo "setblock $((HUT_X - 3)) $((PROBE_Y + 2)) $((PROBE_Z - 3)) minecraft:gold_block" >&3 || true
-        echo "setblock $((TOWER_X + 1)) $((PROBE_Y + 13)) $PROBE_Z minecraft:gold_block" >&3 || true
-        echo "setblock $((TOWER_X - 1)) $((PROBE_Y + 4)) $((PROBE_Z - 2)) minecraft:oak_log" >&3 || true
-        sleep 2
+        # nothing, which must stay. Placed after the fills have answered, so neither clears
+        # them. "Could not set the block" means it is already there.
+        place_marker() {
+            console_until "setblock $1 $2 $3 $4" "Changed the block at $1, $2, $3|Could not set the block" \
+                "$NOT_LOADED" 60 || STRUCTURE_SETUP_ERROR="the marker at $1 $2 $3 was never placed"
+        }
+        place_marker "$HUT_X" "$((PROBE_Y + 1))" "$((PROBE_Z + 1))" minecraft:gold_block
+        place_marker "$((HUT_X - 3))" "$((PROBE_Y + 2))" "$((PROBE_Z - 3))" minecraft:gold_block
+        place_marker "$((TOWER_X + 1))" "$((PROBE_Y + 13))" "$PROBE_Z" minecraft:gold_block
+        place_marker "$((TOWER_X - 1))" "$((PROBE_Y + 4))" "$((PROBE_Z - 2))" minecraft:oak_log
+        if [[ -n "$STRUCTURE_SETUP_ERROR" ]]; then
+            echo "::error::Spawn plot structure setup failed: $STRUCTURE_SETUP_ERROR."
+        fi
 
         echo "sgen structure StructureHut" >&3 || true
         wait_for "spawn-hut.nbt would be placed on plot #0,0 for StructureHut|No structure placed on plot #0,0" 30 || true
@@ -700,6 +732,9 @@ if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
     grep -E 'Spawn plot structure|would be placed on plot|Placed structure|No structure placed|cannot be used|STRUCTURE (PASS|FAIL)' server.log \
         | sed 's/^.*INFO\]: //' || true
     echo "---------------------------------"
+    if [[ -n "$STRUCTURE_SETUP_ERROR" ]]; then
+        fail "The structure probe plots were not prepared: $STRUCTURE_SETUP_ERROR within the deadline."
+    fi
     if grep -q 'cannot be used' server.log; then
         fail "A shipped spawn plot template could not be loaded."
     fi
