@@ -66,7 +66,8 @@ import java.util.logging.Level;
 public final class SpawnStructures {
 
     /** Templates shipped in the jar and copied to the structures folder when absent. */
-    public static final List<String> DEFAULT_TEMPLATES = List.of("spawn-hut.nbt", "spawn-tower.nbt");
+    public static final List<String> DEFAULT_TEMPLATES = List.of("spawn-hut.nbt", "spawn-tower.nbt",
+            "spawn-marker.nbt");
 
     /** The folder inside the plugin's data folder that templates are read from. */
     public static final String FOLDER = "structures";

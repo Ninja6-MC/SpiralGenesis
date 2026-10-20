@@ -162,9 +162,12 @@ protection:
 structure:
   # Off by default.
   enabled: false
-  # A file in plugins/SpiralGenesis/structures. spawn-hut.nbt (7x7, fits the default 9x9
-  # claim) and spawn-tower.nbt (needs protection.size 11, offset x 3, y 1, z 4) are copied
-  # there on first start, and only when absent, so an edited copy is never overwritten.
+  # A file in plugins/SpiralGenesis/structures. Three are copied there on first start, and
+  # only when absent, so an edited copy is never overwritten:
+  #   spawn-hut.nbt    - 7x7 hut, fits the default 9x9 claim; offset x 3, y 1, z 3.
+  #   spawn-tower.nbt  - ladder tower, needs protection.size 11; offset x 3, y 1, z 4.
+  #   spawn-marker.nbt - 3x3 spiral marker for small claims, fits protection.size 3;
+  #                      offset x 1, y 1, z 1.
   file: spawn-hut.nbt
   # The block in the template the player stands in, counted from its origin (the structure
   # block's corner). The layer below it is the floor, and replaces the ground under the

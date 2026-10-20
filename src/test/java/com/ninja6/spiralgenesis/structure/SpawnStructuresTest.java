@@ -452,7 +452,9 @@ class SpawnStructuresTest {
     @DisplayName("the shipped templates are copied only when absent")
     void defaultsCopiedOnlyWhenAbsent() throws IOException {
         File folder = new File(plugin.getDataFolder(), SpawnStructures.FOLDER);
-        assertEquals(List.of("structures/spawn-hut.nbt", "structures/spawn-tower.nbt"), env.copied);
+        assertEquals(List.of("structures/spawn-hut.nbt", "structures/spawn-tower.nbt",
+                "structures/spawn-marker.nbt"), env.copied);
+        assertTrue(new File(folder, "spawn-marker.nbt").length() > 0);
         assertTrue(new File(folder, "spawn-tower.nbt").length() > 0);
 
         Files.writeString(new File(folder, "spawn-hut.nbt").toPath(), "edited");

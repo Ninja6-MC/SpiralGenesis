@@ -1315,20 +1315,26 @@ file (`.nbt`) the server provides: a landmark that marks the plot in the world a
 first shelter. It is off by default (`structure.enabled: false`) and changes nothing until
 it is switched on.
 
-Two templates ship in the jar and are copied to `plugins/SpiralGenesis/structures/` on first
+Three templates ship in the jar and are copied to `plugins/SpiralGenesis/structures/` on first
 start, and only when absent, so an edited copy is never overwritten:
 
 | File | Size (W x H x L) | Spawn spot (`structure.offset`) | Needs `protection.size` |
 | :--- | :--- | :--- | :--- |
 | `spawn-hut.nbt` (default) | 7 x 6 x 7 | 3, 1, 3: centre of the floor | 7 or more; fits the default 9 |
 | `spawn-tower.nbt` | 9 x 19 x 9 | 3, 1, 4: beside the ladder | 11 or more |
+| `spawn-marker.nbt` | 3 x 7 x 3 | 1, 1, 1: centre of the floor | 3 or more; the template for small claims |
 
 The hut is a cobblestone room with a full floor, doors east and west, a bed and a wall torch.
-The tower is a cobblestone column with a ladder up to an enclosed room with a bed. Its spawn
-spot is beside the column rather than under it, one block off the template's centre, so its
-blocks reach five blocks east of the spawn and it needs an 11x11 square around it. Both are
-lit so no hostile mob can spawn inside, contain no entities and no container contents, and
-are saved at data version 3700 (1.20.4), so they load on every supported version. They are
+The tower is a cobblestone column with a ladder up to an enclosed room with a bed, and
+torches on the column. Its spawn spot is beside the column rather than under it, one block
+off the template's centre, so its blocks reach five blocks east of the spawn and it needs an
+11x11 square around it. The marker is a 3x3 open spiral of cobblestone slabs around a central
+column with a bed and a torch on top, centred on the spawn, so it fits even the smallest
+claim (`protection.size: 3`). Being open-sided, it stores every air cell in its box, so
+terrain inside the box is cleared and cannot block the spawn or the steps. The hut and tower
+are lit so no hostile mob can spawn inside. All three contain no entities and no container
+contents, and are saved at data version 3700 (1.20.4), so they load on every supported
+version. They are
 original work for this project and ship under the repository licence; the source schematics
 and the conversion script are in
 [`tools/structures/`](../tools/structures/README.md).
@@ -1396,10 +1402,15 @@ stands where `structure.offset` says.
    (up to 48x48x48), and press SAVE. The file is written to
    `<world>/generated/minecraft/structures/myhut.nbt`. Only the positions you build are
    stored; any air inside the box is stored too, so fill the surrounding air with structure
-   void if it should leave terrain alone.
+   void if it should leave terrain alone. An open-sided build, such as the shipped marker,
+   is the opposite case: store all its air, so terrain inside the box cannot block the spawn
+   or the way up.
 3. **A WorldEdit schematic** (`.schem`) is not read directly. Convert it in game: paste it
    into a flat test area with `//schem load <name>` and `//paste`, then save that area with a
-   structure block as in step 2. No other tool is needed.
+   structure block as in step 2. No other tool is needed. The shipped templates were
+   converted with `tools/structures/schem_to_nbt.py` instead, which leaves out the air around
+   a building; its `--keep-all-air` option stores every air cell in the box, for open-sided
+   builds like the marker.
 4. **Install it.** Copy the `.nbt` into `plugins/SpiralGenesis/structures/`, set
    `structure.file: myhut.nbt`, set `structure.offset` to the block the player should stand
    in relative to the template's origin (the structure block's corner, which is 0, 0, 0; the

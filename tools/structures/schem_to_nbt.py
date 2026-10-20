@@ -2,7 +2,9 @@
 
 Air reachable from the outside of the box is left out (placed as "leave as is", the same
 as structure void); enclosed air is kept so rooms clear. --drop-layer Y=BLOCK leaves out
-every BLOCK at layer Y (for example ground copied with the build).
+every BLOCK at layer Y (for example ground copied with the build). --keep-all-air stores
+every air cell in the box, as enclosed air is, for an open-sided template whose spawn or
+stairs terrain inside the box would otherwise block.
 """
 import argparse
 from collections import deque
@@ -13,6 +15,7 @@ ap = argparse.ArgumentParser()
 ap.add_argument("src"); ap.add_argument("dst")
 ap.add_argument("--data-version", type=int, default=3700)  # 1.20.4
 ap.add_argument("--drop-layer", action="append", default=[])
+ap.add_argument("--keep-all-air", action="store_true")
 a = ap.parse_args()
 
 s = nbtlib.load(a.src)["Schematic"]
@@ -73,6 +76,8 @@ for y in range(1, h - 1):
         if air(p) and p not in inside and (p[0], y - 1, p[2]) in inside and (p[0], y + 1, p[2]) in inside:
             inside.add(p)
 outside -= inside
+if a.keep_all_air:
+    outside = set()
 
 # Block light check: torches emit 14 and lose 1 per step through anything not opaque.
 OPAQUE = ("cobblestone", "stone", "planks", "bricks", "log")

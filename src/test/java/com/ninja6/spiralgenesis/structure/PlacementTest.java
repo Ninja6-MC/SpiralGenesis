@@ -99,6 +99,20 @@ class PlacementTest {
         assertEquals(77, tower.blocks().stream().filter(Template.Block::air).count());
         assertEquals(Material.WALL_TORCH, tower.at(5, 4, 3), "the column's north torch");
         assertEquals(Material.WALL_TORCH, tower.at(5, 4, 5), "the column's south torch");
+
+        NbtTemplate marker = NbtTemplate.read("spawn-marker.nbt");
+        assertEquals(3700, marker.dataVersion);
+        assertArrayEquals(new int[] {3, 7, 3}, marker.size);
+        assertTrue(marker.entities.isEmpty());
+        assertEquals(63, marker.blocks().size(), "every cell of the box is stored");
+        assertEquals(29, marker.blocks().stream().filter(Template.Block::air).count(),
+                "all air is kept, so terrain inside the open spiral is cleared");
+        assertEquals(3, Placement.requiredSize(marker, settings(1, 1, 1)),
+                "centred on the spawn, it fits the smallest claim");
+        assertEquals(Material.COBBLESTONE, marker.at(1, 0, 1), "the marker's floor centre");
+        assertEquals(Material.AIR, marker.at(1, 1, 1), "its spawn spot is clear");
+        assertEquals(Material.AIR, marker.at(1, 2, 1));
+        assertEquals(Material.TORCH, marker.at(1, 6, 1), "with a torch on top");
     }
 
     /** A structure file read with a minimal NBT reader, enough for these checks. */

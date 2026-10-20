@@ -16,8 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with independent automatic-notice switches and legacy colour support.
 - Optional spawn plot structures (`structure:` in `config.yml`, off by default): a
   template saved with a structure block is placed once on each new plot, after its storage
-  write and claim step, on the region thread that owns it. Two templates ship, a 7x7 hut
-  and a tower that needs `protection.size` 11. The floor replaces the ground, enclosed air
+  write and claim step, on the region thread that owns it. Three templates ship: a 7x7 hut,
+  a tower that needs `protection.size` 11, and a 3x3 marker for small claims. The floor replaces the ground, enclosed air
   clears, outside air leaves terrain alone, and bedrock and block entities are never
   replaced; a plot that is too small, claimed by someone else, sloped (unless
   `terrain: FOUNDATION`), too high or left unsafe is skipped with one log line. Startup
