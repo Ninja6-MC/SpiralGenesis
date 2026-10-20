@@ -43,3 +43,6 @@ LICENSE         text eol=lf
 *.jar           binary
 *.png           binary
 *.zip           binary
+# Gzipped NBT: the shipped structure templates and the schematics they are built from.
+*.nbt           binary
+*.schem         binary

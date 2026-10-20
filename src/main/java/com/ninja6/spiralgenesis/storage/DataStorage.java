@@ -150,6 +150,24 @@ public interface DataStorage {
     boolean clearPlacementOwed(UUID uuid);
 
     /**
+     * The structure placed on plot {@code (centre, index)}, or {@code null} if none is
+     * recorded, or while storage is failed.
+     */
+    default PlacedStructure getStructure(int centre, int index) {
+        return null;
+    }
+
+    /**
+     * Records the structure placed on plot {@code (centre, index)}, replacing any earlier
+     * record for that plot. Refused while storage is failed.
+     *
+     * @return true if it was recorded
+     */
+    default boolean recordStructure(int centre, int index, PlacedStructure structure) {
+        return false;
+    }
+
+    /**
      * Removes a player's assigned spawn. Ignored while storage is failed.
      */
     void removeSpawn(UUID uuid);

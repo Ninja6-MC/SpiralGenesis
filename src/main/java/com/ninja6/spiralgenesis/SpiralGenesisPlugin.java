@@ -27,6 +27,10 @@ import com.ninja6.spiralgenesis.storage.DataStorage;
 import com.ninja6.spiralgenesis.storage.StorageFailure;
 import com.ninja6.spiralgenesis.storage.StoredSpawn;
 import com.ninja6.spiralgenesis.storage.YamlDataStorage;
+import com.ninja6.spiralgenesis.structure.BukkitTemplate;
+import com.ninja6.spiralgenesis.structure.SpawnStructures;
+import com.ninja6.spiralgenesis.structure.StructureEnvironment;
+import com.ninja6.spiralgenesis.structure.Template;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.World;
@@ -35,6 +39,7 @@ import org.bukkit.entity.Player;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.io.File;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -123,6 +128,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     private volatile SpawnProtector spawnProtector;
 
+    /** Spawn plot structures; built once, and re-read on every reload. */
+    private volatile SpawnStructures structures;
+
     /**
      * The {@code /sgen protect} backfill currently running, or {@code null}.
      *
@@ -195,6 +203,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 () -> pluginConfig.getProtectionSize());
 
         initSpawnManager();
+        getStructures().reload();
 
         this.detectedLoginPlugins = KNOWN_LOGIN_PLUGINS.stream()
                 .filter(name -> getServer().getPluginManager().getPlugin(name) != null)
@@ -310,6 +319,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // tried is the same one that failed last time.
         this.unresolvedWorldReported.set(null);
         initSpawnManager();
+        getStructures().reload();
         resumeHeldIfAvailable();
     }
 
@@ -910,6 +920,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // way here was made after the scan chose the plot, and is reported at warning.
         ClaimResult claim = getSpawnProtector().protectAllocated(player.getUniqueId(), plot, "first allocation");
         plotInformation().notify(player, plot, true, claim);
+        // After the write and the claim step, as the structure has to fit the claim that
+        // step made. Placed later, on the thread owning the plot, and never in the way of
+        // anything above.
+        getStructures().placeForAllocation(player.getUniqueId(), player.getName());
     }
 
     /**
@@ -1542,6 +1556,39 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     public PlotInformation plotInformation() { return new PlotInformation(this); }
+
+    /** Spawn plot structures. Never {@code null}; built on first use, like the protector. */
+    public SpawnStructures getStructures() {
+        SpawnStructures current = structures;
+        if (current == null) {
+            synchronized (this) {
+                current = structures;
+                if (current == null) {
+                    current = new SpawnStructures(createStructureEnvironment());
+                    structures = current;
+                }
+            }
+        }
+        return current;
+    }
+
+    /**
+     * What spawn plot structures run against. Package-private as a test seam: MockBukkit
+     * implements neither the schedulers, async chunk loading nor the structure manager.
+     */
+    StructureEnvironment createStructureEnvironment() {
+        return new PluginStructureEnvironment(this);
+    }
+
+    /** Reads a structure file. Package-private as a test seam, for the reason above. */
+    Template loadStructureTemplate(File file) throws Exception {
+        return BukkitTemplate.load(file);
+    }
+
+    /** The claim inspector in force; never {@code null}. */
+    public ClaimInspector getClaimInspector() {
+        return claimInspector;
+    }
 
     /** Inspect on the spawn region, then let the caller schedule delivery on its recipient. */
     public void inspectPlot(StoredSpawn record, UUID player, Consumer<ClaimInspection> reply) {

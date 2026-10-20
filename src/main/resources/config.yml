@@ -151,6 +151,43 @@ protection:
   # An unrecognised name falls back to ADMIN_CLAIM, logged at warning.
   claim-as: ADMIN_CLAIM
 
+# Optional: a small structure placed on each new spawn plot, from a vanilla structure file
+# (.nbt, saved in game with a structure block). Reload with /sgen reload. See "Spawn plot
+# structures" in docs/ADMIN_GUIDE.md for building and installing your own.
+#
+# Placed once per plot, on its first allocation (and on the fresh plot /sgen reassign
+# gives), and recorded in data.yml so it is never placed there again. Never removed or
+# rebuilt: releasing or reassigning a plot, or lowering protection.size, leaves it standing.
+# A plot where it does not fit is skipped with one log line; allocation is never affected.
+structure:
+  # Off by default.
+  enabled: false
+  # A file in plugins/SpiralGenesis/structures. spawn-hut.nbt (7x7, fits the default 9x9
+  # claim) and spawn-tower.nbt (needs protection.size 11, offset x 3, y 1, z 4) are copied
+  # there on first start, and only when absent, so an edited copy is never overwritten.
+  file: spawn-hut.nbt
+  # The block in the template the player stands in, counted from its origin (the structure
+  # block's corner). The layer below it is the floor, and replaces the ground under the
+  # spawn. The default matches spawn-hut.nbt.
+  offset:
+    x: 3
+    y: 1
+    z: 3
+  # NONE          - as saved. (Default)
+  # RANDOM        - one of the four quarter turns, per plot.
+  # FACING_CENTRE - turned so the template's west side (negative X) faces the spiral centre.
+  rotation: NONE
+  # Whether entities saved in the template are placed with it.
+  include-entities: false
+  # Where the ground does not carry the template's floor, for example on a slope:
+  # SKIP       - leave that plot without a structure. (Default)
+  # FOUNDATION - fill down from the floor to the ground with foundation-block, at most
+  #              foundation-depth blocks; deeper than that, the plot is skipped.
+  terrain: SKIP
+  foundation-block: COBBLESTONE
+  # Clamped to 1-64.
+  foundation-depth: 8
+
 # Player plot information. Reload with /sgen reload; blank templates suppress a line.
 # Legacy & colour codes work on Java and through Geyser. Placeholders are literal:
 # plot: {world}, {x}, {y}, {z}; distance: {distance}; claim: {player}, {width}, {depth},

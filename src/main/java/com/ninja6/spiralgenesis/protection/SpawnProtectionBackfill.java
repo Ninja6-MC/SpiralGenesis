@@ -59,7 +59,7 @@ public final class SpawnProtectionBackfill {
      * one-off command has lost nothing, and a tick that does fifty small things is a tick
      * nobody can measure.
      */
-    static final int MAX_PER_TICK = 50;
+    public static final int MAX_PER_TICK = 50;
 
     /**
      * How long one tick's batch may spend before it stops early, in nanoseconds.
@@ -68,7 +68,7 @@ public final class SpawnProtectionBackfill {
      * budget rather than near it, because this runs alongside everything else the server is
      * already doing and is never urgent.
      */
-    static final long BUDGET_NANOS = 2_000_000L;
+    public static final long BUDGET_NANOS = 2_000_000L;
 
     /** One stored spawn to be claimed. */
     private record Pending(UUID owner, StoredSpawn record) { }

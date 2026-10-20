@@ -1,10 +1,13 @@
 package com.ninja6.spiralgenesis.config;
 
+import com.ninja6.spiralgenesis.structure.StructureSettings;
+import org.bukkit.Material;
 import org.bukkit.configuration.file.FileConfiguration;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Strongly typed configuration container and validator for SpiralGenesis.
@@ -56,6 +59,7 @@ public class PluginConfig {
     private final ProtectionProviderType protectionProvider;
     private final int protectionSize;
     private final ClaimOwnership claimOwnership;
+    private final StructureSettings structure;
 
     /**
      * Things the server owner should be told about their own file, collected during
@@ -117,6 +121,69 @@ public class PluginConfig {
                 ? ClaimOwnership.ADMIN_CLAIM
                 : warnIfCorrected("protection.claim-as", configuredOwnership,
                         ClaimOwnership.parse(configuredOwnership, ClaimOwnership.ADMIN_CLAIM));
+        this.structure = readStructure(config);
+    }
+
+    /**
+     * Reads the {@code structure} block. Every value the plugin had to correct is named, as
+     * for the rest of the file, because a template that silently is not the one configured
+     * looks exactly like a template that does not fit.
+     */
+    private StructureSettings readStructure(FileConfiguration config) {
+        boolean enabled = config.getBoolean("structure.enabled", false);
+        String file = config.getString("structure.file", StructureSettings.DEFAULT_FILE);
+        if (file == null || file.isBlank()) {
+            file = StructureSettings.DEFAULT_FILE;
+        } else if (!isPlainTemplateName(file.trim())) {
+            // A path would let the setting read files outside the structures folder.
+            warnings.add("structure.file is '" + file + "', which is not a plain .nbt file name"
+                    + " inside plugins/SpiralGenesis/structures. Using "
+                    + StructureSettings.DEFAULT_FILE + " instead.");
+            file = StructureSettings.DEFAULT_FILE;
+        } else {
+            file = file.trim();
+        }
+        StructureSettings.Rotation rotation = StructureSettings.Rotation.parse(
+                config.getString("structure.rotation"), StructureSettings.Rotation.NONE);
+        String configuredRotation = config.getString("structure.rotation");
+        if (configuredRotation != null && !configuredRotation.isBlank()) {
+            warnIfCorrected("structure.rotation", configuredRotation.replace('-', '_'), rotation);
+        }
+        StructureSettings.Terrain terrain = StructureSettings.Terrain.parse(
+                config.getString("structure.terrain"), StructureSettings.Terrain.SKIP);
+        String configuredTerrain = config.getString("structure.terrain");
+        if (configuredTerrain != null && !configuredTerrain.isBlank()) {
+            warnIfCorrected("structure.terrain", configuredTerrain, terrain);
+        }
+        String blockName = config.getString("structure.foundation-block", "COBBLESTONE");
+        Material block = blockName == null ? null : Material.matchMaterial(blockName.trim());
+        if (block == null || !block.isBlock() || !block.isSolid()) {
+            warnings.add("structure.foundation-block is '" + blockName + "', which is not a solid"
+                    + " block. Using COBBLESTONE instead.");
+            block = Material.COBBLESTONE;
+        }
+        int configuredDepth = config.getInt("structure.foundation-depth", 8);
+        int depth = clamp(configuredDepth, StructureSettings.MIN_FOUNDATION_DEPTH,
+                StructureSettings.MAX_FOUNDATION_DEPTH);
+        if (depth != configuredDepth) {
+            warnings.add("structure.foundation-depth is " + configuredDepth + ", which is outside"
+                    + " the supported range " + StructureSettings.MIN_FOUNDATION_DEPTH + "-"
+                    + StructureSettings.MAX_FOUNDATION_DEPTH + ". Using " + depth + " instead.");
+        }
+        return new StructureSettings(enabled, file,
+                config.getInt("structure.offset.x", 3),
+                config.getInt("structure.offset.y", 1),
+                config.getInt("structure.offset.z", 3),
+                rotation,
+                config.getBoolean("structure.include-entities", false),
+                terrain, block, depth);
+    }
+
+    /** A file name with no directory part, ending in {@code .nbt}. */
+    static boolean isPlainTemplateName(String name) {
+        return name.toLowerCase(Locale.ROOT).endsWith(".nbt") && name.length() > 4
+                && name.indexOf('/') < 0 && name.indexOf('\\') < 0 && !name.contains("..")
+                && name.indexOf(':') < 0;
     }
 
     private static int clamp(int value, int min, int max) {
@@ -257,6 +324,11 @@ public class PluginConfig {
     /** Whether the claim is an admin claim the player is trusted on, or their own claim. */
     public ClaimOwnership getClaimOwnership() {
         return claimOwnership;
+    }
+
+    /** The {@code structure} block: the template placed on each new plot, if any. */
+    public StructureSettings getStructure() {
+        return structure;
     }
 
     /**

@@ -69,6 +69,16 @@ esac
 # What the backstop is set to for those entries. 15 is the floor PluginConfig clamps to.
 ACTION_TIMEOUT="${ACTION_TIMEOUT:-15}"
 
+# Places both shipped spawn plot templates through /sgen structure on two prepared plots
+# and checks the result block by block. On by default, and off for the entries that drive a
+# real player: the probe plots are recorded on spiral indices 0 and 1, which would move that
+# player onto a different cell from the one those entries were written against. Every
+# Minecraft version in the matrix has an entry without a bot, so each is still covered.
+STRUCTURE_SMOKE="${STRUCTURE_SMOKE:-}"
+if [[ -z "$STRUCTURE_SMOKE" ]]; then
+    if [[ -n "$BOT_JAR" ]]; then STRUCTURE_SMOKE=false; else STRUCTURE_SMOKE=true; fi
+fi
+
 BOOT_TIMEOUT="${BOOT_TIMEOUT:-300}"
 STOP_TIMEOUT="${STOP_TIMEOUT:-90}"
 WORKDIR="${WORKDIR:-$PWD/run-$PLATFORM}"
@@ -219,6 +229,50 @@ else
     # earlier TELEPORT_CANCEL run here would quietly give this one a 15s backstop and fail
     # its gate assertions for a reason that is not in its own diff.
     rm -f plugins/SpiralGenesis/config.yml
+fi
+
+# Two plots far from the spiral's own cells, recorded before boot so the console can name
+# them: /sgen structure works from the stored record, and nobody has to join. Each stands
+# on a stone platform built after boot at Y 149-150, so the result does not depend on the
+# terrain the seed generates. installed-at is in the past so neither probe is mistaken for
+# a player from before the install.
+HUT_X=1000; TOWER_X=1040; PROBE_Z=1000; PROBE_Y=151
+# The block-by-block checks use `execute if block` from the console, which Folia refuses
+# ("An unexpected error occurred"): the console runs on the global region, which may not
+# read a region's blocks. There the plugin's own outcome lines are what is asserted.
+if [[ "$PLATFORM" == "folia" ]]; then STRUCTURE_CHECKS=0; else STRUCTURE_CHECKS=17; fi
+if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
+    mkdir -p plugins/SpiralGenesis
+    rm -rf plugins/SpiralGenesis/structures
+    cat > plugins/SpiralGenesis/data.yml <<DATA
+installed-at: '2020-01-01T00:00:00Z'
+players:
+  00000000-0000-4000-8000-000000000196:
+    name: StructureHut
+    client: JAVA
+    centre: 0
+    assigned-index: 0
+    grid-u: 0
+    grid-v: 0
+    x: $HUT_X.5
+    y: $PROBE_Y.0
+    z: $PROBE_Z.5
+    world: world
+    assigned-date: '2020-01-01T00:00:00Z'
+  00000000-0000-4000-8000-000000000197:
+    name: StructureTower
+    client: JAVA
+    centre: 0
+    assigned-index: 1
+    grid-u: 1
+    grid-v: 0
+    x: $TOWER_X.5
+    y: $PROBE_Y.0
+    z: $PROBE_Z.5
+    world: world
+    assigned-date: '2020-01-01T00:00:00Z'
+DATA
+    echo "Recorded probe plots for the spawn plot structure check."
 fi
 
 # ---------------------------------------------------------------------------
@@ -437,6 +491,91 @@ if [[ "$booted" -eq 1 ]]; then
         echo "-------------------"
     fi
 
+    # -----------------------------------------------------------------------
+    # Spawn plot structures: load and place both shipped templates
+    # -----------------------------------------------------------------------
+    if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
+        # One `execute if block` per position; PASS or FAIL is said into the log.
+        check_block() {
+            echo "execute if block $2 $3 run say STRUCTURE PASS $1" >&3 || true
+            echo "execute unless block $2 $3 run say STRUCTURE FAIL $1" >&3 || true
+        }
+        wait_for() {
+            for ((i = 0; i < $2; i++)); do
+                grep -qE "$1" server.log 2>/dev/null && return 0
+                sleep 1
+            done
+            return 1
+        }
+        echo "forceload add $((HUT_X - 10)) $((PROBE_Z - 10)) $((TOWER_X + 10)) $((PROBE_Z + 10))" >&3 || true
+        sleep 5
+        for x in $HUT_X $TOWER_X; do
+            echo "fill $((x - 6)) $((PROBE_Y - 2)) $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y - 1)) $((PROBE_Z + 6)) minecraft:stone" >&3 || true
+            echo "fill $((x - 6)) $PROBE_Y $((PROBE_Z - 6)) $((x + 6)) $((PROBE_Y + 20)) $((PROBE_Z + 6)) minecraft:air" >&3 || true
+        done
+        # Folia runs each of these on the region that owns it, in no fixed order, so the
+        # markers wait until the platforms are done rather than being cleared by them.
+        sleep 3
+        # Markers: one inside each room, which must clear, and one where the template stores
+        # nothing, which must stay.
+        echo "setblock $HUT_X $((PROBE_Y + 1)) $((PROBE_Z + 1)) minecraft:gold_block" >&3 || true
+        echo "setblock $((HUT_X - 3)) $((PROBE_Y + 2)) $((PROBE_Z - 3)) minecraft:gold_block" >&3 || true
+        echo "setblock $((TOWER_X + 1)) $((PROBE_Y + 13)) $PROBE_Z minecraft:gold_block" >&3 || true
+        echo "setblock $((TOWER_X - 1)) $((PROBE_Y + 4)) $((PROBE_Z - 2)) minecraft:oak_log" >&3 || true
+        sleep 2
+
+        echo "sgen structure StructureHut" >&3 || true
+        wait_for "spawn-hut.nbt would be placed on plot #0,0 for StructureHut|No structure placed on plot #0,0" 30 || true
+        echo "sgen structure StructureHut place" >&3 || true
+        wait_for "Placed structure spawn-hut.nbt on plot #0,0 for StructureHut|No structure placed on plot #0,0" 60 || true
+
+        # The tower's spawn spot is a block off centre, so it needs an 11x11 square.
+        # Reloading onto it also exercises the reload path and the report for an enabled
+        # template. Appended, so an entry's own settings above are kept.
+        mkdir -p plugins/SpiralGenesis
+        cat >> plugins/SpiralGenesis/config.yml <<CONFIG
+structure:
+  enabled: true
+  file: spawn-tower.nbt
+  offset:
+    x: 3
+    y: 1
+    z: 4
+protection:
+  size: 11
+CONFIG
+        echo "sgen reload" >&3 || true
+        wait_for "Spawn plot structure: spawn-tower.nbt|cannot be used" 30 || true
+        echo "sgen structure StructureTower place" >&3 || true
+        wait_for "Placed structure spawn-tower.nbt on plot #0,1 for StructureTower|No structure placed on plot #0,1" 60 || true
+        sleep 2
+
+        H=$HUT_X; T=$TOWER_X; Y=$PROBE_Y; Z=$PROBE_Z
+        if (( STRUCTURE_CHECKS > 0 )); then
+            check_block hut-floor            "$H $((Y - 1)) $Z"                 minecraft:cobblestone
+            check_block hut-spawn-feet       "$H $Y $Z"                         minecraft:air
+            check_block hut-spawn-head       "$H $((Y + 1)) $Z"                 minecraft:air
+            check_block hut-inside-cleared   "$H $((Y + 1)) $((Z + 1))"         minecraft:air
+            check_block hut-outside-kept     "$((H - 3)) $((Y + 2)) $((Z - 3))" minecraft:gold_block
+            check_block hut-door             "$((H - 3)) $Y $Z"                 minecraft:oak_door
+            check_block hut-bed              "$H $Y $((Z + 2))"                 minecraft:white_bed
+            check_block hut-wall-torch       "$H $((Y + 1)) $((Z - 2))"         minecraft:wall_torch
+            check_block tower-ground-kept    "$T $((Y - 1)) $Z"                 minecraft:stone
+            check_block tower-spawn-feet     "$T $Y $Z"                         minecraft:air
+            check_block tower-spawn-head     "$T $((Y + 1)) $Z"                 minecraft:air
+            check_block tower-column-base    "$((T + 1)) $((Y - 1)) $Z"         minecraft:cobblestone
+            check_block tower-ladder         "$((T + 1)) $Y $Z"                 minecraft:ladder
+            check_block tower-ladder-top     "$((T + 1)) $((Y + 11)) $Z"        minecraft:ladder
+            check_block tower-inside-cleared "$((T + 1)) $((Y + 13)) $Z"        minecraft:air
+            check_block tower-log-kept       "$((T - 1)) $((Y + 4)) $((Z - 2))" minecraft:oak_log
+            check_block tower-cap            "$((T + 1)) $((Y + 17)) $Z"        minecraft:cobblestone
+            for ((i = 0; i < 30; i++)); do
+                (( $(grep -cE 'STRUCTURE (PASS|FAIL)' server.log || true) >= STRUCTURE_CHECKS )) && break
+                sleep 1
+            done
+        fi
+    fi
+
     echo "Requesting graceful shutdown..."
     echo "stop" >&3 || true
     for ((i = 0; i < STOP_TIMEOUT; i++)); do
@@ -556,6 +695,30 @@ fi
 # ---------------------------------------------------------------------------
 # Allocation gate assertions
 # ---------------------------------------------------------------------------
+if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
+    echo "----- spawn plot structures -----"
+    grep -E 'Spawn plot structure|would be placed on plot|Placed structure|No structure placed|cannot be used|STRUCTURE (PASS|FAIL)' server.log \
+        | sed 's/^.*INFO\]: //' || true
+    echo "---------------------------------"
+    if grep -q 'cannot be used' server.log; then
+        fail "A shipped spawn plot template could not be loaded."
+    fi
+    grep -q 'spawn-hut.nbt would be placed on plot #0,0 for StructureHut' server.log \
+        || fail "The structure dry run did not report that the hut fits its probe plot."
+    grep -q 'Placed structure spawn-hut.nbt on plot #0,0 for StructureHut' server.log \
+        || fail "spawn-hut.nbt was not placed, or its probe spawn was not safe afterwards."
+    grep -qF 'Spawn plot structure: spawn-tower.nbt (needs a 11x11 square; protection.size 11)' server.log \
+        || fail "The reload did not report spawn-tower.nbt as loaded and fitting."
+    grep -q 'Placed structure spawn-tower.nbt on plot #0,1 for StructureTower' server.log \
+        || fail "spawn-tower.nbt was not placed, or its probe spawn was not safe afterwards."
+    PASSED_CHECKS="$(grep -c 'STRUCTURE PASS' server.log || true)"
+    if grep -q 'STRUCTURE FAIL' server.log || (( PASSED_CHECKS < STRUCTURE_CHECKS )); then
+        fail "Only $PASSED_CHECKS of $STRUCTURE_CHECKS placed-block checks passed."
+    fi
+    grep -q '^structures:' plugins/SpiralGenesis/data.yml \
+        || fail "data.yml does not record the placed structures."
+fi
+
 grep -q 'Allocation trigger: FIRST_ACTION' server.log     || fail "Plugin did not report the FIRST_ACTION allocation trigger at startup."
 
 if [[ -n "$LIMBO_JAR" ]]; then

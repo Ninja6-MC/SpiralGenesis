@@ -84,6 +84,11 @@ them. On an online-mode server, or a network authenticating at the proxy, set
   chest are covered the moment they arrive. It never costs anyone their plot when it
   cannot be created. See the [admin guide](docs/ADMIN_GUIDE.md#6-spawn-protection) for
   the settings and the two GriefPrevention numbers worth checking first.
+* **Can mark each plot with a small structure.** Also optional and off by default: a hut or
+  tower, or a template you save in game with a structure block, placed once on each new
+  plot so players can find it again. It only replaces the ground under its floor and the
+  terrain inside its rooms, and a plot where it does not fit is simply left without one.
+  See [Spawn plot structures](docs/ADMIN_GUIDE.md#spawn-plot-structures).
 
 ### What it does *not* do
 
@@ -169,12 +174,13 @@ commands require `spiralgenesis.admin` (default: operators).
 | `/sgen release-all confirm` | Spawn protection only. Release the spawn claim around every player's current plot, when uninstalling from a server that has had protection on. Refused under `PLAYER_CLAIM`. See [Uninstalling](docs/ADMIN_GUIDE.md#11-uninstalling). |
 | `/sgen tp <player>` | Teleport yourself to a player's plot. Warns first if the plot is no longer safe, then goes anyway. |
 | `/sgen info <player>` | Show a player's plot number, grid cell, coordinates and actual claim access. |
+| `/sgen structure <player>` | Report the structure on a player's plot, or check whether the configured template would fit there, changing nothing. Add `place` to place it now. See [Spawn plot structures](docs/ADMIN_GUIDE.md#spawn-plot-structures). |
 | `/sgen me` | Show your plot, distance, respawn-point status and actual claim access. |
 | `/sgen simulate <count>` | Dry-run 1–500 allocations against your real terrain and report what it found. Generates chunks; does not move the live spiral forward. |
 | `/sgen reload` | Reload `config.yml`. |
 
-`setspawn` and `reassign` act on the live player, so the target has to be online. `tp` and
-`info` read from storage and work for offline players too.
+`setspawn` and `reassign` act on the live player, so the target has to be online. `tp`,
+`info` and `structure` read from storage and work for offline players too.
 
 The three marked *spawn protection only* are for servers running GriefPrevention with
 `protection.enabled` switched on, and act only while it is. A server that never switches
