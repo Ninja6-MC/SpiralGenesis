@@ -4,10 +4,14 @@ import be.seeseemelk.mockbukkit.ServerMock;
 import io.papermc.paper.entity.TeleportFlag;
 import io.papermc.paper.threadedregions.scheduler.EntityScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Location;
 import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.plugin.Plugin;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
@@ -33,6 +37,12 @@ public class InlinePlayerMock extends SessionPlayerMock {
 
     /** The stored respawn point, as the server keeps it: unresolved, and null when unset. */
     public Location respawnPoint;
+
+    /** Every action bar sent, as plain text, oldest first. */
+    public final List<String> actionBars = new ArrayList<>();
+
+    /** Repeating tasks, which run only when {@link #runRepeating} says a period passed. */
+    private final List<RepeatingTask> repeating = new ArrayList<>();
 
     public InlinePlayerMock(ServerMock server, String name) {
         super(server, name);
@@ -73,14 +83,68 @@ public class InlinePlayerMock extends SessionPlayerMock {
     }
 
     @Override
+    public void sendActionBar(Component message) {
+        actionBars.add(PlainTextComponentSerializer.plainText().serialize(message));
+    }
+
+    @Override
     public EntityScheduler getScheduler() {
         return new InlineEntityScheduler();
     }
 
-    /**
-     * A task that has already run. Nothing in the plugin reads anything off one except to
-     * cancel a repeating task, and none of the player-scheduled paths repeat.
-     */
+    /** Runs each live repeating task once, as one period passing. */
+    public void runRepeating() {
+        for (RepeatingTask task : List.copyOf(repeating)) {
+            if (!task.cancelled) {
+                task.body.accept(task);
+            }
+        }
+        repeating.removeIf(task -> task.cancelled);
+    }
+
+    /** How many repeating tasks are still scheduled. */
+    public int repeatingTasks() {
+        repeating.removeIf(task -> task.cancelled);
+        return repeating.size();
+    }
+
+    private static final class RepeatingTask implements ScheduledTask {
+
+        private final Plugin plugin;
+        private final Consumer<ScheduledTask> body;
+        private boolean cancelled;
+
+        private RepeatingTask(Plugin plugin, Consumer<ScheduledTask> body) {
+            this.plugin = plugin;
+            this.body = body;
+        }
+
+        @Override
+        public Plugin getOwningPlugin() {
+            return plugin;
+        }
+
+        @Override
+        public boolean isRepeatingTask() {
+            return true;
+        }
+
+        @Override
+        public CancelledState cancel() {
+            if (cancelled) {
+                return CancelledState.CANCELLED_ALREADY;
+            }
+            cancelled = true;
+            return CancelledState.CANCELLED_BY_CALLER;
+        }
+
+        @Override
+        public ExecutionState getExecutionState() {
+            return cancelled ? ExecutionState.CANCELLED : ExecutionState.IDLE;
+        }
+    }
+
+    /** A task that has already run. */
     private static final class DoneTask implements ScheduledTask {
 
         private final Plugin plugin;
@@ -110,8 +174,8 @@ public class InlinePlayerMock extends SessionPlayerMock {
         }
     }
 
-    /** Runs everything immediately, on the calling thread. */
-    private static final class InlineEntityScheduler implements EntityScheduler {
+    /** Runs everything once immediately, on the calling thread, except repeating tasks. */
+    private final class InlineEntityScheduler implements EntityScheduler {
 
         @Override
         public boolean execute(Plugin plugin, Runnable run, Runnable retired, long delay) {
@@ -136,7 +200,9 @@ public class InlinePlayerMock extends SessionPlayerMock {
         public ScheduledTask runAtFixedRate(Plugin plugin, Consumer<ScheduledTask> task,
                                             Runnable retired, long initialDelayTicks,
                                             long periodTicks) {
-            return run(plugin, task, retired);
+            RepeatingTask handle = new RepeatingTask(plugin, task);
+            repeating.add(handle);
+            return handle;
         }
     }
 }

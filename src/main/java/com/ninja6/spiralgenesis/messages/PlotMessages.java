@@ -12,14 +12,20 @@ public final class PlotMessages {
     public PlotMessages(FileConfiguration config) { this.config = config; }
 
     public void send(CommandSender sender, String key, Map<String, String> values) {
+        String text = format(key, values);
+        if (!text.isEmpty()) { sender.sendMessage(text); }
+    }
+
+    /** The template with colours applied and placeholders filled, or empty when blank. */
+    public String format(String key, Map<String, String> values) {
         String template = config.getString("messages." + key, DEFAULTS.getOrDefault(key, ""));
-        if (template == null || template.isBlank()) { return; }
+        if (template == null || template.isBlank()) { return ""; }
         // Translate the template before inserting data so player/world names cannot add colours.
         String text = ChatColor.translateAlternateColorCodes('&', template);
         for (var entry : values.entrySet()) {
             text = text.replace("{" + entry.getKey() + "}", entry.getValue());
         }
-        sender.sendMessage(text);
+        return text;
     }
 
     public static Map<String, String> defaults() {
@@ -43,6 +49,9 @@ public final class PlotMessages {
             Map.entry("trusted", "&eThis claim belongs to another player; {player}'s named access is shown above."),
             Map.entry("outside", "&eThis spawn claim does not protect blocks outside these bounds."),
             Map.entry("no-claim", "&eNo claim owned by or explicitly trusting {player} covers the spawn column."),
-            Map.entry("unavailable", "&eProtection information is unavailable."));
+            Map.entry("unavailable", "&eProtection information is unavailable."),
+            Map.entry("arrival-plot", "&6Your plot &f{x}, {y}, {z}"),
+            Map.entry("arrival-claim", "&7- &eclaim {width} x {depth}, X {min_x} to {max_x}, Z {min_z} to {max_z}"),
+            Map.entry("arrival-tip", "&7- right-click with a {tool} to inspect claims"));
     }
 }

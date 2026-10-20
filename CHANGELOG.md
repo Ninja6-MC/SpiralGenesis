@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual claim bounds and named access without administrative permission.
 - Configurable chat notices for plot placement and claim creation or repaired access,
   with independent automatic-notice switches and legacy colour support.
+- An action-bar hint on arrival at the plot shows its coordinates and, for a claim of
+  the player's, its size, inclusive bounds and GriefPrevention's investigation tool.
+  It stays while the player is in the arrival column, lingers briefly after they leave
+  it and is capped (`messages.arrival.*`). The claim's edges are drawn once on arrival
+  with GriefPrevention's own visualisation; neither appears on Folia.
 
 ### Fixed
 - `/sgen info <player>` now includes actual claim bounds and access, and floors

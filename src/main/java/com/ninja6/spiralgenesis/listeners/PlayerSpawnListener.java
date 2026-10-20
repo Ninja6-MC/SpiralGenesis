@@ -274,7 +274,7 @@ public class PlayerSpawnListener implements Listener {
         SpawnManager manager = plugin.getSpawnManager();
         if (manager == null) {
             if (!onPlot) {
-                moveTo(player, plot);
+                moveTo(player, plot, true);
             }
             return;
         }
@@ -300,20 +300,34 @@ public class PlayerSpawnListener implements Listener {
                 if (onPlot && sameBlock(standing, plot)) {
                     return;
                 }
-                player.getScheduler().run(plugin, t -> moveTo(player, standing), null);
+                // A respawn that placed them on the plot started the arrival hint already;
+                // this only lifts them within the same column.
+                player.getScheduler().run(plugin, t -> moveTo(player, standing, !onPlot), null);
             });
         });
     }
 
-    /** Moves a player placed by a respawn, on the player's own thread. */
-    private void moveTo(Player player, Location target) {
+    /**
+     * Moves a player placed by a respawn, on the player's own thread.
+     *
+     * @param arrival whether this move brings them onto the plot, which starts the arrival
+     *                hint once the teleport completes
+     */
+    private void moveTo(Player player, Location target, boolean arrival) {
         if (!player.isOnline() || player.isDead()) {
             return;
         }
         plugin.getLogger().info("Moved " + player.getName() + " after their respawn to ("
                 + target.getBlockX() + ", " + target.getBlockY() + ", " + target.getBlockZ()
                 + ").");
-        player.teleportAsync(target);
+        var moved = player.teleportAsync(target);
+        if (arrival && moved != null) {
+            moved.thenAccept(success -> {
+                if (Boolean.TRUE.equals(success)) {
+                    plugin.arrivalHints().arrived(player);
+                }
+            });
+        }
     }
 
     private static boolean sameBlock(Location a, Location b) {
@@ -407,6 +421,7 @@ public class PlayerSpawnListener implements Listener {
         SpawnManager manager = plugin.getSpawnManager();
         if (manager == null) {
             event.setRespawnLocation(spawn);
+            plugin.arrivalHints().arrived(player);
             return;
         }
 
@@ -429,6 +444,7 @@ public class PlayerSpawnListener implements Listener {
                 return;
             }
             event.setRespawnLocation(standing);
+            plugin.arrivalHints().arrived(player);
             return;
         }
 
@@ -437,6 +453,7 @@ public class PlayerSpawnListener implements Listener {
         event.setRespawnLocation(spawn);
         plugin.repairSpawn(player, record, true);
         player.getScheduler().run(plugin, task -> placeOnPlot(player, spawn, true), null);
+        plugin.arrivalHints().arrived(player);
     }
 
     /**

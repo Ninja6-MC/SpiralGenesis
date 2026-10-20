@@ -179,3 +179,25 @@ messages:
   outside: '&eThis spawn claim does not protect blocks outside these bounds.'
   no-claim: '&eNo claim owned by or explicitly trusting {player} covers the spawn column.'
   unavailable: '&eProtection information is unavailable.'
+  # Action-bar hint on arrival at the plot: first allocation, placement after a
+  # disconnect, reassignment, and a respawn routed to the plot (not a bed or anchor
+  # respawn, and not a teleport retry). Re-sent about once a second while the player
+  # stays in the block column they arrived in; turning and moving up or down do not
+  # count as leaving it. After they first leave it, it stays for linger-seconds, and it
+  # never runs past max-seconds. Quitting, dying and changing world end it, and a new
+  # arrival replaces it. Independent of allocation-notices and claim-notices.
+  arrival:
+    enabled: true
+    # Draw the claim's edges once on arrival with GriefPrevention's own visualisation.
+    # Only for a claim of the player's; never on Folia or without GriefPrevention.
+    show-claim-edges: true
+    linger-seconds: 5
+    max-seconds: 30
+  # The three parts are joined with a space; a blank one is left out. arrival-plot:
+  # {world}, {x}, {y}, {z}. arrival-claim takes the claim placeholders above except
+  # {player}, and arrival-tip takes {tool}, GriefPrevention's configured
+  # investigation tool. Both are shown only when a claim of the player's covers the
+  # spawn column, so the hint never suggests protection they lack.
+  arrival-plot: '&6Your plot &f{x}, {y}, {z}'
+  arrival-claim: '&7- &eclaim {width} x {depth}, X {min_x} to {max_x}, Z {min_z} to {max_z}'
+  arrival-tip: '&7- right-click with a {tool} to inspect claims'

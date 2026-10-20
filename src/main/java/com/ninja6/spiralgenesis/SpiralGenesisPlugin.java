@@ -18,6 +18,7 @@ import com.ninja6.spiralgenesis.protection.ProtectionProviders;
 import com.ninja6.spiralgenesis.protection.ClaimInspector;
 import com.ninja6.spiralgenesis.protection.ClaimInspection;
 import com.ninja6.spiralgenesis.protection.ClaimResult;
+import com.ninja6.spiralgenesis.messages.ArrivalHints;
 import com.ninja6.spiralgenesis.messages.PlotInformation;
 import com.ninja6.spiralgenesis.config.ClaimOwnership;
 import com.ninja6.spiralgenesis.protection.SpawnClaimRelease;
@@ -113,6 +114,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     private ProtectionProvider protectionProvider = NoOpProtectionProvider.INSTANCE;
     private volatile ClaimInspector claimInspector = ClaimInspector.UNAVAILABLE;
+    private final ArrivalHints arrivalHints = new ArrivalHints(this);
 
     /**
      * The one object every protection call in the plugin goes through.
@@ -207,6 +209,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 () -> String.join(", ", detectedLoginPlugins));
         getServer().getPluginManager().registerEvents(actionGate, this);
         getServer().getPluginManager().registerEvents(new PlayerSpawnListener(this, actionGate), this);
+        getServer().getPluginManager().registerEvents(arrivalHints, this);
 
         registerAuthMeAdapter();
         reportAllocationTrigger();
@@ -244,6 +247,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // refusing /sgen protect with "already running" and no job anywhere to finish.
         backfill.set(null);
         claimRelease.set(null);
+        arrivalHints.cancelAll();
         if (dataStorage != null) {
             dataStorage.shutdown();
         }
@@ -866,6 +870,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         player.setRespawnLocation(plot, true);
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
+                arrivalHints.arrived(player);
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
                         + player.getName() + " to plot " + label
                         + (returning ? ", recorded while they were away," : "")
@@ -1542,6 +1547,34 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     public PlotInformation plotInformation() { return new PlotInformation(this); }
+
+    /** The action-bar hint shown on arrival at a plot. */
+    public ArrivalHints arrivalHints() { return arrivalHints; }
+
+    /**
+     * Draws the edges of the player's claim at their plot for them, once. Call on the
+     * player's thread; does nothing on Folia, without GriefPrevention, or when it throws.
+     */
+    public void showClaimEdges(StoredSpawn record, Player player) {
+        Location spawn = record.toLocation();
+        if (spawn == null) {
+            return;
+        }
+        try {
+            claimInspector.showEdges(spawn, player);
+        } catch (Throwable failure) {
+            getLogger().log(Level.FINE, "Could not show claim edges", failure);
+        }
+    }
+
+    /** The protection plugin's claim investigation tool, readable, or null when unknown. */
+    public String investigationTool() {
+        try {
+            return claimInspector.investigationTool();
+        } catch (Throwable failure) {
+            return null;
+        }
+    }
 
     /** Inspect on the spawn region, then let the caller schedule delivery on its recipient. */
     public void inspectPlot(StoredSpawn record, UUID player, Consumer<ClaimInspection> reply) {

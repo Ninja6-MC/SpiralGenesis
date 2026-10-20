@@ -433,6 +433,9 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 target.setRespawnLocation(res.location(), true);
                 plugin.plotInformation().notify(target, res.location(), true, claim);
                 target.teleportAsync(res.location()).thenAccept(success -> {
+                    if (Boolean.TRUE.equals(success)) {
+                        plugin.arrivalHints().arrived(target);
+                    }
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to plot " +
                             res.plotLabel() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");
                     // Logged after the teleport resolves so the line reflects what actually
