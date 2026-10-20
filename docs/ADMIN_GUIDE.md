@@ -1324,19 +1324,18 @@ start, and only when absent, so an edited copy is never overwritten:
 | `spawn-tower.nbt` | 9 x 19 x 9 | 3, 1, 4: beside the ladder | 11 or more |
 | `spawn-marker.nbt` | 3 x 7 x 3 | 1, 1, 1: centre of the floor | 3 or more; the template for small claims |
 
-The hut is a cobblestone room with a full floor, doors east and west, a bed and a wall torch.
-The tower is a cobblestone column with a ladder up to an enclosed room with a bed, and
-torches on the column. Its spawn spot is beside the column rather than under it, one block
-off the template's centre, so its blocks reach five blocks east of the spawn and it needs an
-11x11 square around it. The marker is a 3x3 open spiral of cobblestone slabs around a central
-column with a bed and a torch on top, centred on the spawn, so it fits even the smallest
-claim (`protection.size: 3`). Being open-sided, it stores every air cell in its box, so
-terrain inside the box is cleared and cannot block the spawn or the steps. The hut and tower
-are lit so no hostile mob can spawn inside. All three contain no entities and no container
-contents, and are saved at data version 3700 (1.20.4), so they load on every supported
-version. They are
-original work for this project and ship under the repository licence; the source schematics
-and the conversion script are in
+The hut is a cobblestone room with a full floor, doors east and west, a bed and a wall
+torch. The tower is a cobblestone column with a ladder up to an enclosed room with a bed,
+and torches on the column. Its spawn spot is beside the column rather than under it, one
+block off the template's centre, so its blocks reach five blocks east of the spawn and it
+needs an 11x11 square around it. The marker is a 3x3 open spiral of cobblestone slabs
+around a central column with a bed and a torch on top, centred on the spawn, so it fits
+even the smallest claim (`protection.size: 3`). Being open-sided, it stores every air cell
+in its box, so terrain inside the box is cleared and cannot block the spawn or the steps.
+The hut and tower are lit so no hostile mob can spawn inside. All three contain no
+entities and no container contents, and are saved at data version 3700 (1.20.4), so they
+load on every supported version. They are original work for this project and ship under
+the repository licence; the source schematics and the conversion script are in
 [`tools/structures/`](../tools/structures/README.md).
 
 ### When and how often

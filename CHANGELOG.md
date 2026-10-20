@@ -16,13 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with independent automatic-notice switches and legacy colour support.
 - Optional spawn plot structures (`structure:` in `config.yml`, off by default): a
   template saved with a structure block is placed once on each new plot, after its storage
-  write and claim step, on the region thread that owns it. Three templates ship: a 7x7 hut,
-  a tower that needs `protection.size` 11, and a 3x3 marker for small claims. The floor replaces the ground, enclosed air
-  clears, outside air leaves terrain alone, and bedrock and block entities are never
-  replaced; a plot that is too small, claimed by someone else, sloped (unless
-  `terrain: FOUNDATION`), too high or left unsafe is skipped with one log line. Startup
-  and `/sgen reload` warn once when the template is larger than `protection.size` or
-  cannot be read.
+  write and claim step, on the region thread that owns it. Three templates ship: a 7x7
+  hut, a tower that needs `protection.size` 11, and a 3x3 marker for small claims. The
+  floor replaces the ground, enclosed air clears, outside air leaves terrain alone, and
+  bedrock and block entities are never replaced; a plot that is too small, claimed by
+  someone else, sloped (unless `terrain: FOUNDATION`), too high or left unsafe is skipped
+  with one log line. Startup and `/sgen reload` warn once when the template is larger than
+  `protection.size` or cannot be read.
 - `/sgen structure <player> [place]` reports a plot's structure, dry-runs the template
   there, or places it now.
 - `data.yml` gains a top-level `structures` table keyed by plot. Nothing 1.0.0-beta.1

@@ -84,10 +84,11 @@ them. On an online-mode server, or a network authenticating at the proxy, set
   chest are covered the moment they arrive. It never costs anyone their plot when it
   cannot be created. See the [admin guide](docs/ADMIN_GUIDE.md#6-spawn-protection) for
   the settings and the two GriefPrevention numbers worth checking first.
-* **Can mark each plot with a small structure.** Also optional and off by default: a hut, a
-  tower, a 3x3 marker for small claims, or a template you save in game with a structure block, placed once on each new
-  plot so players can find it again. It only replaces the ground under its floor and the
-  terrain inside its rooms, and a plot where it does not fit is simply left without one.
+* **Can mark each plot with a small structure.** Also optional and off by default: a hut,
+  a tower, a 3x3 marker for small claims, or a template you save in game with a structure
+  block, placed once on each new plot so players can find it again. It only replaces the
+  ground under its floor and the terrain inside its rooms, and a plot where it does not
+  fit is simply left without one.
   See [Spawn plot structures](docs/ADMIN_GUIDE.md#spawn-plot-structures).
 
 ### What it does *not* do
