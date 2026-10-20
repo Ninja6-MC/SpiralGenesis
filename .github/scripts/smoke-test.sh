@@ -240,7 +240,7 @@ HUT_X=1000; TOWER_X=1040; PROBE_Z=1000; PROBE_Y=151
 # The block-by-block checks use `execute if block` from the console, which Folia refuses
 # ("An unexpected error occurred"): the console runs on the global region, which may not
 # read a region's blocks. There the plugin's own outcome lines are what is asserted.
-if [[ "$PLATFORM" == "folia" ]]; then STRUCTURE_CHECKS=0; else STRUCTURE_CHECKS=17; fi
+if [[ "$PLATFORM" == "folia" ]]; then STRUCTURE_CHECKS=0; else STRUCTURE_CHECKS=19; fi
 STRUCTURE_SETUP_ERROR=""
 if [[ "$STRUCTURE_SMOKE" == "true" ]]; then
     mkdir -p plugins/SpiralGenesis
@@ -601,6 +601,8 @@ CONFIG
             check_block tower-inside-cleared "$((T + 1)) $((Y + 13)) $Z"        minecraft:air
             check_block tower-log-kept       "$((T - 1)) $((Y + 4)) $((Z - 2))" minecraft:oak_log
             check_block tower-cap            "$((T + 1)) $((Y + 17)) $Z"        minecraft:cobblestone
+            check_block tower-torch-north    "$((T + 2)) $((Y + 3)) $((Z - 1))" minecraft:wall_torch
+            check_block tower-torch-south    "$((T + 2)) $((Y + 3)) $((Z + 1))" minecraft:wall_torch
             for ((i = 0; i < 30; i++)); do
                 (( $(grep -cE 'STRUCTURE (PASS|FAIL)' server.log || true) >= STRUCTURE_CHECKS )) && break
                 sleep 1

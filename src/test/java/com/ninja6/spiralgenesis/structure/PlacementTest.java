@@ -95,6 +95,10 @@ class PlacementTest {
         assertEquals(null, tower.at(3, 1, 4), "the tower's spawn spot is outside air");
         assertEquals(null, tower.at(3, 0, 4), "and keeps the natural ground under it");
         assertEquals(Material.LADDER, tower.at(4, 1, 4), "beside the ladder, to its east");
+        assertEquals(198, tower.blocks().size());
+        assertEquals(77, tower.blocks().stream().filter(Template.Block::air).count());
+        assertEquals(Material.WALL_TORCH, tower.at(5, 4, 3), "the column's north torch");
+        assertEquals(Material.WALL_TORCH, tower.at(5, 4, 5), "the column's south torch");
     }
 
     /** A structure file read with a minimal NBT reader, enough for these checks. */
