@@ -984,6 +984,16 @@ world stops allocation until corrected, and the owner of a spawn claim created u
 and start the older jar. Do not put a `data.yml` written by a newer version under an
 older jar; that is not supported.
 
+1.0.0-beta.2 upgrades 1.0.0-beta.1 in place and is the one exception so far: its only
+addition, the top-level `structures` table, is ignored by 1.0.0-beta.1 and kept when that
+version saves (see [What `data.yml` records](#what-datayml-records)), so its `data.yml`
+can go back under the 1.0.0-beta.1 jar. Take the same copy first all the same. Its first
+start, and every `/sgen reload`, creates `plugins/SpiralGenesis/structures/` with the
+three default templates even with structures off, never overwriting a copy already there;
+the folder left behind after a rollback does no harm. A structure is placed only when a
+plot is first allocated, so a plot allocated under 1.0.0-beta.1 after a rollback gets none
+automatically once 1.0.0-beta.2 is back; `/sgen structure <player> place` places it.
+
 ### When `data.yml` cannot be read
 
 A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.
