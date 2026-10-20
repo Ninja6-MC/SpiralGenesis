@@ -9,6 +9,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.2] - 2026-10-21
+
+**Compatibility** is unchanged from 1.0.0-beta.1: Paper, Purpur, other Paper forks and
+Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3, with CI verifying Folia on 1.20.4,
+1.21.11 and 26.2. Folia 26.3 is supported but not yet verified because no official build
+is available. Longer Paper 26.3 and Folia live soaks, and verification of Folia 26.3 once
+a build is available, remain for 1.0.0 in
+[#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191). Minecraft 26.1 and newer
+need the server to run on Java 25; Java 21 is enough for 1.20 and 1.21.
+
+**Upgrading** from 1.0.0-beta.1 is in place and needs no migration step; an upgrade from
+an alpha also takes the 1.0.0-beta.1 upgrade notes. Stop the server and copy
+`plugins/SpiralGenesis` before you upgrade. The `data.yml` format stays readable by
+1.0.0-beta.1: the only addition is a top-level `structures` table, nothing 1.0.0-beta.1
+writes changes, and 1.0.0-beta.1 ignores the table and keeps it when it saves, because it
+writes back the whole file it loaded. Rolling back to 1.0.0-beta.1 therefore keeps every
+player's plot; it places no structures, and the ones already placed stay in the world. An
+existing `config.yml` is not rewritten: the new `structure` and `messages` keys it lacks
+take their defaults, so spawn plot structures stay off while plot and claim notices and
+the arrival hint are on.
+`/sgen me` is available to every player by default through `spiralgenesis.me`, which
+`spiralgenesis.admin` includes; negate `spiralgenesis.me` to withhold it. The
+administrative subcommands still require `spiralgenesis.admin`.
+
 ### Added
 - `/sgen me` reports a player's spawn coordinates, distance, respawn-point status,
   actual claim bounds and named access without administrative permission.
