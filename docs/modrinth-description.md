@@ -188,6 +188,12 @@ Allocation and changed claims produce chat notices. Servers can customise the
 turn off automatic plot and claim notices. `/sgen me` remains available. Protection
 information is unavailable on Folia or without GriefPrevention.
 
+On arrival at the plot (first allocation, placement after a disconnect, reassignment,
+or a respawn sent to the plot) the action bar shows its coordinates for a few seconds.
+When a claim of the player's covers the spawn, the hint adds its size and bounds and
+names GriefPrevention's investigation tool, and the claim's edges are drawn once.
+`messages.arrival` switches it off or changes its timings.
+
 ## How the spiral works
 
 The first plot, #0,0, lands on the centre. Each following plot moves one cell along an

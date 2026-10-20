@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   there, or places it now.
 - `data.yml` gains a top-level `structures` table keyed by plot. Nothing 1.0.0-beta.1
   writes changes, and 1.0.0-beta.1 keeps the table when it saves.
+- An action-bar hint on arrival at the plot shows its coordinates and, for a claim of
+  the player's, its size, inclusive bounds and GriefPrevention's investigation tool.
+  It stays while the player is in the arrival column, lingers briefly after they leave
+  it and is capped (`messages.arrival.*`). The claim's edges are drawn once on arrival
+  with GriefPrevention's own visualisation; neither appears on Folia.
 
 ### Fixed
 - `/sgen info <player>` now includes actual claim bounds and access, and floors
