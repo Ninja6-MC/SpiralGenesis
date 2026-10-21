@@ -17,8 +17,10 @@ import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.BooleanSupplier;
@@ -54,6 +56,16 @@ class TestStructureEnvironment implements StructureEnvironment {
     final List<Runnable> regionTasks = new ArrayList<>();
     final List<BooleanSupplier> tickers = new ArrayList<>();
     final List<String> chunkRequests = new ArrayList<>();
+    /** The chunks this plugin holds a ticket on, as the server keeps them: one per chunk. */
+    final Set<String> tickets = new LinkedHashSet<>();
+    /** Every ticket added and removed, in order, as {@code +x,z} and {@code -x,z}. */
+    final List<String> ticketChanges = new ArrayList<>();
+    /** Whether ticket calls were made on a thread owning the chunk, every time. */
+    boolean ticketsOnOwner = true;
+    /** Thrown by the next chunk load request, when set. */
+    RuntimeException loadFailure;
+    /** Thrown by the global scheduler, when set. */
+    RuntimeException tickFailure;
 
     final Logger logger = Logger.getAnonymousLogger();
     final List<LogRecord> logged = new CopyOnWriteArrayList<>();
@@ -80,6 +92,19 @@ class TestStructureEnvironment implements StructureEnvironment {
 
     void reconfigure() {
         config = new PluginConfig(yaml);
+    }
+
+    /**
+     * What the server does to an offline player's plot between the request and the job:
+     * every requested chunk that holds no ticket is unloaded again.
+     */
+    void unloadUnheld(World world) {
+        for (String key : chunkRequests) {
+            if (!tickets.contains(key)) {
+                String[] xz = key.split(",");
+                world.unloadChunk(Integer.parseInt(xz[0]), Integer.parseInt(xz[1]));
+            }
+        }
     }
 
     List<String> messages(Level level) {
@@ -187,8 +212,25 @@ class TestStructureEnvironment implements StructureEnvironment {
     @Override
     public CompletableFuture<?> loadChunk(World world, int chunkX, int chunkZ) {
         chunkRequests.add(chunkX + "," + chunkZ);
+        if (loadFailure != null) {
+            throw loadFailure;
+        }
         world.getChunkAt(chunkX, chunkZ).load();
         return CompletableFuture.completedFuture(null);
+    }
+
+    @Override
+    public void addChunkTicket(World world, int chunkX, int chunkZ) {
+        ticketsOnOwner &= owns;
+        tickets.add(chunkX + "," + chunkZ);
+        ticketChanges.add("+" + chunkX + "," + chunkZ);
+    }
+
+    @Override
+    public void removeChunkTicket(World world, int chunkX, int chunkZ) {
+        ticketsOnOwner &= owns;
+        tickets.remove(chunkX + "," + chunkZ);
+        ticketChanges.add("-" + chunkX + "," + chunkZ);
     }
 
     @Override
@@ -203,6 +245,9 @@ class TestStructureEnvironment implements StructureEnvironment {
 
     @Override
     public void runEachTick(BooleanSupplier tick) {
+        if (tickFailure != null) {
+            throw tickFailure;
+        }
         tickers.add(tick);
     }
 }

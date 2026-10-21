@@ -71,6 +71,11 @@ list, but only `me` is usable without `spiralgenesis.admin`; a player with
 ### Fixed
 - `/sgen info <player>` now includes actual claim bounds and access, and floors
   negative block coordinates correctly.
+- `/sgen structure <player>`, with or without `place`, works for an offline player whose
+  plot nobody is near: the plot's chunks are held with a plugin chunk ticket until the
+  outcome is decided, instead of unloading before the check ran. A dry run's refusal now
+  reads `Would not place a structure on ...`, and the verdict of both forms is written to
+  the console log, so a command sent over RCON has a visible result.
 
 ## [1.0.0-beta.1] - 2026-10-10
 

@@ -50,8 +50,21 @@ public interface StructureEnvironment {
     /** Reads a structure file. Throws if it cannot be read. */
     Template loadTemplate(File file) throws Exception;
 
-    /** Requests a chunk; the future completes once it is loaded. */
+    /**
+     * Requests a chunk; the future completes once it is loaded. Loading alone does not keep
+     * it loaded: with nobody near, the server can unload it again before the next tick.
+     */
     CompletableFuture<?> loadChunk(World world, int chunkX, int chunkZ);
+
+    /**
+     * Adds this plugin's ticket to a chunk, which keeps it loaded until the ticket is
+     * removed. The server holds one ticket per plugin and chunk, however often it is added.
+     * Call on the thread owning the chunk.
+     */
+    void addChunkTicket(World world, int chunkX, int chunkZ);
+
+    /** Removes this plugin's ticket from a chunk. Call on the thread owning the chunk. */
+    void removeChunkTicket(World world, int chunkX, int chunkZ);
 
     /** Whether the current thread owns the chunk, so its blocks may be read and changed. */
     boolean ownsChunk(World world, int chunkX, int chunkZ);

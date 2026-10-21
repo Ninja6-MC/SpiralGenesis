@@ -19,6 +19,7 @@ import org.bukkit.block.structure.StructureRotation;
 import java.io.File;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -41,7 +42,9 @@ import java.util.logging.Level;
  * <p>Asked for after a first allocation's storage write succeeded and its claim step
  * returned, on the player's thread. The work itself runs later, on the thread owning the
  * spawn's region, once every chunk the template touches is loaded, and is drained from a
- * queue within the per-tick budget the {@code /sgen protect} backfill uses.
+ * queue within the per-tick budget the {@code /sgen protect} backfill uses. Those chunks
+ * carry a plugin chunk ticket from when they are loaded until the outcome is decided, so
+ * they stay loaded with nobody near; every ticket is removed however the job ends.
  *
  * <h2>Rules</h2>
  *
@@ -76,6 +79,8 @@ public final class SpawnStructures {
     private volatile Loaded loaded = Loaded.failed(null, "not loaded yet");
     private final Queue<Job> queue = new ConcurrentLinkedQueue<>();
     private final AtomicBoolean driving = new AtomicBoolean();
+    /** Chunks this plugin holds a ticket on, with the number of jobs holding each. */
+    private final Map<ChunkRef, Integer> held = new HashMap<>();
 
     public SpawnStructures(StructureEnvironment env) {
         this.env = env;
@@ -247,21 +252,22 @@ public final class SpawnStructures {
     private void start(UUID owner, String playerName, StoredSpawn record, boolean dryRun,
                        Consumer<Outcome> reply) {
         String plot = "plot " + record.plotLabel() + " for " + playerName;
-        Consumer<Outcome> finish = outcome -> {
-            if (!dryRun) {
-                env.logger().info(outcome.message());
-            }
+        // Logged in both forms: an operator on RCON gets the command's reply before the
+        // verdict exists, so the console is the only place it can be read.
+        Consumer<Outcome> report = outcome -> {
+            env.logger().info(outcome.message());
             reply.accept(outcome);
         };
         Loaded current = loaded;
         if (current.template() == null) {
-            finish.accept(skip(plot, "structure.file '" + current.file() + "' cannot be used: "
-                    + current.error()));
+            report.accept(skip(dryRun, plot, "structure.file '" + current.file()
+                    + "' cannot be used: " + current.error()));
             return;
         }
         Location spawn = record.toLocation();
         if (spawn == null) {
-            finish.accept(skip(plot, "its world '" + record.worldName() + "' is not loaded"));
+            report.accept(skip(dryRun, plot, "its world '" + record.worldName()
+                    + "' is not loaded"));
             return;
         }
         World world = spawn.getWorld();
@@ -273,42 +279,147 @@ public final class SpawnStructures {
         CellArea footprint = placement.footprint();
 
         if (placement.topY() > world.getMaxHeight() - 1) {
-            finish.accept(skip(plot, "its top would reach Y=" + placement.topY()
+            report.accept(skip(dryRun, plot, "its top would reach Y=" + placement.topY()
                     + ", past the build height of " + (world.getMaxHeight() - 1)));
             return;
         }
         if (placement.bottomY() < world.getMinHeight()) {
-            finish.accept(skip(plot, "its floor would be below the bottom of the world"));
+            report.accept(skip(dryRun, plot, "its floor would be below the bottom of the world"));
             return;
         }
         int size = config.getProtectionSize();
         if (!within(footprint, CellArea.square(spawn.getBlockX(), spawn.getBlockZ(), size))) {
-            finish.accept(skip(plot, current.file() + " needs a " + current.requiredSize() + "x"
-                    + current.requiredSize() + " square around the spawn and protection.size is "
-                    + size));
+            report.accept(skip(dryRun, plot, current.file() + " needs a "
+                    + current.requiredSize() + "x" + current.requiredSize()
+                    + " square around the spawn and protection.size is " + size));
             return;
         }
 
+        // Every footprint chunk is held with a ticket from here until the job's outcome is
+        // decided, whichever way it ends: the plot of an offline player has nobody near it,
+        // so a chunk only loaded would be unloaded again before the job reaches it.
+        Set<Long> chunks = chunksOf(footprint);
+        AtomicBoolean released = new AtomicBoolean();
+        Consumer<Outcome> finish = outcome -> {
+            try {
+                if (released.compareAndSet(false, true)) {
+                    for (long key : chunks) {
+                        release(world, (int) (key >> 32), (int) key);
+                    }
+                }
+            } finally {
+                report.accept(outcome);
+            }
+        };
         Job job = new Job(owner, playerName, record, current, settings, placement, footprint,
                 spawn, dryRun, finish);
-        Set<Long> chunks = chunksOf(footprint);
-        List<CompletableFuture<?>> loads = new ArrayList<>();
-        try {
-            for (long key : chunks) {
-                loads.add(env.loadChunk(world, (int) (key >> 32), (int) key));
-            }
-        } catch (Throwable t) {
-            finish.accept(skip(plot, "its chunks could not be requested (" + t + ")"));
-            return;
+        List<CompletableFuture<?>> holds = new ArrayList<>();
+        for (long key : chunks) {
+            holds.add(hold(world, (int) (key >> 32), (int) key));
         }
-        CompletableFuture.allOf(loads.toArray(new CompletableFuture<?>[0])).whenComplete((ok, ex) -> {
+        CompletableFuture.allOf(holds.toArray(new CompletableFuture<?>[0])).whenComplete((ok, ex) -> {
             if (ex != null) {
-                finish.accept(skip(plot, "its chunks could not be loaded (" + ex + ")"));
+                finish.accept(job.skip("its chunks could not be loaded (" + ex + ")"));
                 return;
             }
             queue.add(job);
             drive();
         });
+    }
+
+    /**
+     * Loads a chunk and adds this plugin's ticket to it on the thread owning it. The ticket
+     * is added once the chunk is loaded, because adding one to an unloaded chunk loads it
+     * on the spot. Every call is balanced by one {@link #release}, whether or not the
+     * returned future succeeds; it never throws.
+     */
+    private CompletableFuture<?> hold(World world, int chunkX, int chunkZ) {
+        ChunkRef ref = new ChunkRef(world.getUID(), chunkX, chunkZ);
+        synchronized (held) {
+            held.merge(ref, 1, Integer::sum);
+        }
+        CompletableFuture<Void> ready = new CompletableFuture<>();
+        try {
+            env.loadChunk(world, chunkX, chunkZ).whenComplete((chunk, ex) -> {
+                if (ex != null) {
+                    ready.completeExceptionally(ex);
+                    return;
+                }
+                onOwner(world, chunkX, chunkZ, () -> {
+                    synchronized (held) {
+                        // Released already: a ticket added now would never be removed.
+                        if (!held.containsKey(ref)) {
+                            ready.completeExceptionally(new IllegalStateException("released"));
+                            return;
+                        }
+                        env.addChunkTicket(world, chunkX, chunkZ);
+                    }
+                    ready.complete(null);
+                }, ready::completeExceptionally);
+            });
+        } catch (Throwable t) {
+            ready.completeExceptionally(t);
+        }
+        return ready;
+    }
+
+    /**
+     * Gives back one {@link #hold}. The ticket is removed, on the thread owning the chunk,
+     * once no job holds the chunk any more; jobs on neighbouring plots can share a chunk,
+     * and the server keeps only one ticket per plugin for both.
+     */
+    private void release(World world, int chunkX, int chunkZ) {
+        ChunkRef ref = new ChunkRef(world.getUID(), chunkX, chunkZ);
+        synchronized (held) {
+            Integer count = held.get(ref);
+            if (count == null) {
+                return;
+            }
+            if (count > 1) {
+                held.put(ref, count - 1);
+                return;
+            }
+            held.remove(ref);
+        }
+        onOwner(world, chunkX, chunkZ, () -> {
+            synchronized (held) {
+                // Held again by a later job, which keeps the ticket and releases it itself.
+                if (!held.containsKey(ref)) {
+                    env.removeChunkTicket(world, chunkX, chunkZ);
+                }
+            }
+        }, t -> env.logger().log(Level.WARNING, "Could not remove the chunk ticket at chunk "
+                + chunkX + ", " + chunkZ + " in " + world.getName() + ".", t));
+    }
+
+    /** Runs a task now if this thread owns the chunk, otherwise on the thread that does. */
+    private void onOwner(World world, int chunkX, int chunkZ, Runnable task,
+                         Consumer<Throwable> failed) {
+        Runnable guarded = () -> {
+            try {
+                task.run();
+            } catch (Throwable t) {
+                failed.accept(t);
+            }
+        };
+        try {
+            if (env.ownsChunk(world, chunkX, chunkZ)) {
+                guarded.run();
+            } else {
+                env.runOnRegion(world, chunkX, chunkZ, guarded);
+            }
+        } catch (Throwable t) {
+            failed.accept(t);
+        }
+    }
+
+    private record ChunkRef(UUID world, int x, int z) { }
+
+    /** Number of chunks currently held with a ticket; for tests. */
+    int heldChunks() {
+        synchronized (held) {
+            return held.size();
+        }
     }
 
     private StructureRotation rotationFor(StructureSettings settings, StoredSpawn record,
@@ -337,7 +448,7 @@ public final class SpawnStructures {
             env.logger().log(Level.WARNING, "Spawn plot structures could not be scheduled.", t);
             Job job;
             while ((job = queue.poll()) != null) {
-                job.finish.accept(skip(job.plot(), "the scheduler refused the work"));
+                job.finish.accept(job.skip("the scheduler refused the work"));
             }
         }
     }
@@ -369,7 +480,7 @@ public final class SpawnStructures {
                     env.runOnRegion(handed.spawn.getWorld(), handed.spawn.getBlockX() >> 4,
                             handed.spawn.getBlockZ() >> 4, handed::run);
                 } catch (Throwable t) {
-                    handed.finish.accept(skip(handed.plot(), "the region scheduler refused it"));
+                    handed.finish.accept(handed.skip("the region scheduler refused it"));
                 }
                 break;
             }
@@ -398,8 +509,10 @@ public final class SpawnStructures {
                 && inner.minZ() >= outer.minZ() && inner.maxZ() <= outer.maxZ();
     }
 
-    private static Outcome skip(String plot, String reason) {
-        return new Outcome(false, false, "No structure placed on " + plot + ": " + reason + ".");
+    /** A refusal, worded as a dry run's verdict when nothing was going to be placed. */
+    private static Outcome skip(boolean dryRun, String plot, String reason) {
+        return new Outcome(false, false, (dryRun ? "Would not place a structure on "
+                : "No structure placed on ") + plot + ": " + reason + ".");
     }
 
     private static boolean hasBlockEntity(Block block) {
@@ -438,13 +551,17 @@ public final class SpawnStructures {
             return "plot " + record.plotLabel() + " for " + playerName;
         }
 
+        Outcome skip(String reason) {
+            return SpawnStructures.skip(dryRun, plot(), reason);
+        }
+
         void run() {
             Outcome outcome;
             try {
                 outcome = attempt();
             } catch (Throwable t) {
                 env.logger().log(Level.WARNING, "Placing a structure on " + plot() + " failed.", t);
-                outcome = skip(plot(), "it failed with " + t.getClass().getSimpleName()
+                outcome = skip("it failed with " + t.getClass().getSimpleName()
                         + "; see the console");
             }
             finish.accept(outcome);
@@ -456,40 +573,40 @@ public final class SpawnStructures {
                 int cx = (int) (key >> 32);
                 int cz = (int) key;
                 if (!world.isChunkLoaded(cx, cz) || !env.ownsChunk(world, cx, cz)) {
-                    return skip(plot(), "its chunks are not all loaded and owned by the spawn's"
+                    return skip("its chunks are not all loaded and owned by the spawn's"
                             + " region thread");
                 }
             }
             DataStorage storage = env.storage();
             if (storage.isFailed()) {
-                return skip(plot(), "data.yml could not be read, so the placement could not be"
+                return skip("data.yml could not be read, so the placement could not be"
                         + " recorded");
             }
             StoredSpawn now = storage.getRecord(owner);
             if (now == null || now.centre() != record.centre() || now.index() != record.index()
                     || now.x() != record.x() || now.y() != record.y() || now.z() != record.z()
                     || !now.worldName().equals(record.worldName())) {
-                return skip(plot(), "the player's spawn changed before it could be placed");
+                return skip("the player's spawn changed before it could be placed");
             }
             if (!dryRun && storage.getStructure(record.centre(), record.index()) != null) {
-                return skip(plot(), "it already has a recorded structure");
+                return skip("it already has a recorded structure");
             }
 
             if (env.protector().isActive()) {
                 ClaimInspection claim = env.inspector().inspect(spawn, owner);
                 if (claim.status() != ClaimInspection.Status.FOUND) {
-                    return skip(plot(), "protection is active but no claim of the player's"
+                    return skip("protection is active but no claim of the player's"
                             + " covers the spawn");
                 }
                 CellArea bounds = CellArea.inclusive(claim.minX(), claim.minZ(), claim.maxX(),
                         claim.maxZ());
                 if (!within(footprint, bounds)) {
-                    return skip(plot(), "the claim at the spawn (" + claim.width() + "x"
+                    return skip("the claim at the spawn (" + claim.width() + "x"
                             + claim.depth() + ") does not hold the template's footprint");
                 }
             }
             if (env.claimLookup().overlapsForeignClaim(world, footprint, owner)) {
-                return skip(plot(), "the template would reach into a claim that is not the"
+                return skip("the template would reach into a claim that is not the"
                         + " player's");
             }
 
@@ -498,7 +615,7 @@ public final class SpawnStructures {
                 Block target = world.getBlockAt(block.x(), block.y(), block.z());
                 String refusal = refusal(target);
                 if (refusal != null) {
-                    return skip(plot(), "it would replace " + refusal + " at " + at(target));
+                    return skip("it would replace " + refusal + " at " + at(target));
                 }
                 touched.add(target.getLocation());
             }
@@ -513,12 +630,12 @@ public final class SpawnStructures {
                     continue;
                 }
                 if (settings.terrain() == StructureSettings.Terrain.SKIP) {
-                    return skip(plot(), "the ground under its floor is missing at " + at(below)
+                    return skip("the ground under its floor is missing at " + at(below)
                             + " and structure.terrain is SKIP");
                 }
                 String gap = planFoundation(world, floor, foundation);
                 if (gap != null) {
-                    return skip(plot(), gap);
+                    return skip(gap);
                 }
             }
 
@@ -550,7 +667,7 @@ public final class SpawnStructures {
                 for (BlockState state : before) {
                     state.update(true, false);
                 }
-                return skip(plot(), "the spawn would no longer be safe to stand on; every block"
+                return skip("the spawn would no longer be safe to stand on; every block"
                         + " was put back");
             }
 

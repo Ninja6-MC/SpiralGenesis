@@ -1359,7 +1359,9 @@ the repository licence; the source schematics and the conversion script are in
 * **After the plot is settled.** The storage write has succeeded and the claim step has
   returned before anything is placed. The blocks are then placed on the thread that owns the
   plot's region (Folia), once its chunks are loaded, a few plots per tick within the same
-  budget as `/sgen protect`.
+  budget as `/sgen protect`. Those chunks carry a SpiralGenesis plugin chunk ticket from
+  when they are loaded until the placement succeeds or is skipped, so a plot with nobody
+  near it stays loaded meanwhile; the tickets are removed however it ends.
 * **Never in the way.** A plot where the structure does not fit is skipped with one log
   line, `No structure placed on plot #0,4 for <player>: <reason>.`, and the player keeps
   their plot and spawn exactly as allocated. A skipped plot is not retried by itself; an
@@ -1461,6 +1463,13 @@ Both work for offline players, from their stored record, and need `spiralgenesis
 like every other admin subcommand; there is no separate permission node. A point set with
 `/sgen setspawn` is on no spiral plot and gets no structure. Both are refused while
 `data.yml` cannot be read.
+
+The verdict comes a tick or more after the command, once the plot's chunks are loaded. A
+dry run that would not place the template says
+`Would not place a structure on plot #0,4 for <player>: <reason>.`; `place` says
+`No structure placed on ...` as on allocation. The verdict of both is also written to the
+console log, which is the only place to read it when the command was sent over RCON: the
+RCON reply holds only the lines sent before the verdict.
 
 ### What `data.yml` records
 

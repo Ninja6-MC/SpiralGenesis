@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -290,6 +291,8 @@ class SpawnStructuresTest {
 
         structures.placeForAllocation(owner, "Builder");
         structures.placeForAllocation(second, "Second");
+        assertTrue(env.tickers.isEmpty(), "queued once the chunks are held");
+        env.runRegionTasks();
         assertEquals(1, env.tickers.size(), "one driver for the queue");
         assertFalse(env.tickers.get(0).getAsBoolean(), "one placement handed off, one waiting");
         assertEquals(1, env.regionTasks.size());
@@ -480,5 +483,128 @@ class SpawnStructuresTest {
         assertNull(storage.getStructure(0, 0));
         assertFalse(storage.recordStructure(0, 1,
                 new PlacedStructure("x.nbt", "world", 0, 0, 0, "NONE", "t", "p")));
+    }
+
+    private static final Set<String> FOOTPRINT = Set.of("-1,-1", "-1,0", "0,-1", "0,0");
+
+    /** Every ticket added was removed again, and nothing is held. */
+    private void assertNoTicketLeft() {
+        assertTrue(env.tickets.isEmpty(), "tickets left: " + env.tickets);
+        assertEquals(0, structures.heldChunks());
+        assertTrue(env.ticketsOnOwner, "tickets change only on the thread owning the chunk");
+    }
+
+    @Test
+    @DisplayName("an offline plot's chunks unloaded before the job are held, and placed on")
+    void offlinePlotChunksAreHeld() {
+        AtomicReference<SpawnStructures.Outcome> outcome = new AtomicReference<>();
+        structures.placeNow(owner, "Builder", false, outcome::set);
+        assertEquals(FOOTPRINT, env.tickets, "every footprint chunk is held before the job");
+
+        env.unloadUnheld(world);
+        for (String key : FOOTPRINT) {
+            String[] xz = key.split(",");
+            assertTrue(world.isChunkLoaded(Integer.parseInt(xz[0]), Integer.parseInt(xz[1])),
+                    "a held chunk stays loaded: " + key);
+        }
+        env.drain();
+
+        assertTrue(outcome.get().placed(), outcome.get().message());
+        assertEquals(1, hut.placements);
+        assertNoTicketLeft();
+        assertEquals(8, env.ticketChanges.size(), "one ticket added and removed per chunk");
+    }
+
+    @Test
+    @DisplayName("without a ticket the unloaded chunks refuse the job, as before the fix")
+    void unheldChunksAreRefused() {
+        AtomicReference<SpawnStructures.Outcome> outcome = new AtomicReference<>();
+        structures.placeNow(owner, "Builder", true, outcome::set);
+        env.tickets.clear();
+        env.unloadUnheld(world);
+        env.drain();
+
+        assertFalse(outcome.get().wouldPlace());
+        assertTrue(outcome.get().message().contains("not all loaded"), outcome.get().message());
+    }
+
+    @Test
+    @DisplayName("the dry run's verdict reads as a dry run and is logged to the console")
+    void dryRunVerdictWordingAndLog() {
+        SpawnStructures.Outcome would = placeNow(true);
+        assertTrue(would.wouldPlace(), would.message());
+        assertTrue(env.messages(Level.INFO).contains(would.message()), "the verdict is logged");
+
+        world.getBlockAt(-3, GROUND, -3).setType(Material.BEDROCK);
+        SpawnStructures.Outcome refused = placeNow(true);
+        assertEquals("Would not place a structure on plot #0,0 for Builder: it would replace"
+                + " bedrock at (-3, 20, -3).", refused.message());
+        assertTrue(env.messages(Level.INFO).contains(refused.message()), "the refusal is logged");
+        assertNoTicketLeft();
+    }
+
+    @Test
+    @DisplayName("place keeps its wording and logs its verdict too")
+    void placeRefusalWordingAndLog() {
+        world.getBlockAt(-3, GROUND, -3).setType(Material.BEDROCK);
+        SpawnStructures.Outcome refused = placeNow(false);
+        assertEquals("No structure placed on plot #0,0 for Builder: it would replace bedrock at"
+                + " (-3, 20, -3).", refused.message());
+        assertTrue(env.messages(Level.INFO).contains(refused.message()));
+        assertEquals(0, hut.placements);
+        assertNoTicketLeft();
+    }
+
+    @Test
+    @DisplayName("tickets are released when the job throws")
+    void ticketsReleasedOnException() {
+        env.safe = spawn -> {
+            throw new IllegalStateException("boom");
+        };
+        SpawnStructures.Outcome outcome = placeNow(false);
+
+        assertFalse(outcome.placed());
+        assertTrue(outcome.message().contains("IllegalStateException"), outcome.message());
+        assertEquals(FOOTPRINT, Set.copyOf(env.ticketChanges.stream()
+                .filter(c -> c.startsWith("-")).map(c -> c.substring(1)).toList()));
+        assertNoTicketLeft();
+    }
+
+    @Test
+    @DisplayName("tickets are released when a chunk cannot be loaded or the scheduler refuses")
+    void ticketsReleasedWhenTheJobCannotRun() {
+        env.loadFailure = new IllegalStateException("no chunk");
+        SpawnStructures.Outcome failed = placeNow(true);
+        assertTrue(failed.message().startsWith("Would not place"), failed.message());
+        assertTrue(failed.message().contains("could not be loaded"), failed.message());
+        assertNoTicketLeft();
+
+        env.loadFailure = null;
+        env.tickFailure = new IllegalStateException("scheduler shut down");
+        SpawnStructures.Outcome refused = placeNow(false);
+        assertTrue(refused.message().contains("scheduler refused"), refused.message());
+        assertNoTicketLeft();
+    }
+
+    @Test
+    @DisplayName("on Folia tickets change on the region thread, and a shared chunk stays held")
+    void foliaTicketsAndSharedChunks() {
+        env.owns = false;
+        UUID second = UUID.randomUUID();
+        storage.setSpawn(second, new Location(world, 8.5, GROUND + 1, 0.5), 0, 1, 1, 0,
+                "Second", "JAVA", false);
+        structures.placeNow(owner, "Builder", true, outcome -> { });
+        structures.placeNow(second, "Second", true, outcome -> { });
+        assertTrue(env.tickets.isEmpty(), "nothing is added off the owning thread");
+
+        env.runRegionTasks();
+        assertEquals(FOOTPRINT, env.tickets);
+        assertFalse(env.tickers.get(0).getAsBoolean(), "the first job handed off");
+        env.runRegionTasks();
+        assertEquals(Set.of("0,-1", "0,0"), env.tickets,
+                "the chunks the second plot shares stay held after the first job");
+
+        env.drain();
+        assertNoTicketLeft();
     }
 }
