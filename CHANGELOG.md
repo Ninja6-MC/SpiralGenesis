@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Modrinth releases no longer touch existing versions.** The release workflow uploads
+  each version neither featured nor unfeatured and no longer unfeatures older versions
+  afterwards. That step needed `Write versions`, which the token does not hold, so the
+  1.0.0-beta.2 publish uploaded its version and then failed with a 401. `MODRINTH_TOKEN`
+  keeps `Create versions`, `Read projects` and `Read versions` only.
+
 ## [1.0.0-beta.2] - 2026-10-21
 
 **Compatibility** is unchanged from 1.0.0-beta.1: Paper, Purpur, other Paper forks and
