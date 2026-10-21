@@ -25,7 +25,9 @@ import java.io.File;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BooleanSupplier;
@@ -101,6 +103,8 @@ class AllocationStructureTest {
     public static class StructurePlugin extends AllocationProtectionTest.ProtectedPlugin {
         final Slab slab = new Slab();
         final List<String> loadedFiles = new ArrayList<>();
+        /** Chunks holding this plugin's ticket; MockBukkit implements no chunk tickets. */
+        final Set<String> tickets = new HashSet<>();
 
         @Override
         StructureEnvironment createStructureEnvironment() {
@@ -114,6 +118,16 @@ class AllocationStructureTest {
                 public CompletableFuture<?> loadChunk(World w, int chunkX, int chunkZ) {
                     w.getChunkAt(chunkX, chunkZ).load();
                     return CompletableFuture.completedFuture(null);
+                }
+
+                @Override
+                public void addChunkTicket(World w, int chunkX, int chunkZ) {
+                    tickets.add(chunkX + "," + chunkZ);
+                }
+
+                @Override
+                public void removeChunkTicket(World w, int chunkX, int chunkZ) {
+                    tickets.remove(chunkX + "," + chunkZ);
                 }
 
                 @Override
@@ -191,6 +205,7 @@ class AllocationStructureTest {
         assertNotNull(placed);
         assertEquals("Settler", placed.player());
         assertEquals(1, plugin.slab.placements);
+        assertTrue(plugin.tickets.isEmpty(), "every chunk ticket is removed again");
 
         plugin.allocateNow(player, "JAVA");
         assertEquals(1, plugin.slab.placements, "an allocated player is never given another");

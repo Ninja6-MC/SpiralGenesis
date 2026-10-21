@@ -88,6 +88,16 @@ class PluginStructureEnvironment implements StructureEnvironment {
     }
 
     @Override
+    public void addChunkTicket(World world, int chunkX, int chunkZ) {
+        world.addPluginChunkTicket(chunkX, chunkZ, plugin);
+    }
+
+    @Override
+    public void removeChunkTicket(World world, int chunkX, int chunkZ) {
+        world.removePluginChunkTicket(chunkX, chunkZ, plugin);
+    }
+
+    @Override
     public boolean ownsChunk(World world, int chunkX, int chunkZ) {
         return plugin.getServer().isOwnedByCurrentRegion(world, chunkX, chunkZ);
     }
