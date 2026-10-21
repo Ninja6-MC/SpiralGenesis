@@ -137,6 +137,8 @@ jobs:
         with:
           modrinth-id: spiralgenesis
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          modrinth-featured: false
+          modrinth-unfeature-mode: none
           name: SpiralGenesis ${{ fromJSON(steps.destinations.outputs.version_json) }}
           version: ${{ fromJSON(steps.destinations.outputs.version_json) }}
           version-type: ${{ steps.destinations.outputs.channel }}

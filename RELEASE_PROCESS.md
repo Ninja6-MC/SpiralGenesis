@@ -67,8 +67,10 @@ and no public publishing step. Only the `release` environment job has
 `contents: write`. `MODRINTH_TOKEN` and `HANGAR_API_TOKEN` must exist as
 **environment secrets** on `release`, with `Create versions`, `Read projects`
 and `Read versions` for Modrinth and `create_version` and `edit_page` for
-Hangar. The Hangar key must cover the project and belong to a project member;
-reconciliation exchanges it for a session and verifies project membership.
+Hangar. The Modrinth token holds those three scopes and nothing else: never
+`Write versions` and never a delete scope. The Hangar key must cover the
+project and belong to a project member; reconciliation exchanges it for a
+session and verifies project membership.
 The permission and version lookup endpoints used here check project access and
 visibility; they do not require a separate `view_public_info` key permission.
 Do not add equivalent repository
@@ -83,6 +85,15 @@ Hangar declares the same optional dependencies and uses its existing
 and the supported Minecraft versions in their publishing configuration.
 Hangar's resource page is synced from `docs/modrinth-description.md` after
 the version upload and read back for equality.
+
+Modrinth versions are uploaded unfeatured, and the publisher never features
+or unfeatures a version or edits an existing one. The upload step sets
+`modrinth-featured: false` and `modrinth-unfeature-mode: none`. Without the
+second input, `mc-publish` defaults to unfeaturing older featured versions
+after the upload, which patches them and needs `Write versions`. The
+1.0.0-beta.2 publish uploaded its version, then failed at that unfeature step
+with a 401, leaving a partial publication to resume. Feature a version on the
+project page by hand on Modrinth if wanted; do not widen the token for it.
 
 ## Retry and partial publication
 
