@@ -65,9 +65,11 @@ list.
 The candidate and verifier jobs have `contents: read`, no registry credentials
 and no public publishing step. Only the `release` environment job has
 `contents: write`. `MODRINTH_TOKEN` and `HANGAR_API_TOKEN` must exist as
-**environment secrets** on `release`, with `Create versions`, `Read projects`
-and `Read versions` for Modrinth and `create_version` and `edit_page` for
-Hangar. The Hangar key must cover the project and belong to a project member;
+**environment secrets** on `release`, with `Create versions`, `Write versions`,
+`Read projects` and `Read versions` for Modrinth and `create_version` and
+`edit_page` for Hangar. `Write versions` is used only to unfeature older
+versions after an upload; never grant `Delete versions` or any other delete scope.
+The Hangar key must cover the project and belong to a project member;
 reconciliation exchanges it for a session and verifies project membership.
 The permission and version lookup endpoints used here check project access and
 visibility; they do not require a separate `view_public_info` key permission.
@@ -110,6 +112,10 @@ maintainer's project-member session. A complete Modrinth version must be
 skipped; absent ones receive the retained candidate. A conflicting version,
 unavailable API, incomplete asset or mismatched digest stops the run without
 replacement.
+
+A Modrinth step that fails after its upload, such as unfeaturing older versions,
+still leaves a complete listed version. A rerun skips it and does not retry the
+unfeature, so unfeature the older versions by hand in the project dashboard.
 
 Hangar's authenticated version API exposes hidden versions to project members,
 along with the JAR digest and download URL. The publisher compares version,
