@@ -86,8 +86,8 @@ and the supported Minecraft versions in their publishing configuration.
 Hangar's resource page is synced from `docs/modrinth-description.md` after
 the version upload and read back for equality.
 
-Modrinth versions are uploaded neither featured nor unfeatured, and the
-publisher never edits an existing Modrinth version. The upload step sets
+Modrinth versions are uploaded unfeatured, and the publisher never features
+or unfeatures a version or edits an existing one. The upload step sets
 `modrinth-featured: false` and `modrinth-unfeature-mode: none`. Without the
 second input, `mc-publish` defaults to unfeaturing older featured versions
 after the upload, which patches them and needs `Write versions`. The
