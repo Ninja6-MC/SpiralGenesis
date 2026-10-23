@@ -47,9 +47,11 @@ safety:
   # Minimum surface Y elevation required for valid spawn (Default: 63, above sea level)
   # Clamped to the world's build range at runtime.
   min-surface-y: 63
-  # Maximum cells to probe before giving up and using the best candidate seen. Worst-case
-  # allocation time is max-scan-attempts * max-candidates ticks, so this is far lower than
-  # it needs to be without in-cell searching. Clamped to 1-500.
+  # Maximum cells to probe before giving up and using the best candidate seen, which is
+  # never one on water, lava or powder snow; with no other, the player waits at world spawn
+  # and is allocated again on their next join. Worst-case allocation time is
+  # max-scan-attempts * max-candidates ticks, so this is far lower than it needs to be
+  # without in-cell searching. Clamped to 1-500.
   max-scan-attempts: 8
   # Reject a candidate sitting more than this many blocks below the median of the terrain
   # around it. This is what keeps players out of ravines, canyons and sinkholes: their

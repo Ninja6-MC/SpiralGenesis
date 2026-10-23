@@ -498,6 +498,121 @@ class SpawnManagerTest {
         assertEquals(1, res.index(), "the pit cell outranks the ocean cell as a fallback");
     }
 
+    /**
+     * Floods every candidate column of a cell from the surface down, in a river biome: the
+     * terrain of the plot #0,36 report, where the surface is water with water below it.
+     */
+    private void makeCellRiver(int gridU, int gridV) {
+        for (int dx = -2 * STRIDE; dx <= 2 * STRIDE; dx += STRIDE) {
+            for (int dz = -2 * STRIDE; dz <= 2 * STRIDE; dz += STRIDE) {
+                int x = gridU * CELL + dx;
+                int z = gridV * CELL + dz;
+                world.setBiome(x, z, Biome.RIVER);
+                for (int y = 1; y <= MOCK_SURFACE_Y; y++) {
+                    world.getBlockAt(x, y, z).setType(Material.WATER);
+                }
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("An exhausted scan over nothing but river water records no fallback")
+    void allWaterScanHasNoFallback() throws Exception {
+        for (int u = -2; u <= 2; u++) {
+            for (int v = -2; v <= 2; v++) {
+                makeCellRiver(u, v);
+            }
+        }
+        int budget = 4;
+        // min-surface-y above the water, as in the report: low and flooded together.
+        SpawnManager manager = managerWith(config(MOCK_SURFACE_Y + 1, budget));
+        AtomicInteger indices = new AtomicInteger();
+        List<SpiralCell> released = new CopyOnWriteArrayList<>();
+        CellReserver cells = new CellReserver() {
+            @Override
+            public SpiralCell reserve(int originX, int originZ, int cellSize) {
+                return new SpiralCentre(0, originX, originZ, cellSize)
+                        .cell(indices.getAndIncrement());
+            }
+
+            @Override
+            public void release(SpiralCell cell) {
+                released.add(cell);
+            }
+        };
+
+        SpawnManager.NoSafeFallback none = assertInstanceOf(SpawnManager.NoSafeFallback.class,
+                manager.allocateNextSafeSpawn(cells).get(10, TimeUnit.SECONDS));
+
+        assertEquals(budget, none.cellsProbed());
+        assertEquals(budget, indices.get(), "the whole budget was scanned");
+        assertEquals(budget, released.size(), "every cell is handed back; none holds a plot");
+        assertTrue(none.message().contains("lethal"), none.message());
+
+        // Not a border exhaustion: the next join scans again, further out, and is not refused.
+        assertInstanceOf(SpawnManager.NoSafeFallback.class,
+                manager.allocateNextSafeSpawn(sequentialIndices(indices)).get(10, TimeUnit.SECONDS));
+        assertEquals(2 * budget, indices.get(), "the next scan claims fresh indices");
+    }
+
+    @Test
+    @DisplayName("A water candidate never wins the fallback, even over an equally bad dry one")
+    void fallbackSkipsWaterOnATie() throws Exception {
+        // Cell 0 is water underfoot and cell 1 an ocean biome on dry land: one failed rule
+        // each, so the old ranking kept the earlier, flooded cell.
+        makeCellRiver(0, 0);
+        makeCellOcean(1, 0);
+
+        SpawnManager.LocationResult res = allocate(managerWith(config(0, 2)),
+                sequentialIndices(new AtomicInteger()));
+
+        assertTrue(res.fallback());
+        assertEquals(1, res.index(), "the dry ocean cell is the fallback");
+        assertNotEquals(Material.WATER, world.getBlockAt(res.location()).getRelative(0, -1, 0)
+                .getType(), "standing on land");
+    }
+
+    @Test
+    @DisplayName("A fallback must also pass the respawn re-check, not only the scoring rules")
+    void fallbackMustPassTheRespawnRecheck() throws Exception {
+        // Magma is no allocation hazard, so an ocean cell floored with it fails only the
+        // tolerated ocean rule, but the respawn re-check rejects it: it burns.
+        makeCellOcean(0, 0);
+        for (int dx = -2 * STRIDE; dx <= 2 * STRIDE; dx += STRIDE) {
+            for (int dz = -2 * STRIDE; dz <= 2 * STRIDE; dz += STRIDE) {
+                world.getBlockAt(dx, MOCK_SURFACE_Y, dz).setType(Material.MAGMA_BLOCK);
+            }
+        }
+        makeCellOcean(1, 0);
+
+        SpawnManager manager = managerWith(config(0, 2));
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(new AtomicInteger()));
+
+        assertTrue(res.fallback());
+        assertEquals(1, res.index(), "the magma cell is never the fallback");
+        assertTrue(manager.isSafeNow(res.location()));
+    }
+
+    @Test
+    @DisplayName("A simulation counts a scan with nothing safe as unplaced, not completed")
+    void simulationCountsUnplacedScans() throws Exception {
+        for (int u = -2; u <= 2; u++) {
+            for (int v = -2; v <= 2; v++) {
+                makeCellRiver(u, v);
+            }
+        }
+
+        SpawnSimulator.Report report = SpawnSimulator.run(managerWith(config(0, 2)), 1)
+                .get(10, TimeUnit.SECONDS);
+
+        assertEquals(0, report.completed());
+        assertEquals(1, report.unplaced());
+        assertEquals(0, report.fallbacks());
+        assertEquals(0, report.borderExhausted());
+        assertNull(report.failure());
+        assertTrue(report.toSummaryLine().endsWith(" unplaced=1"), report.toSummaryLine());
+    }
+
     @Test
     @DisplayName("Every cell claims a fresh index so concurrent allocations cannot collide")
     void eachCellClaimsItsOwnIndex() throws Exception {
@@ -585,7 +700,7 @@ class SpawnManagerTest {
         // asserting nothing, so the contract is pinned from this side.
         assertTrue(line.startsWith("SIMULATE samples="), line);
         for (String key : new String[]{"samples=", "completed=", "indices=", "ratio=",
-                "candidates=", "fallbacks=", "minY=", "maxY=", "exhausted="}) {
+                "candidates=", "fallbacks=", "minY=", "maxY=", "exhausted=", "unplaced="}) {
             assertTrue(line.contains(" " + key) || line.startsWith(key),
                     "summary line lost the '" + key + "' field that CI parses: " + line);
         }
@@ -2015,7 +2130,7 @@ class SpawnManagerTest {
         assertTrue(report.toRejectionLine().startsWith("SIMULATE rejections"),
                 report.toRejectionLine());
         assertTrue(report.toSummaryLine().startsWith("SIMULATE samples=5 "), report.toSummaryLine());
-        assertTrue(report.toSummaryLine().endsWith(" exhausted=0"), report.toSummaryLine());
+        assertTrue(report.toSummaryLine().endsWith(" unplaced=0"), report.toSummaryLine());
     }
 
     @Test

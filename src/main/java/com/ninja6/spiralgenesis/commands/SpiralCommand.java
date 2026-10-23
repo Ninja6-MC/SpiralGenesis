@@ -375,6 +375,13 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                             + exhausted.message()));
                     return;
                 }
+                case SpawnManager.NoSafeFallback none -> {
+                    // Logged by the scan. Nothing was recorded, so the current plot stands.
+                    reply(sender, () -> sender.sendMessage(ChatColor.RED + "Could not reassign "
+                            + target.getName() + "; they keep their current spawn. "
+                            + none.message()));
+                    return;
+                }
             }
             // Player state must be touched on the thread owning that player: the entity
             // scheduler on Folia, the main thread on Paper.
@@ -888,6 +895,11 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                                 + ChatColor.GRAY + " (first at sample " + report.firstExhaustedSample()
                                 + ", scanning from spiral index " + report.firstExhaustedIndex()
                                 + "; no plot there fit inside the world border)"));
+                if (report.unplaced() > 0) {
+                    sender.sendMessage(ChatColor.YELLOW + "No safe fallback: " + ChatColor.WHITE
+                            + report.unplaced() + ChatColor.GRAY
+                            + " (every point scanned failed a lethal rule; nothing was placed)");
+                }
                 if (report.failure() != null) {
                     sender.sendMessage(ChatColor.RED + "Stopped at sample " + report.failedSample()
                             + " of " + report.samples() + ": " + report.failureSummary()

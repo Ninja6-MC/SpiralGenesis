@@ -106,6 +106,7 @@ public final class SpawnSimulator {
                         case SpawnManager.LocationResult found -> report.record(found);
                         case SpawnManager.BorderExhausted ignored ->
                                 report.recordExhausted(sample, firstIndex);
+                        case SpawnManager.NoSafeFallback ignored -> report.recordUnplaced();
                     }
                 }
             } catch (Throwable e) {
@@ -135,6 +136,7 @@ public final class SpawnSimulator {
         private int minSurfaceY = Integer.MAX_VALUE;
         private int maxSurfaceY = Integer.MIN_VALUE;
         private int exhausted;
+        private int unplaced;
         private int firstExhaustedSample;
         private int firstExhaustedIndex = -1;
         private Throwable failure;
@@ -169,6 +171,15 @@ public final class SpawnSimulator {
                 firstExhaustedIndex = firstIndex;
             }
             exhausted++;
+        }
+
+        /**
+         * Counts a sample whose scan found nothing safe to fall back on. Kept out of
+         * {@link #completed()}, since no plot was placed, and out of
+         * {@link #cellsProbed()} for the reason {@link #recordExhausted} gives.
+         */
+        void recordUnplaced() {
+            unplaced++;
         }
 
         void fail(int sample, Throwable cause) {
@@ -211,6 +222,11 @@ public final class SpawnSimulator {
         /** Samples whose scan found no plot inside the world border. */
         public int borderExhausted() {
             return exhausted;
+        }
+
+        /** Samples whose scan saw only points that fail a lethal rule, so placed nothing. */
+        public int unplaced() {
+            return unplaced;
         }
 
         /** 1-based number of the first sample that exhausted, or 0 if none did. */
@@ -275,9 +291,9 @@ public final class SpawnSimulator {
             // would slip through the guard silently.
             return String.format(Locale.ROOT,
                     "SIMULATE samples=%d completed=%d indices=%d ratio=%.2f candidates=%d "
-                            + "fallbacks=%d minY=%d maxY=%d exhausted=%d",
+                            + "fallbacks=%d minY=%d maxY=%d exhausted=%d unplaced=%d",
                     samples, completed, cellsProbed, indicesPerSpawn(), candidatesProbed,
-                    fallbacks, minSurfaceY(), maxSurfaceY(), exhausted);
+                    fallbacks, minSurfaceY(), maxSurfaceY(), exhausted, unplaced);
         }
 
         /** Companion line breaking the rejections down by rule. */

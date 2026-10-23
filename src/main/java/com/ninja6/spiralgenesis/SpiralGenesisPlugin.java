@@ -524,6 +524,15 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                         holdIfUnavailable(player, clientType);
                         return;
                     }
+                    case SpawnManager.NoSafeFallback none -> {
+                        // The scan has logged why. Nothing is recorded, so no plot, respawn
+                        // point or claim exists to undo; the player is held at a validated
+                        // standing point at world spawn, as a respawn off an unsafe plot is,
+                        // and allocated again when they next join, past the cells spent here.
+                        applied.complete(null);
+                        holdAtWorldSpawn(player, none);
+                        return;
+                    }
                 }
                 // Player state must be touched on the thread owning that player. The entity
                 // scheduler is that thread on Folia and the main thread on Paper; it also drops
@@ -688,6 +697,26 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         }
         forgetFromGate(uuid);
         return true;
+    }
+
+    /**
+     * Holds a player whose allocation found nothing safe to fall back on at world spawn,
+     * at a position there they can stand ({@link #sendToWorldSpawn}). Nothing is recorded
+     * for them, so their next join allocates again.
+     *
+     * <p>Package-private as a test seam: the move itself needs region schedulers MockBukkit
+     * does not implement.
+     */
+    void holdAtWorldSpawn(Player player, SpawnManager.NoSafeFallback outcome) {
+        getLogger().warning("No safe plot was found for " + player.getName() + " after "
+                + outcome.cellsProbed() + " cells; holding them at world spawn with no plot"
+                + " recorded. They are allocated again when they next join.");
+        // Read once, for the reason allocateSpawn does. Unbound since the scan means there
+        // is no world to check, and the player stays where they are.
+        SpawnManager manager = spawnManager;
+        if (manager != null) {
+            sendToWorldSpawn(player, manager.getWorld());
+        }
     }
 
     /**

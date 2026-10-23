@@ -164,6 +164,20 @@ public class SpawnManager {
     /** Penalty for failing a hard check, large enough to dominate any terrain-shape penalty. */
     private static final int PENALTY_UNSAFE = 1000;
 
+    /**
+     * The rules an exhausted scan's fallback may fail. Each says the point is a poor plot,
+     * not that standing on it hurts: low ground, an ocean biome over a solid floor, a pit
+     * or rough terrain. The rest are lethal, or stand in for something that is: a hazard
+     * underfoot (water, lava, powder snow), no room to stand, or lava or powder snow
+     * nearby. A candidate failing one of those is never a fallback, however few rules it
+     * fails, and must also pass {@link #isSafeNow}, so allocation never records a point
+     * the re-check on respawn would reject at once.
+     */
+    private static final Set<RejectionReason> FALLBACK_TOLERATED = EnumSet.of(
+            RejectionReason.LOW_SURFACE, RejectionReason.OCEAN, RejectionReason.PIT,
+            RejectionReason.ROUGH
+    );
+
     /** Per-block penalty for sitting below the surrounding terrain, weighted above roughness. */
     private static final int PENALTY_PER_PIT_BLOCK = 10;
 
@@ -210,8 +224,8 @@ public class SpawnManager {
      * cell.
      *
      * @param cells atomic source of candidate cells
-     * @return CompletableFuture resolving to a {@link LocationResult} or a
-     *         {@link BorderExhausted}
+     * @return CompletableFuture resolving to a {@link LocationResult}, a
+     *         {@link BorderExhausted} or a {@link NoSafeFallback}
      */
     public CompletableFuture<AllocationOutcome> allocateNextSafeSpawn(CellReserver cells) {
         // Refused before a single index is claimed. A scan that has already walked its whole
@@ -291,8 +305,8 @@ public class SpawnManager {
      * and the caller decides how to report it.
      *
      * @param indexSupplier throwaway source of indices, never the live reservation
-     * @return CompletableFuture resolving to a {@link LocationResult} or a
-     *         {@link BorderExhausted}
+     * @return CompletableFuture resolving to a {@link LocationResult}, a
+     *         {@link BorderExhausted} or a {@link NoSafeFallback}
      */
     public CompletableFuture<AllocationOutcome> simulateNextSafeSpawn(IntSupplier indexSupplier) {
         CompletableFuture<AllocationOutcome> result = new CompletableFuture<>();
@@ -342,6 +356,8 @@ public class SpawnManager {
             case LocationResult found -> found;
             case BorderExhausted exhausted -> throw new IllegalStateException(
                     "An in-cell repair reached the exhaustion branch: " + exhausted.message());
+            case NoSafeFallback none -> throw new IllegalStateException(
+                    "An in-cell repair reached the exhaustion branch: " + none.message());
         });
     }
 
@@ -772,7 +788,8 @@ public class SpawnManager {
      * chunk that failed to load, a scheduler that refused work - are not outcomes and still
      * fail the future.
      */
-    public sealed interface AllocationOutcome permits LocationResult, BorderExhausted {
+    public sealed interface AllocationOutcome
+            permits LocationResult, BorderExhausted, NoSafeFallback {
 
         /** Spiral indices the scan claimed, all of them for nothing when it found no plot. */
         int cellsProbed();
@@ -792,6 +809,20 @@ public class SpawnManager {
      * @param cellsProbed spiral indices the scan claimed; 0 for a refusal, which claims none
      */
     public record BorderExhausted(String message, int cellsProbed) implements AllocationOutcome {}
+
+    /**
+     * The scan spent its whole budget inside the border, and every point it scored fails a
+     * lethal rule, so there was nothing safe to fall back on.
+     *
+     * <p>Nothing is recorded and the cells are handed back. The caller holds the player at
+     * world spawn, as a respawn does when a plot fails its re-check, and the next
+     * allocation scans past these cells, whose indices are spent. Logged by the scan for a
+     * live allocation; a simulation's caller reports its own.
+     *
+     * @param message     what happened, in plain text
+     * @param cellsProbed spiral indices the scan counted as attempts
+     */
+    public record NoSafeFallback(String message, int cellsProbed) implements AllocationOutcome {}
 
     /**
      * What a stored point can still be used for, as far as a synchronous caller can tell.
@@ -1044,7 +1075,14 @@ public class SpawnManager {
         }
         // Tracked across every cell, not just this one, so an exhausted scan can settle on
         // the least bad point it ever saw rather than whichever one happened to be last.
-        scan.bestOverall = leastBad(scan.bestOverall, candidate);
+        // Only a point a player can survive on is ranked at all: in an ocean-heavy stretch
+        // the least bad point can still be open water. This thread owns the candidate's
+        // chunk, which is all isSafeNow reads.
+        scan.scored++;
+        if (FALLBACK_TOLERATED.containsAll(candidate.reasons())
+                && isSafeNow(candidate.location())) {
+            scan.bestOverall = leastBad(scan.bestOverall, candidate);
+        }
 
         // The next candidate's chunk is not this one, so hand back to the global region.
         runGlobally(scan.result, () -> nextCandidate(scan));
@@ -1090,7 +1128,7 @@ public class SpawnManager {
         // advance to. Giving up is the only outcome that neither strands the player outside
         // the border nor spins: the caller leaves them standing where they are, which is
         // inside the border by definition.
-        if (scan.bestOverall == null) {
+        if (scan.bestOverall == null && scan.scored == 0) {
             SpiralCentre walked = scan.centre;
             // Candidates in a counted cell can also have been inside claims, when the cell
             // mixed claimed ground with ground outside the border.
@@ -1140,6 +1178,26 @@ public class SpawnManager {
             return;
         }
 
+        // Exhausted the budget inside the border, and every point seen fails a lethal rule.
+        // Nothing is recorded: a plot on open water drowns its owner on arrival and on every
+        // respawn, and blocks a spawn structure. Unlike the border case this is not
+        // recorded either, since terrain further out says nothing about these cells; the
+        // indices are spent, so the next scan starts beyond them.
+        if (scan.bestOverall == null) {
+            String message = "Reached maximum scan attempts (" + config.getMaxScanAttempts()
+                    + ") and every one of the " + scan.scored + " candidates scored across "
+                    + (scan.attempt + scan.claimSkipped) + " spiral indices, the last of them "
+                    + SpiralCentre.label(scan.centre.id(), scan.index) + ", fails a lethal rule"
+                    + " (a hazard underfoot such as water, lava or powder snow, no room to"
+                    + " stand, or lava or powder snow nearby), so none of them is used as a"
+                    + " fallback and no plot is recorded. Rejections: " + scan.rejections + ".";
+            if (scan.purpose.recordsExhaustion()) {
+                plugin.getLogger().warning(message);
+            }
+            scan.result.complete(new NoSafeFallback(message, scan.attempt));
+            return;
+        }
+
         // Exhausted the budget. Settle on the best point seen anywhere in the scan rather
         // than a hardcoded altitude, which could bury the player or drop them into the void.
         Candidate fallback = scan.bestOverall;
@@ -1176,7 +1234,8 @@ public class SpawnManager {
      * Scores one candidate column. A {@code badness} of zero means every check passed.
      *
      * <p>Unacceptable candidates are still scored rather than discarded, so the exhausted
-     * scan has something ranked to fall back on.
+     * scan has something ranked to fall back on, among those {@link #FALLBACK_TOLERATED}
+     * allows.
      */
     private Candidate score(Scan scan, int x, int z) {
         int surfaceY = surfaceAt(x, z);
@@ -1478,7 +1537,10 @@ public class SpawnManager {
         /** Cells skipped because every candidate in them was inside a claim. */
         private int claimSkipped;
         private Candidate bestInCell;
+        /** Only ever a point {@link #FALLBACK_TOLERATED} and {@link #isSafeNow} both allow. */
         private Candidate bestOverall;
+        /** Candidates scored, which is those inside the border and outside every claim. */
+        private int scored;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
 
         private Scan(CellReserver cells, ScanPurpose purpose, UUID owner,
