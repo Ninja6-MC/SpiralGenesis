@@ -3,6 +3,8 @@ package com.ninja6.spiralgenesis.structure;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.block.BlockState;
+import org.bukkit.block.data.Bisected;
+import org.bukkit.block.data.Directional;
 import org.bukkit.block.structure.Mirror;
 import org.bukkit.block.structure.StructureRotation;
 import org.bukkit.structure.Palette;
@@ -28,7 +30,8 @@ public final class BukkitTemplate implements Template {
     private final String name;
     private final Structure structure;
     private final List<Block> blocks;
-    private final List<DoorRepair.Half> doors;
+    private final List<DoorRepair.Half> halves;
+    private final List<Door> doors;
     private final DoorRepair.Writer writer;
 
     /** Reads a structure file through the server's structure manager. */
@@ -57,7 +60,16 @@ public final class BukkitTemplate implements Template {
             }
         }
         this.blocks = List.copyOf(read);
-        this.doors = DoorRepair.halvesOf(states);
+        this.halves = DoorRepair.halvesOf(states);
+        List<Door> lower = new ArrayList<>();
+        for (DoorRepair.Half half : halves) {
+            // Every half is a door, which is both bisected and directional.
+            if (((Bisected) half.data()).getHalf() == Bisected.Half.BOTTOM) {
+                lower.add(new Door(half.x(), half.y(), half.z(),
+                        ((Directional) half.data()).getFacing()));
+            }
+        }
+        this.doors = List.copyOf(lower);
     }
 
     @Override
@@ -71,8 +83,13 @@ public final class BukkitTemplate implements Template {
     }
 
     @Override
+    public List<Door> doors() {
+        return doors;
+    }
+
+    @Override
     public void place(Location origin, StructureRotation rotation, boolean includeEntities) {
-        DoorRepair repair = DoorRepair.before(origin, rotation, doors);
+        DoorRepair repair = DoorRepair.before(origin, rotation, halves);
         structure.place(origin, includeEntities, rotation, Mirror.NONE, 0, 1.0f, new Random());
         repair.after(writer);
     }

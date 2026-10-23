@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.structure;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.structure.StructureRotation;
 
 import java.util.ArrayList;
@@ -12,11 +13,36 @@ final class TestTemplate implements Template {
 
     private final String name;
     private final List<Block> blocks;
+    private final List<Door> doors;
     int placements;
 
     TestTemplate(String name, List<Block> blocks) {
+        this(name, blocks, List.of());
+    }
+
+    TestTemplate(String name, List<Block> blocks, List<Door> doors) {
         this.name = name;
         this.blocks = List.copyOf(blocks);
+        this.doors = List.copyOf(doors);
+    }
+
+    /**
+     * The hut with doors like the shipped one: in the middle of its west and east walls,
+     * facing out, both halves stored in place of the wall.
+     */
+    static TestTemplate hutWithDoors(String name, int side) {
+        int middle = side / 2;
+        List<Block> blocks = new ArrayList<>();
+        for (Block block : hut(name, side).blocks()) {
+            boolean doorway = (block.x() == 0 || block.x() == side - 1) && block.z() == middle
+                    && (block.y() == 1 || block.y() == 2);
+            blocks.add(doorway
+                    ? new Block(block.x(), block.y(), block.z(), Material.OAK_DOOR, false)
+                    : block);
+        }
+        return new TestTemplate(name, blocks, List.of(
+                new Door(0, 1, middle, BlockFace.WEST),
+                new Door(side - 1, 1, middle, BlockFace.EAST)));
     }
 
     /**
@@ -46,6 +72,11 @@ final class TestTemplate implements Template {
     @Override
     public List<Block> blocks() {
         return blocks;
+    }
+
+    @Override
+    public List<Door> doors() {
+        return doors;
     }
 
     @Override

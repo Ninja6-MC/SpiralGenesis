@@ -41,6 +41,7 @@ class StructureConfigTest {
         assertEquals(StructureSettings.Terrain.SKIP, shipped.terrain());
         assertEquals(Material.COBBLESTONE, shipped.foundationBlock());
         assertEquals(8, shipped.foundationDepth());
+        assertTrue(shipped.clearDoorways());
         assertTrue(config.getWarnings().isEmpty(), config.getWarnings().toString());
     }
 
