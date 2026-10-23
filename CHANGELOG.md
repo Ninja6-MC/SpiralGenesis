@@ -35,8 +35,10 @@ When a scan spends `safety.max-scan-attempts` and every point it scored fails a 
 rule, no plot is recorded any more: the player is held at a standing point at world spawn
 and allocated again on their next join. Before, the least bad point was used even when it
 was open water. A server whose terrain near the spiral is mostly ocean or river can see
-more of these players; the log names each one, and `/sgen simulate` counts them as
-`unplaced`. Raising `max-scan-attempts` gives the scan more cells to find a safe point.
+more of these players; the log names each one. `/sgen reassign` in that case refuses and
+the player keeps their current plot. `/sgen simulate` reports the count in game as
+`No safe fallback` and on the console SIMULATE line as `unplaced`. Raising
+`max-scan-attempts` gives the scan more cells to find a safe point.
 
 ### Added
 - **Spawn plot structure doors open onto a clear approach.** The two blocks in front of
