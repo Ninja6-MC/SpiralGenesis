@@ -20,12 +20,16 @@ import java.util.Random;
  *
  * <p>Always the first palette: a structure block saves one, and placing a different one on
  * each plot would make the checks made before placement describe another template.
+ *
+ * <p>Placement runs vanilla's shape updates, which can break a door; see {@link DoorRepair}.
  */
 public final class BukkitTemplate implements Template {
 
     private final String name;
     private final Structure structure;
     private final List<Block> blocks;
+    private final List<DoorRepair.Half> doors;
+    private final DoorRepair.Writer writer;
 
     /** Reads a structure file through the server's structure manager. */
     public static Template load(File file) throws IOException {
@@ -33,18 +37,27 @@ public final class BukkitTemplate implements Template {
     }
 
     BukkitTemplate(String name, Structure structure) {
+        this(name, structure, DoorRepair.WITHOUT_PHYSICS);
+    }
+
+    /** With {@code writer} setting broken door halves again; a seam for tests. */
+    BukkitTemplate(String name, Structure structure, DoorRepair.Writer writer) {
         this.name = name;
         this.structure = structure;
+        this.writer = writer;
         List<Block> read = new ArrayList<>();
+        List<BlockState> states = List.of();
         List<Palette> palettes = structure.getPalettes();
         if (!palettes.isEmpty()) {
-            for (BlockState state : palettes.get(0).getBlocks()) {
+            states = palettes.get(0).getBlocks();
+            for (BlockState state : states) {
                 // Palette states carry their position relative to the template's origin.
                 read.add(new Block(state.getX(), state.getY(), state.getZ(), state.getType(),
                         state.getType().isAir()));
             }
         }
         this.blocks = List.copyOf(read);
+        this.doors = DoorRepair.halvesOf(states);
     }
 
     @Override
@@ -59,6 +72,8 @@ public final class BukkitTemplate implements Template {
 
     @Override
     public void place(Location origin, StructureRotation rotation, boolean includeEntities) {
+        DoorRepair repair = DoorRepair.before(origin, rotation, doors);
         structure.place(origin, includeEntities, rotation, Mirror.NONE, 0, 1.0f, new Random());
+        repair.after(writer);
     }
 }
