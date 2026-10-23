@@ -2,6 +2,7 @@ package com.ninja6.spiralgenesis.structure;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.block.BlockFace;
 import org.bukkit.block.structure.StructureRotation;
 
 import java.util.List;
@@ -21,6 +22,11 @@ public interface Template {
     /** Every stored position, relative to the template's origin, before rotation. */
     List<Block> blocks();
 
+    /** Every door the template stores, by its lower half, before rotation. */
+    default List<Door> doors() {
+        return List.of();
+    }
+
     /**
      * Places the template with its origin at {@code origin}, turned about that origin.
      * Called on the thread owning every chunk the template touches. Every door the template
@@ -34,4 +40,11 @@ public interface Template {
      * @param air whether the template stores air here, which clears the block
      */
     record Block(int x, int y, int z, Material type, boolean air) { }
+
+    /**
+     * The lower half of a stored door, relative to the template's origin.
+     *
+     * @param facing the door's facing as stored; a door is walked through along this axis
+     */
+    record Door(int x, int y, int z, BlockFace facing) { }
 }

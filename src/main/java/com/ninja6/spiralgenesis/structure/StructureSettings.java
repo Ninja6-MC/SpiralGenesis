@@ -18,11 +18,12 @@ import java.util.Locale;
  * @param terrain         what is done where the ground does not carry the template's floor
  * @param foundationBlock what {@link Terrain#FOUNDATION} fills with
  * @param foundationDepth how far down a foundation may reach before the plot is skipped
+ * @param clearDoorways   whether natural terrain in front of each door is cleared
  */
 public record StructureSettings(boolean enabled, String file, int offsetX, int offsetY,
                                 int offsetZ, Rotation rotation, boolean includeEntities,
                                 Terrain terrain, Material foundationBlock,
-                                int foundationDepth) {
+                                int foundationDepth, boolean clearDoorways) {
 
     public static final String DEFAULT_FILE = "spawn-hut.nbt";
     public static final int MIN_FOUNDATION_DEPTH = 1;

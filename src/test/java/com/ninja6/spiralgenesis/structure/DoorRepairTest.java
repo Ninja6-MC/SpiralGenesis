@@ -181,6 +181,12 @@ class DoorRepairTest {
     }
 
     @Test
+    @DisplayName("The template names each door once, by its lower half and stored facing")
+    void listsDoors() {
+        assertEquals(List.of(new Template.Door(0, 1, 1, BlockFace.WEST)), hut(o -> { }).doors());
+    }
+
+    @Test
     @DisplayName("Only door states count as door halves")
     void findsDoorHalves() {
         BlockData lower = door(Bisected.Half.BOTTOM, BlockFace.EAST);

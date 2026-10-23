@@ -176,7 +176,8 @@ public class PluginConfig {
                 config.getInt("structure.offset.z", 3),
                 rotation,
                 config.getBoolean("structure.include-entities", false),
-                terrain, block, depth);
+                terrain, block, depth,
+                config.getBoolean("structure.clear-doorways", true));
     }
 
     /** A file name with no directory part, ending in {@code .nbt}. */

@@ -14,6 +14,7 @@ import org.bukkit.World;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockState;
 import org.bukkit.block.TileState;
+import org.bukkit.block.data.Bisected;
 import org.bukkit.block.structure.StructureRotation;
 
 import java.io.File;
@@ -59,6 +60,11 @@ import java.util.logging.Level;
  *   <li>The floor needs ground under it: {@code SKIP} leaves the plot without a structure,
  *       {@code FOUNDATION} fills down to the ground, at most {@code foundation-depth}
  *       blocks. Nothing may reach past the world's build height.</li>
+ *   <li>With {@code clear-doorways}, the two blocks in front of each door, outside the
+ *       building, are cleared of natural terrain; see {@link Doorways} and
+ *       {@link NaturalTerrain}. Anything else there is left and reported, and never stops
+ *       the placement. Under {@code FOUNDATION}, an approach with no ground under it gets a
+ *       landing level with the floor, built down to the ground like the foundation.</li>
  *   <li>The spawn must pass the spawn safety rule afterwards, with its feet and head
  *       clear. Otherwise every changed block is put back and the plot keeps its spawn.</li>
  * </ul>
@@ -277,6 +283,10 @@ public final class SpawnStructures {
         Placement placement = Placement.of(current.template(), settings, spawn.getBlockX(),
                 spawn.getBlockY(), spawn.getBlockZ(), rotation);
         CellArea footprint = placement.footprint();
+        CellArea square = CellArea.square(spawn.getBlockX(), spawn.getBlockZ(),
+                config.getProtectionSize());
+        List<Doorways.Approach> approaches = settings.clearDoorways()
+                ? Doorways.of(current.template(), placement) : List.of();
 
         if (placement.topY() > world.getMaxHeight() - 1) {
             report.accept(skip(dryRun, plot, "its top would reach Y=" + placement.topY()
@@ -288,7 +298,7 @@ public final class SpawnStructures {
             return;
         }
         int size = config.getProtectionSize();
-        if (!within(footprint, CellArea.square(spawn.getBlockX(), spawn.getBlockZ(), size))) {
+        if (!within(footprint, square)) {
             report.accept(skip(dryRun, plot, current.file() + " needs a "
                     + current.requiredSize() + "x" + current.requiredSize()
                     + " square around the spawn and protection.size is " + size));
@@ -297,8 +307,15 @@ public final class SpawnStructures {
 
         // Every footprint chunk is held with a ticket from here until the job's outcome is
         // decided, whichever way it ends: the plot of an offline player has nobody near it,
-        // so a chunk only loaded would be unloaded again before the job reaches it.
-        Set<Long> chunks = chunksOf(footprint);
+        // so a chunk only loaded would be unloaded again before the job reaches it. Door
+        // approaches lie one block outside the footprint; those inside the square count.
+        CellArea reach = footprint;
+        for (Doorways.Approach approach : approaches) {
+            if (square.contains(approach.feet().x(), approach.feet().z())) {
+                reach = span(reach, approach.feet().x(), approach.feet().z());
+            }
+        }
+        Set<Long> chunks = chunksOf(reach);
         AtomicBoolean released = new AtomicBoolean();
         Consumer<Outcome> finish = outcome -> {
             try {
@@ -312,7 +329,7 @@ public final class SpawnStructures {
             }
         };
         Job job = new Job(owner, playerName, record, current, settings, placement, footprint,
-                spawn, dryRun, finish);
+                reach, square, approaches, spawn, dryRun, finish);
         List<CompletableFuture<?>> holds = new ArrayList<>();
         for (long key : chunks) {
             holds.add(hold(world, (int) (key >> 32), (int) key));
@@ -504,6 +521,12 @@ public final class SpawnStructures {
         return chunks;
     }
 
+    /** {@code area} grown to take in the column {@code (x, z)}. */
+    private static CellArea span(CellArea area, int x, int z) {
+        return new CellArea(Math.min(area.minX(), x), Math.min(area.minZ(), z),
+                Math.max(area.maxX(), x + 1), Math.max(area.maxZ(), z + 1));
+    }
+
     private static boolean within(CellArea inner, CellArea outer) {
         return inner.minX() >= outer.minX() && inner.maxX() <= outer.maxX()
                 && inner.minZ() >= outer.minZ() && inner.maxZ() <= outer.maxZ();
@@ -528,12 +551,17 @@ public final class SpawnStructures {
         private final StructureSettings settings;
         private final Placement placement;
         private final CellArea footprint;
+        /** The footprint and every approach column inside {@link #square}: what is held. */
+        private final CellArea reach;
+        private final CellArea square;
+        private final List<Doorways.Approach> approaches;
         private final Location spawn;
         private final boolean dryRun;
         private final Consumer<Outcome> finish;
 
         Job(UUID owner, String playerName, StoredSpawn record, Loaded template,
-            StructureSettings settings, Placement placement, CellArea footprint, Location spawn,
+            StructureSettings settings, Placement placement, CellArea footprint, CellArea reach,
+            CellArea square, List<Doorways.Approach> approaches, Location spawn,
             boolean dryRun, Consumer<Outcome> finish) {
             this.owner = owner;
             this.playerName = playerName;
@@ -542,6 +570,9 @@ public final class SpawnStructures {
             this.settings = settings;
             this.placement = placement;
             this.footprint = footprint;
+            this.reach = reach;
+            this.square = square;
+            this.approaches = approaches;
             this.spawn = spawn;
             this.dryRun = dryRun;
             this.finish = finish;
@@ -569,7 +600,7 @@ public final class SpawnStructures {
 
         private Outcome attempt() {
             World world = spawn.getWorld();
-            for (long key : chunksOf(footprint)) {
+            for (long key : chunksOf(reach)) {
                 int cx = (int) (key >> 32);
                 int cz = (int) key;
                 if (!world.isChunkLoaded(cx, cz) || !env.ownsChunk(world, cx, cz)) {
@@ -592,6 +623,7 @@ public final class SpawnStructures {
                 return skip("it already has a recorded structure");
             }
 
+            CellArea claimed = square;
             if (env.protector().isActive()) {
                 ClaimInspection claim = env.inspector().inspect(spawn, owner);
                 if (claim.status() != ClaimInspection.Status.FOUND) {
@@ -604,6 +636,7 @@ public final class SpawnStructures {
                     return skip("the claim at the spawn (" + claim.width() + "x"
                             + claim.depth() + ") does not hold the template's footprint");
                 }
+                claimed = bounds;
             }
             if (env.claimLookup().overlapsForeignClaim(world, footprint, owner)) {
                 return skip("the template would reach into a claim that is not the"
@@ -639,25 +672,43 @@ public final class SpawnStructures {
                 }
             }
 
+            DoorwayPlan doorways = planDoorways(world, claimed);
+
             if (dryRun) {
                 return new Outcome(false, true, template.file() + " would be placed on " + plot()
                         + " with rotation " + placement.rotation()
                         + (foundation.isEmpty() ? "" : " and " + foundation.size()
                                 + " foundation blocks")
-                        + ", subject to the spawn safety check made after placing.");
+                        + doorways.summary()
+                        + ", subject to the spawn safety check made after placing."
+                        + doorways.leftAlone());
             }
 
-            List<BlockState> before = new ArrayList<>(touched.size() + foundation.size());
+            List<BlockState> before = new ArrayList<>(touched.size() + foundation.size()
+                    + doorways.size());
             for (Location location : touched) {
                 before.add(location.getBlock().getState());
             }
             for (Block block : foundation.values()) {
                 before.add(block.getState());
             }
+            for (Block block : doorways.clear()) {
+                before.add(block.getState());
+            }
+            for (Block block : doorways.landing()) {
+                before.add(block.getState());
+            }
             template.template().place(new Location(world, placement.originX(),
                     placement.originY(), placement.originZ()), placement.rotation(),
                     settings.includeEntities());
             for (Block block : foundation.values()) {
+                block.setType(settings.foundationBlock(), false);
+            }
+            // Without physics, so the door beside a cleared block is not updated again.
+            for (Block block : doorways.clear()) {
+                block.setType(Material.AIR, false);
+            }
+            for (Block block : doorways.landing()) {
                 block.setType(settings.foundationBlock(), false);
             }
 
@@ -682,7 +733,124 @@ public final class SpawnStructures {
                     + plot() + " at (" + spawn.getBlockX() + ", " + spawn.getBlockY() + ", "
                     + spawn.getBlockZ() + "), rotation " + placement.rotation()
                     + (foundation.isEmpty() ? "" : ", with " + foundation.size()
-                            + " foundation blocks") + ".");
+                            + " foundation blocks") + doorways.summary() + "."
+                    + doorways.leftAlone());
+        }
+
+        /**
+         * What clearing the door approaches changes once the template is placed: natural
+         * terrain to remove, and landing blocks under approaches with no ground under them.
+         * An approach is cleared whole or not at all; one that cannot be is reported.
+         *
+         * @param claimed the columns the player's claim covers, or the protection square
+         *                when protection is not active
+         */
+        private DoorwayPlan planDoorways(World world, CellArea claimed) {
+            DoorwayPlan plan = new DoorwayPlan();
+            if (approaches.isEmpty()) {
+                return plan;
+            }
+            Set<Doorways.Cell> stored = Doorways.stored(placement);
+            for (Doorways.Approach approach : approaches) {
+                Doorways.Cell feet = approach.feet();
+                String where = at(feet.x(), feet.y(), feet.z());
+                if (!square.contains(feet.x(), feet.z())) {
+                    plan.left.add("the doorway at " + where + " is outside protection.size");
+                    continue;
+                }
+                if (!claimed.contains(feet.x(), feet.z())) {
+                    plan.left.add("the doorway at " + where + " is outside the player's claim");
+                    continue;
+                }
+                if (env.claimLookup().overlapsForeignClaim(world,
+                        CellArea.column(feet.x(), feet.z()), owner)) {
+                    plan.left.add("the doorway at " + where + " is in a claim that is not the"
+                            + " player's");
+                    continue;
+                }
+                List<Block> clear = new ArrayList<>();
+                String blocked = null;
+                for (Doorways.Cell cell : approach.clear()) {
+                    Block block = world.getBlockAt(cell.x(), cell.y(), cell.z());
+                    if (block.getType().isAir()) {
+                        continue;
+                    }
+                    blocked = unclearable(block);
+                    if (blocked != null) {
+                        break;
+                    }
+                    clear.add(block);
+                }
+                Doorways.Cell head = approach.head();
+                if (blocked == null && approach.clear().contains(head)
+                        && !world.getBlockAt(head.x(), head.y(), head.z()).getType().isAir()) {
+                    // Sand or gravel resting on the cleared head block would drop into it, and
+                    // a plant standing on it would be left floating, since clearing runs
+                    // without physics. A cell the template stores ends the column: the
+                    // template places its own block there, carried by the template.
+                    Block above = world.getBlockAt(head.x(), head.y() + 1, head.z());
+                    boolean ownBlock = false;
+                    for (int i = 0; i < MAX_FALLING_ABOVE; i++) {
+                        ownBlock = stored.contains(
+                                new Doorways.Cell(above.getX(), above.getY(), above.getZ()));
+                        if (ownBlock || !NaturalTerrain.contains(above.getType())
+                                || !needsSupport(above)) {
+                            break;
+                        }
+                        clear.add(above);
+                        above = above.getRelative(0, 1, 0);
+                    }
+                    if (!ownBlock && above.getType().hasGravity()) {
+                        blocked = "a block that would fall in ("
+                                + above.getType().getKey().getKey() + ") at " + at(above);
+                    }
+                }
+                if (blocked != null) {
+                    plan.left.add("the doorway at " + where + " keeps " + blocked);
+                    continue;
+                }
+                plan.clear.addAll(clear);
+                if (settings.terrain() == StructureSettings.Terrain.FOUNDATION
+                        && approach.landing()) {
+                    String gap = planLanding(world, approach.below(), plan);
+                    if (gap != null) {
+                        plan.left.add("the doorway at " + where + " has no landing: " + gap);
+                    }
+                }
+            }
+            return plan;
+        }
+
+        /**
+         * Adds a landing under an approach whose ground is lower than the floor: the block
+         * level with the floor and every block under it down to the ground, at most
+         * {@code foundation-depth} below the floor, replacing only air and natural terrain.
+         * Nothing is added when the block level with the floor is solid already.
+         *
+         * @return why it cannot be built, or {@code null}
+         */
+        private String planLanding(World world, Doorways.Cell below, DoorwayPlan plan) {
+            List<Block> column = new ArrayList<>();
+            for (int depth = 0; depth <= settings.foundationDepth(); depth++) {
+                int y = below.y() - depth;
+                if (y < world.getMinHeight()) {
+                    return "the ground is below the bottom of the world";
+                }
+                Block block = world.getBlockAt(below.x(), y, below.z());
+                if (block.getType().isSolid()) {
+                    plan.landing.addAll(column);
+                    return null;
+                }
+                if (!block.getType().isAir()) {
+                    String refusal = unclearable(block);
+                    if (refusal != null) {
+                        return "it would replace " + refusal;
+                    }
+                }
+                column.add(block);
+            }
+            return "the ground is more than structure.foundation-depth ("
+                    + settings.foundationDepth() + ") blocks below the floor";
         }
 
         /**
@@ -720,6 +888,77 @@ public final class SpawnStructures {
         }
     }
 
+    /** How many falling blocks over a doorway are cleared before it is left as it is. */
+    private static final int MAX_FALLING_ABOVE = 8;
+
+    /**
+     * What clearing the doorways of one placement changes. {@code clear} lies at and above
+     * the doors' lower halves and {@code landing} below them, so no block is in both.
+     */
+    private static final class DoorwayPlan {
+        private final List<Block> clear = new ArrayList<>();
+        private final List<Block> landing = new ArrayList<>();
+        private final List<String> left = new ArrayList<>();
+
+        List<Block> clear() {
+            return clear;
+        }
+
+        List<Block> landing() {
+            return landing;
+        }
+
+        int size() {
+            return clear.size() + landing.size();
+        }
+
+        /** The clause naming what is cleared and built, or empty when nothing is. */
+        String summary() {
+            StringBuilder text = new StringBuilder();
+            if (!clear.isEmpty()) {
+                text.append(", clearing ").append(clear.size())
+                        .append(clear.size() == 1 ? " block" : " blocks")
+                        .append(" in front of its doors");
+            }
+            if (!landing.isEmpty()) {
+                text.append(clear.isEmpty() ? ", building " : " and building ")
+                        .append(landing.size())
+                        .append(landing.size() == 1 ? " landing block" : " landing blocks");
+            }
+            return text.toString();
+        }
+
+        /** A sentence naming every doorway left as it was, or empty. */
+        String leftAlone() {
+            return left.isEmpty() ? ""
+                    : " Doorways left as they are: " + String.join("; ", left) + ".";
+        }
+    }
+
+    /**
+     * Whether a block falls or breaks without the one under it: sand and gravel, plants,
+     * snow layers, cactus, and the top half of a tall plant.
+     */
+    private static boolean needsSupport(Block block) {
+        Material type = block.getType();
+        return type.hasGravity() || !type.isSolid() || type == Material.CACTUS
+                || block.getBlockData() instanceof Bisected bisected
+                && bisected.getHalf() == Bisected.Half.TOP;
+    }
+
+    /** Why a doorway block must not be cleared or built over, or {@code null}. */
+    private static String unclearable(Block block) {
+        String refusal = refusal(block);
+        if (refusal != null) {
+            return refusal + " at " + at(block);
+        }
+        if (!NaturalTerrain.contains(block.getType())) {
+            return block.getType().getKey().getKey() + ", which is not natural terrain, at "
+                    + at(block);
+        }
+        return null;
+    }
+
     /** Why a block must not be replaced, or {@code null}. */
     private static String refusal(Block block) {
         if (block.getType() == Material.BEDROCK) {
@@ -732,6 +971,10 @@ public final class SpawnStructures {
     }
 
     private static String at(Block block) {
-        return "(" + block.getX() + ", " + block.getY() + ", " + block.getZ() + ")";
+        return at(block.getX(), block.getY(), block.getZ());
+    }
+
+    private static String at(int x, int y, int z) {
+        return "(" + x + ", " + y + ", " + z + ")";
     }
 }

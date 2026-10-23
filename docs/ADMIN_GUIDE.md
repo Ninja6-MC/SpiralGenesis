@@ -1385,22 +1385,40 @@ the repository licence; the source schematics and the conversion script are in
    block, the plot is skipped.
 3. **Outside air leaves terrain alone.** Positions the file does not store, which for the
    shipped templates is all the air around the building, are not touched: trees, hills and
-   anything else around it stay as they are.
+   anything else around it stay as they are, except in front of the doors (rule 6).
 4. **Enclosed air clears.** Air stored inside rooms is placed, so grass, flowers, leaves or
    a hillside inside the room are cleared and the room is usable.
 5. **Slopes:** where the ground under the floor is missing, `structure.terrain: SKIP` (the
    default) skips the plot, and `FOUNDATION` fills straight down from the floor to the
    ground with `structure.foundation-block`, at most `structure.foundation-depth` blocks
    (8 by default). Deeper than that, the plot is skipped.
-6. **Height:** a template that would reach past the world's build height, or below its
+6. **Doorways are cleared.** With `structure.clear-doorways: true` (the default), the two
+   blocks in front of every door the template contains, on the outside of the building and
+   after rotation, are cleared once the template is placed, so a door never opens into a
+   hillside, a log or a bush. A door between two rooms of the template has no outside and
+   is left alone. Only natural terrain is cleared (soil, stone, sand, gravel, clay,
+   terracotta, snow, natural logs, leaves and plants). Sand, gravel, plants and snow
+   resting on a cleared block are cleared with it, so nothing falls in or is left
+   floating, up to the first block the template itself places. Anything else there,
+   such as a block a player placed, a block entity or water, leaves that doorway exactly as
+   it is: it is named after `Doorways left as they are:` in the `/sgen structure` dry run
+   and in the placement's log line, and the structure is placed anyway. A doorway outside
+   the `protection.size` square or the player's claim, or in someone else's claim, is left
+   and named the same way. Under `structure.terrain: FOUNDATION`, a doorway with no ground
+   under it also gets a landing of `structure.foundation-block`, level with the floor and
+   built down to the ground within `structure.foundation-depth`; past that it has no
+   landing and is named. No steps are built: ground one block above or below the floor is
+   walkable as it is. `structure.clear-doorways: false` leaves the outside of every door
+   untouched, as rule 3 describes.
+7. **Height:** a template that would reach past the world's build height, or below its
    floor, is skipped.
-7. **Claims:** every block has to be inside the `protection.size` square around the spawn,
+8. **Claims:** every block has to be inside the `protection.size` square around the spawn,
    whether protection is on or not, since that is also the square allocation keeps clear of
    other claims. When protection is active it also has to be inside the player's actual
    claim at the spawn, as GriefPrevention reports it just before placing; a claim resized
    smaller since it was made skips the plot. It must never reach into a claim that is not
    the player's.
-8. **The spawn stays safe.** After placing, the spawn is checked with the same rule a
+9. **The spawn stays safe.** After placing, the spawn is checked with the same rule a
    stored spawn is held to on respawn, and its feet and head blocks must be clear. If it
    fails, every changed block is put back and the plot keeps its spawn.
 

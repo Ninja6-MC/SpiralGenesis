@@ -192,6 +192,14 @@ structure:
   foundation-block: COBBLESTONE
   # Clamped to 1-64.
   foundation-depth: 8
+  # Clear the two blocks in front of each door the template contains, on the outside, so a
+  # door never opens into a hillside. Only natural terrain is cleared: soil, stone, sand,
+  # gravel, snow, natural logs, leaves and plants. Anything else there, such as a player's
+  # block, a block entity or water, is left in place and named in /sgen structure and the
+  # log line, and the structure is placed anyway. Under terrain: FOUNDATION, a doorway with
+  # no ground under it also gets a landing of foundation-block, level with the floor and
+  # down to the ground. Default true; false leaves the outside of every door as it is.
+  clear-doorways: true
 
 # Player plot information. Reload with /sgen reload; blank templates suppress a line.
 # Legacy & colour codes work on Java and through Geyser. Placeholders are literal:

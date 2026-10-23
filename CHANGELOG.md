@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Spawn plot structure doors open onto a clear approach.** The two blocks in front of
+  each door the template contains, on the outside and after rotation, are cleared once it
+  is placed, so a hut on a slope no longer opens into the hillside. Only natural terrain is
+  cleared: soil, stone, sand, gravel, clay, terracotta, snow, natural logs, leaves and
+  plants, plus sand, gravel, plants and snow resting on a cleared block, up to the first
+  block the template places. A player's block, a block entity or water leaves that
+  doorway as it is and is named in the `/sgen structure` dry run and the placement's log
+  line; it never stops the placement. Under `terrain: FOUNDATION`, a doorway with no
+  ground under it gets a landing of `foundation-block`, level with the floor and down to
+  the ground. On by default; `structure.clear-doorways: false` turns it off.
+
 ### Changed
 - **Modrinth releases no longer touch existing versions.** The release workflow uploads
   each version unfeatured and never features or unfeatures a version or edits an existing
