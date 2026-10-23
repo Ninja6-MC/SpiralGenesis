@@ -747,6 +747,10 @@ public final class SpawnStructures {
          */
         private DoorwayPlan planDoorways(World world, CellArea claimed) {
             DoorwayPlan plan = new DoorwayPlan();
+            if (approaches.isEmpty()) {
+                return plan;
+            }
+            Set<Doorways.Cell> stored = Doorways.stored(placement);
             for (Doorways.Approach approach : approaches) {
                 Doorways.Cell feet = approach.feet();
                 String where = at(feet.x(), feet.y(), feet.z());
@@ -781,15 +785,22 @@ public final class SpawnStructures {
                 if (blocked == null && approach.clear().contains(head)
                         && !world.getBlockAt(head.x(), head.y(), head.z()).getType().isAir()) {
                     // Sand or gravel resting on the cleared head block would drop into it, and
-                    // the top of a tall plant rooted there would be left floating.
+                    // a plant standing on it would be left floating, since clearing runs
+                    // without physics. A cell the template stores ends the column: the
+                    // template places its own block there, carried by the template.
                     Block above = world.getBlockAt(head.x(), head.y() + 1, head.z());
-                    for (int i = 0; i < MAX_FALLING_ABOVE
-                            && NaturalTerrain.contains(above.getType())
-                            && (above.getType().hasGravity() || upperHalf(above)); i++) {
+                    boolean ownBlock = false;
+                    for (int i = 0; i < MAX_FALLING_ABOVE; i++) {
+                        ownBlock = stored.contains(
+                                new Doorways.Cell(above.getX(), above.getY(), above.getZ()));
+                        if (ownBlock || !NaturalTerrain.contains(above.getType())
+                                || !needsSupport(above)) {
+                            break;
+                        }
                         clear.add(above);
                         above = above.getRelative(0, 1, 0);
                     }
-                    if (above.getType().hasGravity()) {
+                    if (!ownBlock && above.getType().hasGravity()) {
                         blocked = "a block that would fall in ("
                                 + above.getType().getKey().getKey() + ") at " + at(above);
                     }
@@ -924,8 +935,14 @@ public final class SpawnStructures {
         }
     }
 
-    private static boolean upperHalf(Block block) {
-        return block.getBlockData() instanceof Bisected bisected
+    /**
+     * Whether a block falls or breaks without the one under it: sand and gravel, plants,
+     * snow layers, cactus, and the top half of a tall plant.
+     */
+    private static boolean needsSupport(Block block) {
+        Material type = block.getType();
+        return type.hasGravity() || !type.isSolid() || type == Material.CACTUS
+                || block.getBlockData() instanceof Bisected bisected
                 && bisected.getHalf() == Bisected.Half.TOP;
     }
 

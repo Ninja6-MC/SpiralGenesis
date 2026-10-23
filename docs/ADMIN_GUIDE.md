@@ -1397,8 +1397,9 @@ the repository licence; the source schematics and the conversion script are in
    after rotation, are cleared once the template is placed, so a door never opens into a
    hillside, a log or a bush. A door between two rooms of the template has no outside and
    is left alone. Only natural terrain is cleared (soil, stone, sand, gravel, clay,
-   terracotta, snow, natural logs, leaves and plants), and sand or gravel resting on a
-   cleared block is cleared with it so it cannot fall in. Anything else there,
+   terracotta, snow, natural logs, leaves and plants). Sand, gravel, plants and snow
+   resting on a cleared block are cleared with it, so nothing falls in or is left
+   floating, up to the first block the template itself places. Anything else there,
    such as a block a player placed, a block entity or water, leaves that doorway exactly as
    it is: it is named after `Doorways left as they are:` in the `/sgen structure` dry run
    and in the placement's log line, and the structure is placed anyway. A doorway outside

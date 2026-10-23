@@ -35,12 +35,18 @@ final class Doorways {
 
     private Doorways() { }
 
-    /** Every approach of the template's doors as {@code placement} turns and places them. */
-    static List<Approach> of(Template template, Placement placement) {
+    /** Every position {@code placement} stores, which placing the template sets. */
+    static Set<Cell> stored(Placement placement) {
         Set<Cell> stored = new HashSet<>();
         for (Placement.WorldBlock block : placement.blocks()) {
             stored.add(new Cell(block.x(), block.y(), block.z()));
         }
+        return stored;
+    }
+
+    /** Every approach of the template's doors as {@code placement} turns and places them. */
+    static List<Approach> of(Template template, Placement placement) {
+        Set<Cell> stored = stored(placement);
         Set<Approach> approaches = new LinkedHashSet<>();
         for (Template.Door door : template.doors()) {
             int[] at = Placement.rotate(door.x(), door.z(), placement.rotation());

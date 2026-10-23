@@ -13,6 +13,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -176,6 +178,47 @@ class DoorwayClearingTest {
             assertEquals(Material.AIR, at(-4, y, 0), "Y=" + y);
         }
         assertEquals(Material.STONE, at(-4, FEET + 4, 0));
+    }
+
+    @Test
+    @DisplayName("the column above a cleared doorway stops at a block the template stores")
+    void storedBlockAboveIsKept() {
+        List<Template.Block> blocks = new ArrayList<>(hut.blocks());
+        // A step under the west approach and an awning one block over its head.
+        blocks.add(new Template.Block(-1, 0, 3, Material.COBBLESTONE, false));
+        blocks.add(new Template.Block(-1, 3, 3, Material.OAK_SLAB, false));
+        TestTemplate awning = new TestTemplate("spawn-hut.nbt", blocks, hut.doors());
+        env.templates.put("spawn-hut.nbt", awning);
+        structures.reload();
+        set(-4, FEET, 0, Material.DIRT);
+        set(-4, FEET + 1, 0, Material.DIRT);
+        set(-4, FEET + 2, 0, Material.SAND);
+
+        SpawnStructures.Outcome outcome = placeNow(false);
+
+        assertTrue(outcome.placed(), outcome.message());
+        assertEquals(Material.AIR, at(-4, FEET, 0));
+        assertEquals(Material.AIR, at(-4, FEET + 1, 0));
+        assertEquals(Material.OAK_SLAB, at(-4, FEET + 2, 0), "the template's own block stays");
+        assertTrue(outcome.message().contains("clearing 2 blocks"), outcome.message());
+    }
+
+    @Test
+    @DisplayName("plants and snow standing on a cleared head block are cleared with it")
+    void plantsAboveAreCleared() {
+        set(-4, FEET + 1, 0, Material.GRASS_BLOCK);
+        set(-4, FEET + 2, 0, Material.POPPY);
+        set(4, FEET + 1, 0, Material.DIRT);
+        set(4, FEET + 2, 0, Material.SNOW);
+        set(4, FEET + 3, 0, Material.STONE);
+
+        SpawnStructures.Outcome outcome = placeNow(false);
+
+        assertTrue(outcome.placed(), outcome.message());
+        assertEquals(Material.AIR, at(-4, FEET + 1, 0));
+        assertEquals(Material.AIR, at(-4, FEET + 2, 0));
+        assertEquals(Material.AIR, at(4, FEET + 2, 0));
+        assertEquals(Material.STONE, at(4, FEET + 3, 0), "a solid block above is not followed");
     }
 
     @Test
