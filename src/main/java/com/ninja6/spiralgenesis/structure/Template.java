@@ -23,7 +23,8 @@ public interface Template {
 
     /**
      * Places the template with its origin at {@code origin}, turned about that origin.
-     * Called on the thread owning every chunk the template touches.
+     * Called on the thread owning every chunk the template touches. Every door the template
+     * stores is left standing, both halves, whatever blocks surround it.
      */
     void place(Location origin, StructureRotation rotation, boolean includeEntities);
 

@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and pass the respawn re-check. When none does, no plot is recorded: the player is held
   at a standing point at world spawn and allocated again on their next join, and
   `/sgen simulate` counts the sample as `unplaced`.
+- **Spawn plot structures keep their doors.** Vanilla structure placement runs shape
+  updates as it sets blocks, and a natural block next to a doorway, such as leaf litter,
+  could leave a door broken with the door dropped as an item. After placing, every door
+  half the template stores is checked; a half that did not survive is set again without
+  updating its neighbours, and the door item it dropped is removed. Doors left standing
+  are not touched.
 
 ## [1.0.0-beta.2] - 2026-10-21
 
