@@ -40,7 +40,13 @@ A player joins for the first time. SpiralGenesis:
    `safety.max-scan-attempts` cells. A cell whose every candidate is inside an existing
    claim is skipped and does not count toward that limit.
 5. If all attempts are exhausted, settles on the best candidate seen anywhere during the
-   scan rather than dropping the player at world spawn.
+   scan rather than dropping the player at world spawn. Only a candidate a player can
+   survive on qualifies: one that fails no rule but low ground, an ocean biome, a pit or
+   rough terrain, and passes the respawn re-check in section 5. A point on water, lava or
+   powder snow, without headroom, or beside lava or powder snow is never the fallback.
+6. If no candidate qualifies, nothing is recorded. The player is held at a standing point
+   at world spawn, the console says so, and their next join allocates again, past the
+   cells this scan spent.
 
 Two nested searches, in other words: an outer one over cells, an inner one within a cell.
 The inner search is what keeps one bad block from throwing away an entire 500×500 plot.
@@ -1041,6 +1047,8 @@ Reading the output:
 * **Mostly `LOW_SURFACE`** — `min-surface-y` is above much of your terrain.
 * **Frequent fallbacks** — the scan is running out of attempts; raise `max-scan-attempts`,
   accepting the longer worst-case allocation time.
+* **`unplaced` above 0** - a scan ran out of attempts with nothing safe to fall back on, so
+  that sample placed nothing. Treat it as frequent fallbacks, more urgently.
 
 CI runs this same command against a generated world and fails the build on regressions in
 index burn, fallback use, or spawns below `min-surface-y`.

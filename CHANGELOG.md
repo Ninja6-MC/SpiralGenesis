@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its version and then failed with a 401. `MODRINTH_TOKEN` keeps `Create versions`,
   `Read projects` and `Read versions` only.
 
+### Fixed
+- **An exhausted scan no longer settles on a lethal spawn.** When `max-scan-attempts` ran
+  out, the fallback was the least bad candidate seen, which in an ocean or river stretch
+  could be open water, and the player was recorded and teleported there. The fallback now
+  only considers candidates that fail nothing but `LOW_SURFACE`, `OCEAN`, `PIT` or `ROUGH`
+  and pass the respawn re-check. When none does, no plot is recorded: the player is held
+  at a standing point at world spawn and allocated again on their next join, and
+  `/sgen simulate` counts the sample as `unplaced`.
+
 ## [1.0.0-beta.2] - 2026-10-21
 
 **Compatibility** is unchanged from 1.0.0-beta.1: Paper, Purpur, other Paper forks and
