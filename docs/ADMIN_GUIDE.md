@@ -1000,6 +1000,11 @@ the folder left behind after a rollback does no harm. A structure is placed only
 plot is first allocated, so a plot allocated under 1.0.0-beta.1 after a rollback gets none
 automatically once 1.0.0-beta.2 is back; `/sgen structure <player> place` places it.
 
+1.0.0-beta.3 leaves the `data.yml` format as 1.0.0-beta.2 wrote it, so its `data.yml` can
+go back under the 1.0.0-beta.2 jar. Take the same copy first all the same. A player held
+at world spawn because no safe plot was found has nothing recorded, so they are allocated
+again on their next join under either jar.
+
 ### When `data.yml` cannot be read
 
 A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.

@@ -9,6 +9,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.3] - 2026-10-23
+
+**Compatibility** is unchanged from 1.0.0-beta.2: Paper, Purpur, other Paper forks and
+Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3, with CI verifying Folia on 1.20.4,
+1.21.11 and 26.2. Folia 26.3 is supported but not yet verified because no official build
+is available. Longer Paper 26.3 and Folia live soaks, and verification of Folia 26.3 once
+a build is available, remain for 1.0.0 in
+[#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191). Minecraft 26.1 and newer
+need the server to run on Java 25; Java 21 is enough for 1.20 and 1.21.
+
+**Upgrading** from 1.0.0-beta.2 is in place and needs no migration step; an upgrade from
+an earlier release also takes that release's upgrade notes. Stop the server and copy
+`plugins/SpiralGenesis` before you upgrade. The `data.yml` format is unchanged from
+1.0.0-beta.2: this version adds no key and changes none, and what it records for a plot,
+a claim or a structure is written exactly as before. Rolling back to 1.0.0-beta.2
+therefore keeps every player's plot and every recorded structure. An existing `config.yml`
+is not rewritten: the new `structure.clear-doorways` key it lacks takes its default,
+`true`, so a server with `structure.enabled: true` clears the approach to every door of
+each structure placed from now on. Structures already placed are not touched, and a server
+with structures off is unaffected. Set `clear-doorways: false` to keep the outside of
+every door as it is.
+
+When a scan spends `safety.max-scan-attempts` and every point it scored fails a lethal
+rule, no plot is recorded any more: the player is held at a standing point at world spawn
+and allocated again on their next join. Before, the least bad point was used even when it
+was open water. A server whose terrain near the spiral is mostly ocean or river can see
+more of these players; the log names each one, and `/sgen simulate` counts them as
+`unplaced`. Raising `max-scan-attempts` gives the scan more cells to find a safe point.
+
 ### Added
 - **Spawn plot structure doors open onto a clear approach.** The two blocks in front of
   each door the template contains, on the outside and after rotation, are cleared once it
