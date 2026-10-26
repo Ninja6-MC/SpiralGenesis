@@ -133,7 +133,7 @@ jobs:
           python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
       - name: Publish to Modrinth
         if: steps.destinations.outputs.modrinth == 'absent'
-        uses: Kira-NT/mc-publish@52307b03863581dec6b652b83e597aec02ebb075 # v3.3.1
+        uses: Kira-NT/mc-publish@c23376546a97f5ba7984e94445da359459b14419 # v3.3.2
         with:
           modrinth-id: spiralgenesis
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
@@ -166,7 +166,7 @@ jobs:
         uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - name: Set up Java 21 for Hangar
         if: steps.destinations.outputs.hangar == 'absent'
-        uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6 # v6.0.1
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: '21'
           distribution: temurin
