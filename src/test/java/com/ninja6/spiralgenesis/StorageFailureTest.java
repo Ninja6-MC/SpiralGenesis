@@ -108,7 +108,8 @@ class StorageFailureTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner) {
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner,
+                                                                Location failed) {
             searches.incrementAndGet();
             return new CompletableFuture<>();
         }

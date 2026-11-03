@@ -107,7 +107,8 @@ class SpiralCommandProtectionTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner,
+                                                                     Location failed) {
             index = cell.index();
             return CompletableFuture.completedFuture(result());
         }
@@ -134,8 +135,9 @@ class SpiralCommandProtectionTest {
 
         @Override
         public CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell,
-                                                                            UUID owner) {
-            return getSpawnManager().findSafeSpawnInCell(cell, owner);
+                                                                            UUID owner,
+                                                                            Location failed) {
+            return getSpawnManager().findSafeSpawnInCell(cell, owner, failed);
         }
 
         /**

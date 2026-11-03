@@ -22,6 +22,12 @@ public enum RejectionReason {
     /** No room for a player to stand. */
     NO_HEADROOM,
 
+    /**
+     * Nothing under the point that the re-check on respawn counts as a floor: nothing
+     * collides over the centre of the column at the surface or a step below it.
+     */
+    NO_FLOOR,
+
     /** Sits too far below the surrounding terrain: a ravine, sinkhole or crater. */
     PIT,
 

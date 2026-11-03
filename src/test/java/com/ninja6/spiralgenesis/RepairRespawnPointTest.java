@@ -69,7 +69,8 @@ class RepairRespawnPointTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner,
+                                                                     Location failed) {
             return CompletableFuture.completedFuture(new LocationResult(
                     replacement, cell.index(), 0, 0, 63, 1, 1, false, Map.of()));
         }
