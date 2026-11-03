@@ -144,6 +144,12 @@ class SpawnManagerTest {
             return shapes.admitsRespawn(block);
         }
 
+        /** One thread owns every chunk here, as the main thread does on Paper. */
+        @Override
+        boolean ownsChunk(int chunkX, int chunkZ) {
+            return true;
+        }
+
         @Override
         void runOnRegion(CompletableFuture<?> result,
                          int chunkX, int chunkZ, Runnable action) {
@@ -383,6 +389,148 @@ class SpawnManagerTest {
         Location loc = allocate(manager, sequentialIndices(new AtomicInteger())).location();
 
         assertNotEquals(0.5, loc.getX(), "should not spawn next to a lava pool");
+    }
+
+    // --- The box around a candidate --------------------------------------------------
+
+    /** How many chunks the 9 by 9 box around a candidate at {@code (x, z)} touches. */
+    private static int neighbourhoodChunks(int x, int z) {
+        return (((x + 4) >> 4) - ((x - 4) >> 4) + 1) * (((z + 4) >> 4) - ((z - 4) >> 4) + 1);
+    }
+
+    /** Allocates once, from index 0. */
+    private SpawnManager.LocationResult allocateAroundOrigin(SpawnManager manager)
+            throws Exception {
+        return allocate(manager, sequentialIndices(new AtomicInteger()));
+    }
+
+    static Stream<Arguments> fluidInTheBox() {
+        return Stream.of(
+                // Between the chunk samples, at the surface: a lava pool none of them lands on.
+                Arguments.of("lava pool between the samples", 3, MOCK_SURFACE_Y, 3, Material.LAVA),
+                // Across the chunk edge, in a chunk the samples never read.
+                Arguments.of("lava in the next chunk", -3, MOCK_SURFACE_Y, -3, Material.LAVA),
+                Arguments.of("lava at the edge of the box", 4, MOCK_SURFACE_Y + 1, -4, Material.LAVA),
+                Arguments.of("lava three above the feet", 1, MOCK_SURFACE_Y + 4, 0, Material.LAVA),
+                Arguments.of("water at head height", 2, MOCK_SURFACE_Y + 2, 0, Material.WATER),
+                Arguments.of("water three above the feet", -4, MOCK_SURFACE_Y + 4, 4, Material.WATER),
+                Arguments.of("kelp above the feet", 0, MOCK_SURFACE_Y + 3, 3, Material.KELP_PLANT));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fluidInTheBox")
+    @DisplayName("Lava anywhere in the box around a candidate, or water above its feet, rejects it")
+    void fluidInTheBoxIsRejected(String name, int x, int y, int z, Material fluid)
+            throws Exception {
+        world.getBlockAt(x, y, z).setType(fluid);
+
+        SpawnManager.LocationResult res = allocateAroundOrigin(managerWith(config(0, 8)));
+
+        assertNotEquals(0.5, res.location().getX(), "the origin must not be chosen");
+        assertEquals(0, res.index(), "the next candidate in the cell is used instead");
+        assertEquals(1, res.rejections().get(RejectionReason.NEARBY_FLUID),
+                "reported as its own reason: " + res.rejections());
+        assertNull(res.rejections().get(RejectionReason.NEARBY_HAZARD),
+                "the chunk samples did not see it: " + res.rejections());
+    }
+
+    static Stream<Arguments> fluidLeftAlone() {
+        return Stream.of(
+                // A lake shore and a river bank: water level with the ground, or with the feet.
+                Arguments.of("water at the surface", 2, MOCK_SURFACE_Y, 0, Material.WATER),
+                Arguments.of("water at the feet", 2, MOCK_SURFACE_Y + 1, 0, Material.WATER),
+                Arguments.of("lava just outside the box", 5, MOCK_SURFACE_Y, 0, Material.LAVA),
+                Arguments.of("lava below the box", 1, MOCK_SURFACE_Y - 1, 0, Material.LAVA),
+                Arguments.of("lava above the box", 1, MOCK_SURFACE_Y + 5, 0, Material.LAVA));
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("fluidLeftAlone")
+    @DisplayName("Water at or below the feet, and lava outside the box, leave a candidate alone")
+    void fluidOutsideTheRuleIsAllowed(String name, int x, int y, int z, Material fluid)
+            throws Exception {
+        world.getBlockAt(x, y, z).setType(fluid);
+
+        SpawnManager.LocationResult res = allocateAroundOrigin(managerWith(config(0, 8)));
+
+        assertEquals(0.5, res.location().getX(), 1e-9);
+        assertEquals(0.5, res.location().getZ(), 1e-9);
+        assertNull(res.rejections().get(RejectionReason.NEARBY_FLUID));
+    }
+
+    @Test
+    @DisplayName("The box is read across chunk edges from chunks loaded for it, never from unowned ones")
+    void theBoxLoadsTheChunksItReachesAndSkipsUnownedOnes() throws Exception {
+        world.getBlockAt(-3, MOCK_SURFACE_Y, -3).setType(Material.LAVA);
+        InlineSpawnManager manager = new InlineSpawnManager(plugin, world, config(0, 8), shapes) {
+            @Override
+            boolean ownsChunk(int chunkX, int chunkZ) {
+                // On Folia, a neighbouring chunk Folia has put in another region.
+                return chunkX != -1 || chunkZ != -1;
+            }
+        };
+
+        SpawnManager.LocationResult res = allocateAroundOrigin(manager);
+
+        assertEquals(0.5, res.location().getX(), 1e-9,
+                "a column this thread does not own is skipped rather than read");
+        assertEquals(4, manager.chunkLoads.get(),
+                "the origin is on the corner of four chunks, and the box reaches into each");
+    }
+
+    @Test
+    @DisplayName("A candidate away from every chunk edge loads only its own chunk")
+    void anInteriorCandidateLoadsOneChunk() throws Exception {
+        String yaml = """
+                origin:
+                  world: "world"
+                  x: 8
+                  z: 8
+                cell-size: %d
+                safety:
+                  min-surface-y: 0
+                  max-scan-attempts: 8
+                """.formatted(CELL);
+        InlineSpawnManager manager = new InlineSpawnManager(plugin, world,
+                new PluginConfig(YamlConfiguration.loadConfiguration(new StringReader(yaml))),
+                shapes);
+
+        Location loc = allocateAroundOrigin(manager).location();
+
+        assertEquals(8.5, loc.getX(), 1e-9);
+        assertEquals(1, manager.chunkLoads.get());
+    }
+
+    @Test
+    @DisplayName("Simulation names lava in the box as NEARBY_FLUID")
+    void simulationReportsNearbyFluid() throws Exception {
+        world.getBlockAt(3, MOCK_SURFACE_Y, 3).setType(Material.LAVA);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        SpawnSimulator.Report report = SpawnSimulator.run(manager, 1).get(10, TimeUnit.SECONDS);
+
+        assertEquals(1, report.completed());
+        assertEquals(1, report.rejections().get(RejectionReason.NEARBY_FLUID),
+                "got " + report.rejections());
+        assertTrue(report.toRejectionLine().contains("NEARBY_FLUID=1"), report.toRejectionLine());
+    }
+
+    @Test
+    @DisplayName("A candidate with lava in the box is never the fallback")
+    void fluidInTheBoxIsNeverTheFallback() throws Exception {
+        // Every candidate of the only cell scanned has lava beside it.
+        for (int dx = -2 * STRIDE; dx <= 2 * STRIDE; dx += STRIDE) {
+            for (int dz = -2 * STRIDE; dz <= 2 * STRIDE; dz += STRIDE) {
+                world.getBlockAt(dx + 3, MOCK_SURFACE_Y, dz + 3).setType(Material.LAVA);
+            }
+        }
+        SpawnManager manager = managerWith(config(0, 1));
+
+        SpawnManager.AllocationOutcome outcome = manager
+                .allocateNextSafeSpawn(sequentialIndices(new AtomicInteger()))
+                .get(10, TimeUnit.SECONDS);
+
+        assertInstanceOf(SpawnManager.NoSafeFallback.class, outcome);
     }
 
     @Test
@@ -2397,8 +2545,9 @@ class SpawnManagerTest {
         assertEquals(0, res.index(), "one claimed candidate must not discard the cell");
         assertEquals(STRIDE + 0.5, res.location().getX(), 1e-9);
         assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
-        assertEquals(1, manager.chunkLoads.get(),
-                "the claimed candidate is rejected before its chunk is asked for");
+        assertEquals(neighbourhoodChunks(STRIDE, 0), manager.chunkLoads.get(),
+                "the claimed candidate is rejected before its chunk is asked for: only the"
+                        + " chunks around the one that won are");
         assertEquals(CellArea.square(0, 0, 9), claims.asked.get(0),
                 "the square tested is protection.size across, 9 by default");
     }
@@ -2421,7 +2570,8 @@ class SpawnManagerTest {
         assertEquals(1, res.cellsProbed(), "the claimed cell is not an attempt");
         assertEquals(2, indices.get(), "though it used an index, as a skipped overlap does");
         assertEquals(12, res.rejections().get(RejectionReason.CLAIMED));
-        assertEquals(1, manager.chunkLoads.get(), "no chunk was loaded for the claimed cell");
+        assertEquals(neighbourhoodChunks(CELL, 0), manager.chunkLoads.get(),
+                "no chunk was loaded for the claimed cell, only around the point in the next");
         assertTrue(logs.stream().anyMatch(r -> r.getLevel() == Level.INFO
                         && r.getMessage().startsWith("Skipped plot #0,0: every candidate spawn is"
                         + " inside an existing claim")),

@@ -37,6 +37,13 @@ public enum RejectionReason {
     /** Lava or powder snow within the sampled surroundings. */
     NEARBY_HAZARD,
 
+    /**
+     * Lava anywhere in the box around the point, or water above the feet in it: 9 by 9
+     * blocks centred on the point, from one below the feet to three above. Lava a few
+     * blocks away flows onto the point within seconds, and water above the feet floods it.
+     */
+    NEARBY_FLUID,
+
     /** Sits outside the world border, where a player takes damage until they die. */
     OUTSIDE_BORDER,
 

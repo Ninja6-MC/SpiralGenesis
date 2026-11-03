@@ -43,7 +43,8 @@ A player joins for the first time. SpiralGenesis:
    scan rather than dropping the player at world spawn. Only a candidate a player can
    survive on qualifies: one that fails no rule but low ground, an ocean biome, a pit or
    rough terrain, and passes the respawn re-check in section 5. A point on water, lava or
-   powder snow, without headroom, or beside lava or powder snow is never the fallback.
+   powder snow, without headroom, beside lava or powder snow, or with lava or water above
+   the feet in the box around it is never the fallback.
 6. If no candidate qualifies, nothing is recorded. The player is held at a standing point
    at world spawn, the console says so, and their next join allocates again, past the
    cells this scan spent.
@@ -126,6 +127,7 @@ on. A candidate is rejected for any of these reasons, which are the same names
 | `PIT` | Sits more than the allowed depth below the median of surrounding terrain — ravines, canyons, sinkholes, craters. | `safety.max-pit-depth` (8) |
 | `ROUGH` | Surroundings vary more sharply than allowed — cliff edges, spikes, jagged ground. | `safety.max-roughness` (12) |
 | `NEARBY_HAZARD` | Lava or powder snow within the sampled surroundings. | — |
+| `NEARBY_FLUID` | Lava anywhere in the box around the point, or water above the feet in it: 9 by 9 blocks centred on the point, from one below the feet to three above. | - |
 | `CLAIMED` | The square around it would overlap an existing claim. Only where GriefPrevention is installed; see [existing claims](#existing-claims-and-allocation). | `protection.size` (9) |
 
 Two details worth knowing:
@@ -135,13 +137,24 @@ because nothing is above it. Without a shape check, a player drops 40 blocks int
 and the plugin considers that a success. Comparing the candidate against the terrain around
 it is what catches those cases.
 
-**Water nearby is fine.** Only lava and powder snow disqualify a candidate by proximity.
-Water or ice a few blocks away is a lake shore or river bank — a good spawn, not a bad one.
+**Water nearby is fine, up to the feet.** Water or ice a few blocks away, level with the
+ground or the feet, is a lake shore or river bank: a good spawn, not a bad one. Water
+higher than the feet in the box around the point flows down onto it or stands over it, and
+fails `NEARBY_FLUID`.
 
 Terrain samples are taken from fixed positions inside the candidate's own chunk rather than
 in a ring around the point. A ring would cross into neighbouring chunks whenever a candidate
 sits near a chunk edge, which is common; reading those would force chunk generation, and
 skipping them would quietly disable the checks.
+
+The samples are eight columns, so a lava pool between them is not seen. `NEARBY_FLUID` reads
+every block of the box around the point instead: 405 blocks, once per candidate. Lava
+spreads 3 blocks from its source in the overworld, so a source at the edge of the box
+reaches the block beside the point. A point within 4 blocks of a chunk edge has a box that
+reaches into the neighbouring chunks, up to three of them, and those are loaded before the
+candidate is scored. They are next to where the player is sent, so they load for the
+player's view on arrival anyway. On Folia, a column in a neighbouring chunk that belongs to
+another region is skipped rather than read.
 
 ---
 
@@ -151,7 +164,7 @@ skipping them would quietly disable the checks.
 
 | Strategy | Behaviour | Cost |
 | :--- | :--- | :--- |
-| `FIRST_SAFE` *(default)* | Take the cell centre if it passes, otherwise the first viable point spiralling outward. Stops as soon as it finds one. | Often a single chunk. |
+| `FIRST_SAFE` *(default)* | Take the cell centre if it passes, otherwise the first viable point spiralling outward. Stops as soon as it finds one. | Often a single candidate: its chunk and up to three neighbours. |
 | `FLATTEST` | Probe every candidate, take the one with the least height variation. | Always spends the full `max-candidates` budget. |
 | `HIGHEST` | Probe every candidate, take the highest at or below `placement.height-ceiling`. | Always spends the full `max-candidates` budget. |
 
@@ -348,6 +361,24 @@ found, the player is sent to world spawn, and **their plot assignment is left un
 candidate passed" is not evidence the plot is unusable, and discarding the assignment over
 it would lose their land for good. Raise `placement.max-candidates` if you see this warning
 repeatedly.
+
+### Re-checking a new plot on arrival
+
+Allocation judges a plot from blocks read the moment its chunk loads. Lava or water that
+flows onto it a few ticks later was not there to see, and without another look the first
+anyone hears of it is the player dying there. So a new plot is re-checked once, 5 seconds
+after the player first reaches it: after a first allocation, a placement recorded while
+they were away, a re-asserted teleport, or `/sgen reassign`.
+
+The re-check is the one the death path runs: whether anything lethal is at the feet, head
+or underfoot and whether the ground is still there, read on the thread that owns the plot's
+chunk. When it fails and the player is still at the point, within 3 blocks of it, the
+in-cell repair moves them as it would after a death, and logs the same lines. A player who
+has died or walked away by then, or whose plot has changed since, is left alone; the death
+re-check still covers their plot.
+
+That is the only one. Nothing watches plots after it, and arrival grants no invulnerability
+or fire resistance, which would hide a bad spawn rather than avoid it.
 
 ### Re-asserting a teleport that never happened
 
@@ -1302,6 +1333,7 @@ Worth running once on a staging server before going live:
 | Gate backstop | Connect, then stand still past `action-timeout-seconds`. | Allocated anyway, with a warning in the console. |
 | Death and respawn | `/kill` with no bed set. | Respawn at your own plot, not world spawn. |
 | Griefed plot | Pour lava on a player's plot, then `/kill` them. | Moved to another point in the same cell; index unchanged in `data.yml`. |
+| Arrival re-check | Join with a new account and pour lava at its feet within 5 seconds of arrival. | About 5 seconds after arrival, moved to another point in the same cell. |
 | Admin override | `/sgen setspawn <player> 1200 70 -400`. | Spawn and respawn point update immediately. |
 | Visiting a griefed plot | Pour lava on a plot, then `/sgen tp <player>`. | Warned that it is no longer safe, and teleported there anyway. |
 | Manual release | `/sgen allocate <player>` for a held player, then again. | Placed on the first call, "already has a plot" on the second. |

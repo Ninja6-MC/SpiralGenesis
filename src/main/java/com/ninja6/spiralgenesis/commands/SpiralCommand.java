@@ -451,6 +451,7 @@ public class SpiralCommand implements CommandExecutor, TabCompleter {
                 target.teleportAsync(res.location()).thenAccept(success -> {
                     if (Boolean.TRUE.equals(success)) {
                         plugin.arrivalHints().arrived(target);
+                        plugin.scheduleArrivalCheck(target, res.location());
                     }
                     sender.sendMessage(ChatColor.GREEN + "Successfully reassigned " + target.getName() + " to plot " +
                             res.plotLabel() + " at (" + res.location().getBlockX() + ", " + res.location().getBlockY() + ", " + res.location().getBlockZ() + ")");

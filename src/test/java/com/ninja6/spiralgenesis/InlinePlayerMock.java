@@ -44,6 +44,12 @@ public class InlinePlayerMock extends SessionPlayerMock {
     /** Repeating tasks, which run only when {@link #runRepeating} says a period passed. */
     private final List<RepeatingTask> repeating = new ArrayList<>();
 
+    /** Delayed tasks, which run only when {@link #runDelayed} says their delay passed. */
+    private final List<Runnable> delayed = new ArrayList<>();
+
+    /** The delay, in ticks, each delayed task was scheduled with, oldest first. */
+    public final List<Long> delays = new ArrayList<>();
+
     public InlinePlayerMock(ServerMock server, String name) {
         super(server, name);
     }
@@ -100,6 +106,18 @@ public class InlinePlayerMock extends SessionPlayerMock {
             }
         }
         repeating.removeIf(task -> task.cancelled);
+    }
+
+    /** Runs every delayed task scheduled so far, as their delays passing. */
+    public void runDelayed() {
+        List<Runnable> due = List.copyOf(delayed);
+        delayed.clear();
+        due.forEach(Runnable::run);
+    }
+
+    /** How many delayed tasks are waiting to run. */
+    public int delayedTasks() {
+        return delayed.size();
     }
 
     /** How many repeating tasks are still scheduled. */
@@ -174,7 +192,10 @@ public class InlinePlayerMock extends SessionPlayerMock {
         }
     }
 
-    /** Runs everything once immediately, on the calling thread, except repeating tasks. */
+    /**
+     * Runs everything once immediately, on the calling thread, except repeating and delayed
+     * tasks, which wait for {@link #runRepeating} and {@link #runDelayed}.
+     */
     private final class InlineEntityScheduler implements EntityScheduler {
 
         @Override
@@ -193,7 +214,10 @@ public class InlinePlayerMock extends SessionPlayerMock {
         @Override
         public ScheduledTask runDelayed(Plugin plugin, Consumer<ScheduledTask> task,
                                         Runnable retired, long delayTicks) {
-            return run(plugin, task, retired);
+            DoneTask handle = new DoneTask(plugin);
+            delayed.add(() -> task.accept(handle));
+            delays.add(delayTicks);
+            return handle;
         }
 
         @Override
