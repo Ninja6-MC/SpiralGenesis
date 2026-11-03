@@ -9,7 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A new plot is re-checked 5 seconds after the player first reaches it.** Allocation
+  judged a plot from the blocks read when its chunk loaded, so lava or water that flowed
+  onto it a few ticks later was only found once the player died there. The respawn
+  re-check now runs once more after a first allocation, a placement recorded while the
+  player was away, a re-asserted teleport or `/sgen reassign`, on the thread that owns the
+  plot's chunk, and a player still at an unsafe plot is moved by the in-cell repair. One
+  task per placement; nothing watches plots after it, and arrival grants no
+  invulnerability.
+
 ### Fixed
+- **Allocation no longer places a spawn beside a lava pool its chunk samples missed.**
+  Lava nearby was looked for only in eight sample columns across the chunk, so a pool
+  between them, or across a chunk edge, went unseen. Every block in a 9 by 9 box around
+  the point, from one below the feet to three above, is now read, and a candidate with
+  lava anywhere in it, or water above the feet, is rejected as `NEARBY_FLUID`, which
+  `/sgen simulate` reports as its own reason. Such a candidate is never the fallback. A
+  point near a chunk edge loads the neighbouring chunks its box reaches, up to three,
+  before it is scored.
 - **Spawns are no longer placed on top of bamboo, logs or other tall plants.** Allocation
   and the in-cell repair took the surface from the motion-blocking heightmap, which skips
   leaves but not bamboo or logs, so a bamboo jungle could give a plot at the top of a stalk,

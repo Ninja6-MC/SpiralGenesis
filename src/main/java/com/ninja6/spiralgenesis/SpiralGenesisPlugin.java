@@ -910,6 +910,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
                 arrivalHints.arrived(player);
+                scheduleArrivalCheck(player, plot);
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
                         + player.getName() + " to plot " + label
                         + (returning ? ", recorded while they were away," : "")
@@ -958,6 +959,76 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // step made. Placed later, on the thread owning the plot, and never in the way of
         // anything above.
         getStructures().placeForAllocation(player.getUniqueId(), player.getName());
+    }
+
+    /** Ticks from the first teleport onto a new plot to its one re-check: 5 seconds. */
+    static final long ARRIVAL_CHECK_DELAY_TICKS = 100L;
+
+    /**
+     * How far from the plot, in blocks along each axis, a player still counts as at it when
+     * it is re-checked on arrival. Flowing water can carry a player a block or two in that
+     * time, and a player standing in it is the one the re-check is for.
+     */
+    static final int ARRIVAL_CHECK_REACH = 3;
+
+    /**
+     * Re-checks a new plot once, {@link #ARRIVAL_CHECK_DELAY_TICKS} after the player first
+     * reaches it; see {@link #checkOnArrival}.
+     *
+     * <p>Allocation judged the plot from blocks read the moment its chunk loaded. Lava or
+     * water that reaches it a few ticks later was not there to see, and without this the
+     * first anyone hears of it is the player dying on it. One task per player placed on a
+     * new plot, on the player's own scheduler, which drops it if they leave first. Nothing
+     * watches the plot after it.
+     *
+     * <p>Called once the teleport onto the plot has completed: by a first allocation, a
+     * placement recorded while the player was away, a re-asserted teleport, and
+     * {@code /sgen reassign}.
+     */
+    public void scheduleArrivalCheck(Player player, Location plot) {
+        Location point = plot.clone();
+        // Callers are in the callback of a teleport that completed, whose failure handler
+        // marks the player for a retry. A re-check that could not be scheduled must not be
+        // taken for a teleport that failed, so it is reported here and goes no further.
+        try {
+            player.getScheduler().runDelayed(this, task -> checkOnArrival(player, point), null,
+                    ARRIVAL_CHECK_DELAY_TICKS);
+        } catch (RuntimeException e) {
+            getLogger().log(Level.WARNING, "Could not schedule the arrival re-check of "
+                    + player.getName() + "'s plot; it is re-checked at their next death.", e);
+        }
+    }
+
+    /**
+     * The re-check {@link #scheduleArrivalCheck} runs, on the player's own thread: when the
+     * player is still at the plot, {@link #repairSpawn} re-checks it with
+     * {@link SpawnManager#isSafeNow} on the thread owning its chunk, and moves them with the
+     * in-cell repair if it fails.
+     *
+     * <p>Nothing is done for a player who has died since, whose death has started the same
+     * re-check; one who has walked away, since the death re-check still covers their plot;
+     * or one whose plot is no longer the one they were sent to, after a reassign or a repair.
+     */
+    void checkOnArrival(Player player, Location plot) {
+        if (!player.isConnected() || player.isDead() || dataStorage.isFailed()) {
+            return;
+        }
+        StoredSpawn record = dataStorage.getRecord(player.getUniqueId());
+        if (record == null || !PlotInformation.sameBlock(record, plot)) {
+            return;
+        }
+        if (!isAtPoint(player.getLocation(), plot)) {
+            return;
+        }
+        repairSpawn(player, record, true);
+    }
+
+    /** Whether a player at {@code at} is within {@link #ARRIVAL_CHECK_REACH} of the point. */
+    private static boolean isAtPoint(Location at, Location point) {
+        return at != null && at.getWorld() != null && at.getWorld().equals(point.getWorld())
+                && Math.abs(at.getBlockX() - point.getBlockX()) <= ARRIVAL_CHECK_REACH
+                && Math.abs(at.getBlockY() - point.getBlockY()) <= ARRIVAL_CHECK_REACH
+                && Math.abs(at.getBlockZ() - point.getBlockZ()) <= ARRIVAL_CHECK_REACH;
     }
 
     /**
@@ -1427,6 +1498,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             player.setRespawnLocation(target, true);
             player.teleportAsync(target).thenAccept(success -> {
                 if (Boolean.TRUE.equals(success)) {
+                    // The first time they reach the plot, as the teleport that was refused
+                    // would have been.
+                    scheduleArrivalCheck(player, target);
                     getLogger().info("Re-asserted the plot teleport for " + player.getName()
                             + " after their first uncancelled action.");
                     return;

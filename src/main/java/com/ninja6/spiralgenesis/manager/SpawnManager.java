@@ -120,6 +120,26 @@ public class SpawnManager {
     );
 
     /**
+     * How far the box {@link #hasNearbyFluid} reads reaches from the point, in blocks, in
+     * each horizontal direction: 4, for a box 9 blocks across. Lava spreads 3 blocks from
+     * its source in the overworld, so a source at the edge of the box reaches the block
+     * beside the point.
+     */
+    private static final int NEIGHBOURHOOD_REACH = 4;
+
+    /** How far above the feet the box reaches: water up to here flows down onto the point. */
+    private static final int NEIGHBOURHOOD_ABOVE_FEET = 3;
+
+    /**
+     * What counts as water in the box. The underwater plants only exist in water, so one
+     * above the feet is the same flooding as the water itself; a bubble column is water.
+     */
+    private static final Set<Material> FLOODING = EnumSet.of(
+            Material.WATER, Material.BUBBLE_COLUMN, Material.SEAGRASS, Material.TALL_SEAGRASS,
+            Material.KELP, Material.KELP_PLANT
+    );
+
+    /**
      * Ocean biomes, matched by namespaced key rather than enum identity.
      *
      * <p>{@code Biome} is registry-backed rather than an enum on current Paper releases, so
@@ -169,8 +189,9 @@ public class SpawnManager {
      * The rules an exhausted scan's fallback may fail. Each says the point is a poor plot,
      * not that standing on it hurts: low ground, an ocean biome over a solid floor, a pit
      * or rough terrain. The rest are lethal, or stand in for something that is: a hazard
-     * underfoot (water, lava, powder snow), no room to stand, or lava or powder snow
-     * nearby. A candidate failing one of those is never a fallback, however few rules it
+     * underfoot (water, lava, powder snow), no room to stand, lava or powder snow
+     * nearby, or lava or water above the feet in the box around the point. A candidate
+     * failing one of those is never a fallback, however few rules it
      * fails, and must also pass {@link #isSafeNow}, so allocation never records a point
      * the re-check on respawn would reject at once.
      */
@@ -1015,7 +1036,8 @@ public class SpawnManager {
         }
 
         // Candidate 0 is the cell centre itself, so a viable centre is always preferred and
-        // the common case costs exactly one chunk, as it did before in-cell search existed.
+        // the common case costs one candidate: its chunk, and up to three neighbours that the
+        // box around it reaches into (see loadNeighbourhood).
         int[] offset = SpiralMath.indexToGrid(scan.candidate);
         final int x = scan.centreX + (offset[0] * config.getStride());
         final int z = scan.centreZ + (offset[1] * config.getStride());
@@ -1058,7 +1080,7 @@ public class SpawnManager {
             return;
         }
 
-        loadChunk(x >> 4, z >> 4).whenComplete((chunk, error) -> {
+        loadNeighbourhood(x, z).whenComplete((chunk, error) -> {
             if (error != null) {
                 scan.result.completeExceptionally(error);
                 return;
@@ -1207,7 +1229,8 @@ public class SpawnManager {
                     + (scan.attempt + scan.claimSkipped) + " spiral indices, the last of them "
                     + SpiralCentre.label(scan.centre.id(), scan.index) + ", fails a lethal rule"
                     + " (a hazard underfoot such as water, lava or powder snow, no room to"
-                    + " stand, or lava or powder snow nearby), so none of them is used as a"
+                    + " stand, lava or powder snow nearby, or lava, or water above the feet,"
+                    + " within 4 blocks), so none of them is used as a"
                     + " fallback and no plot is recorded. Rejections: " + scan.rejections + ".";
             if (scan.purpose.recordsExhaustion()) {
                 plugin.getLogger().warning(message);
@@ -1321,6 +1344,13 @@ public class SpawnManager {
             }
         }
 
+        // The samples above are spread across the chunk, and a lava pool between them is not
+        // seen; the box around the point is read block by block.
+        if (hasNearbyFluid(x, surfaceY, z)) {
+            badness += PENALTY_UNSAFE;
+            reasons.add(RejectionReason.NEARBY_FLUID);
+        }
+
         Location location = new Location(world, x + 0.5, surfaceY + 1.0, z + 0.5);
         return new Candidate(location, scan.centre.id(), scan.index, scan.gridU, scan.gridV,
                 surfaceY, roughness, badness, reasons);
@@ -1345,6 +1375,73 @@ public class SpawnManager {
             samples.add(new int[]{sampleX, sampleZ, surfaceAt(sampleX, sampleZ)});
         }
         return samples;
+    }
+
+    /**
+     * Whether the box around a candidate holds lava anywhere, or water above the feet.
+     *
+     * <p>The box is {@link #NEIGHBOURHOOD_REACH} blocks each way from the point, 9 by 9, and
+     * runs from the surface, one below the feet, to {@link #NEIGHBOURHOOD_ABOVE_FEET} above
+     * them: 405 block reads. Water at or below the feet is left alone, since that is a lake
+     * shore or a river bank, which is a good spawn; water higher up flows down onto the
+     * point or stands over it.
+     *
+     * <p>The box crosses into a neighbouring chunk whenever the point is within 4 blocks of
+     * a chunk edge. {@link #loadNeighbourhood} has loaded every chunk it touches before the
+     * candidate is scored, so no read here loads or generates one. On Paper this thread
+     * owns every chunk. On Folia a neighbouring chunk can belong to another region, and a
+     * column there is skipped rather than read, since reading it from this thread would
+     * throw.
+     */
+    private boolean hasNearbyFluid(int x, int surfaceY, int z) {
+        int feet = surfaceY + 1;
+        int top = Math.min(feet + NEIGHBOURHOOD_ABOVE_FEET, world.getMaxHeight() - 1);
+        int ownChunkX = x >> 4;
+        int ownChunkZ = z >> 4;
+        for (int dx = -NEIGHBOURHOOD_REACH; dx <= NEIGHBOURHOOD_REACH; dx++) {
+            for (int dz = -NEIGHBOURHOOD_REACH; dz <= NEIGHBOURHOOD_REACH; dz++) {
+                int columnX = x + dx;
+                int columnZ = z + dz;
+                int chunkX = columnX >> 4;
+                int chunkZ = columnZ >> 4;
+                if ((chunkX != ownChunkX || chunkZ != ownChunkZ) && !ownsChunk(chunkX, chunkZ)) {
+                    continue;
+                }
+                for (int y = surfaceY; y <= top; y++) {
+                    Material type = world.getBlockAt(columnX, y, columnZ).getType();
+                    if (type == Material.LAVA || (y > feet && FLOODING.contains(type))) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Requests the candidate's chunk and every other chunk the box {@link #hasNearbyFluid}
+     * reads reaches into: one chunk for a point at least 4 blocks from every edge of its
+     * chunk, and at most four.
+     *
+     * <p>The extra chunks are next to where the player is sent, so they load for the player's
+     * view on arrival anyway; for a candidate that is rejected they are the cost of knowing
+     * that the lava beside it is there.
+     */
+    private CompletableFuture<?> loadNeighbourhood(int x, int z) {
+        int ownChunkX = x >> 4;
+        int ownChunkZ = z >> 4;
+        List<CompletableFuture<?>> loads = new ArrayList<>(4);
+        loads.add(loadChunk(ownChunkX, ownChunkZ));
+        for (int chunkX = (x - NEIGHBOURHOOD_REACH) >> 4;
+             chunkX <= (x + NEIGHBOURHOOD_REACH) >> 4; chunkX++) {
+            for (int chunkZ = (z - NEIGHBOURHOOD_REACH) >> 4;
+                 chunkZ <= (z + NEIGHBOURHOOD_REACH) >> 4; chunkZ++) {
+                if (chunkX != ownChunkX || chunkZ != ownChunkZ) {
+                    loads.add(loadChunk(chunkX, chunkZ));
+                }
+            }
+        }
+        return CompletableFuture.allOf(loads.toArray(CompletableFuture[]::new));
     }
 
     /**
