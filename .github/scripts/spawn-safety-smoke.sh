@@ -124,7 +124,7 @@ if [[ "$MODE" != none ]]; then
     grep -q 'SPAWNSAFETY PASS repaired ' server.log
     grep -q '\[GriefPrevention\].*Enabling GriefPrevention v16.18.7' server.log
 fi
-grep -q 'No safe point found among the .*sending GateProbe to world spawn' server.log || { echo '::error::No exhausted repair evidence'; cat server.log; exit 1; }
+grep -q 'No safe point other than the one that failed was found among the .*sending GateProbe to world spawn' server.log || { echo '::error::No exhausted repair evidence'; cat server.log; exit 1; }
 [[ "$(grep -c 'BOT died' bot.log)" -eq "$( [[ "$MODE" == none ]] && echo 2 || echo 3 )" ]]
 ! grep -qE 'SPAWNSAFETY FAIL|SPAWNSAFETY damage|Error occurred while enabling (SpiralGenesis|SpawnSafety|GriefPrevention)|at com.ninja6.spiralgenesis.*|at com.ninja6.spawnsafety.*' server.log
 printf 'stop\n' >&3

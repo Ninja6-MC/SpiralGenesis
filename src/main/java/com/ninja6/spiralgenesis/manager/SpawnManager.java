@@ -1075,7 +1075,7 @@ public class SpawnManager {
         Candidate candidate = score(scan, x, z);
         scan.candidatesProbed++;
         if (scan.excludes(candidate.location())) {
-            // The point a repair is replacing. Not scored, so it can win nothing; its
+            // The point a repair is replacing. Never ranked, so it can win nothing; its
             // rejections are not counted either, since it was not rejected for the terrain.
             runGlobally(scan.result, () -> nextCandidate(scan));
             return;

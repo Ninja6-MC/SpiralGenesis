@@ -483,7 +483,7 @@ if [[ "$booted" -eq 1 ]]; then
 
                     for ((i = 0; i < BOT_REPAIR_SECONDS; i++)); do
                         grep -q "Repaired plot #$PLOT_LABEL for $BOT_NAME" server.log 2>/dev/null && break
-                        grep -q "No safe point found among" server.log 2>/dev/null && break
+                        grep -q "No safe point other than the one that failed was found among" server.log 2>/dev/null && break
                         sleep 1
                     done
 
