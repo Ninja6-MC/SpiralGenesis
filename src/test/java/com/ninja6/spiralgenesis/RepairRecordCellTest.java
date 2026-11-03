@@ -75,6 +75,8 @@ class RepairRecordCellTest {
     private static final class RecordingManager extends SpawnManager {
 
         private final List<SpiralCell> searched = new CopyOnWriteArrayList<>();
+        /** The point each search was told it must not return. */
+        private final List<Location> excluded = new CopyOnWriteArrayList<>();
         private final World world;
 
         private RecordingManager(JavaPlugin plugin, World world, PluginConfig config) {
@@ -89,8 +91,10 @@ class RepairRecordCellTest {
         }
 
         @Override
-        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
+        public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner,
+                                                                     Location failed) {
             searched.add(cell);
+            excluded.add(failed);
             return CompletableFuture.completedFuture(null);
         }
     }
@@ -197,6 +201,34 @@ class RepairRecordCellTest {
         assertEquals(List.of(owned), manager.searched);
         assertEquals(CELL, manager.searched.get(0).centre().cellSize(),
                 "the cell is searched at the size it was allocated at");
+    }
+
+    @Test
+    @DisplayName("a repair excludes the point that failed, and says so when the cell has nothing else")
+    void repairExcludesTheFailedPointAndReportsNoCandidate() {
+        SpiralGenesisPlugin plugin = load();
+        InlinePlayerMock player = player();
+        SpiralCell owned = plugin.getDataStorage().getCentre(0).cell(1);
+        Location plot = new Location(world, owned.centreX() + 0.5, 78, owned.centreZ() + 0.5);
+        plugin.getDataStorage().setSpawn(player.getUniqueId(), plot, 0, 1, owned.grid()[0],
+                owned.grid()[1], "Bob", "JAVA", false);
+        RecordingManager manager = bindRecorder(plugin);
+
+        repair(plugin, player);
+
+        assertEquals(1, manager.excluded.size());
+        Location failed = manager.excluded.get(0);
+        assertNotNull(failed, "the search must be told which point failed");
+        assertEquals(plot.getBlockX(), failed.getBlockX());
+        assertEquals(plot.getBlockY(), failed.getBlockY());
+        assertEquals(plot.getBlockZ(), failed.getBlockZ());
+        assertTrue(logged.stream().anyMatch(line -> line.contains("No safe point other than"
+                        + " the one that failed")),
+                "a search with no other point is logged as finding none: " + logged);
+        assertTrue(logged.stream().noneMatch(line -> line.startsWith("Repaired plot")),
+                "and never as a repair: " + logged);
+        StoredSpawn kept = plugin.getDataStorage().getRecord(player.getUniqueId());
+        assertEquals(78, kept.y(), 1e-9, "the record is left as it was");
     }
 
     @Test

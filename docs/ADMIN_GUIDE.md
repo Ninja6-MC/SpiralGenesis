@@ -106,10 +106,15 @@ permanently — which is why the in-cell search matters on ocean-heavy worlds.
 
 ## 3. Terrain rules
 
-Each candidate point is checked against the surface height from the
-`MOTION_BLOCKING_NO_LEAVES` heightmap plus eight terrain samples spread across the
-candidate's own chunk. A candidate is rejected for any of these reasons, which are the same
-names `/sgen simulate` reports:
+Each candidate point is checked against the surface height plus eight terrain samples
+spread across the candidate's own chunk. The surface is the ground: the top of the
+`MOTION_BLOCKING_NO_LEAVES` heightmap, followed down past natural plants (bamboo, sugar
+cane, cactus, natural logs, leaves, grass and flowers) to the first block that is not one.
+A spawn is therefore never placed on top of a bamboo stalk or a bare log, and a spawn
+structure is built at ground level and replaces the plants in its footprint. A candidate
+whose feet or head would be inside a trunk or stalk fails `NO_HEADROOM` and the search moves
+on. A candidate is rejected for any of these reasons, which are the same names
+`/sgen simulate` reports:
 
 | Reason | Rule | Config |
 | :--- | :--- | :--- |
@@ -117,6 +122,7 @@ names `/sgen simulate` reports:
 | `OCEAN` | Surface biome is any ocean variant. | — |
 | `HAZARD` | Block underfoot is water, lava, ice, packed/blue ice, seagrass, kelp or powder snow. | — |
 | `NO_HEADROOM` | Not enough clear space for a player to stand. | — |
+| `NO_FLOOR` | Nothing under the point that the respawn re-check in section 5 counts as a floor, so the plot would fail that re-check at once. | — |
 | `PIT` | Sits more than the allowed depth below the median of surrounding terrain — ravines, canyons, sinkholes, craters. | `safety.max-pit-depth` (8) |
 | `ROUGH` | Surroundings vary more sharply than allowed — cliff edges, spikes, jagged ground. | `safety.max-roughness` (12) |
 | `NEARBY_HAZARD` | Lava or powder snow within the sampled surroundings. | — |
@@ -334,11 +340,14 @@ set with `/sgen setspawn` is on no spiral, so there is no cell to search: when i
 re-check the player is sent to world spawn with a warning, the point is left as it is, and it
 is up to an operator to set a new one.
 
-If every sampled candidate in the cell fails, the player is sent to world spawn with a
-warning and **their plot assignment is left unchanged**. `max-candidates` defaults to 12 of
-the 961 points that fit a 500-block cell, so "no candidate passed" is not evidence the plot
-is unusable, and discarding the assignment over it would lose their land for good. Raise
-`placement.max-candidates` if you see this warning repeatedly.
+The point that failed its re-check is never the replacement, even when it still scores as
+acceptable; the repair moves on to the next candidate. If every other sampled candidate in
+the cell fails, the warning says that no safe point other than the one that failed was
+found, the player is sent to world spawn, and **their plot assignment is left unchanged**.
+`max-candidates` defaults to 12 of the 961 points that fit a 500-block cell, so "no
+candidate passed" is not evidence the plot is unusable, and discarding the assignment over
+it would lose their land for good. Raise `placement.max-candidates` if you see this warning
+repeatedly.
 
 ### Re-asserting a teleport that never happened
 

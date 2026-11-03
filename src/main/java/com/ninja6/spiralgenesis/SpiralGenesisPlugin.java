@@ -1043,10 +1043,10 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         getLogger().warning("Plot " + record.plotLabel() + " is no longer safe for "
                 + player.getName() + where + "; searching that cell for a replacement point.");
         try {
-            searchInCell(cell, player.getUniqueId()).whenComplete((res, ex) -> applyRepair(
-                    player, record, stored, res, ex, "No safe point found among the "
-                            + pluginConfig.getMaxCandidates() + " sampled candidates in plot "
-                            + record.plotLabel() + ";"));
+            searchInCell(cell, player.getUniqueId(), stored).whenComplete((res, ex) -> applyRepair(
+                    player, record, stored, res, ex, "No safe point other than the one that"
+                            + " failed was found among the " + pluginConfig.getMaxCandidates()
+                            + " sampled candidates in plot " + record.plotLabel() + ";"));
         } catch (Throwable t) {
             // The search does real work before it returns a future - it requests the first
             // chunk - so a throw there escapes before whenComplete is attached, and would
@@ -1068,8 +1068,11 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      *
      * @param cell the record's own cell; see {@link #recordedCell}
      * @param owner the player whose plot it is, whose own claims the search may use
+     * @param failed the stored point that failed its re-check, which the search never
+     *               returns
      */
-    CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner) {
+    CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner,
+                                                                Location failed) {
         // Read once, for the reason allocateSpawn does: repairSpawn null-checked the
         // manager several ticks ago, across a revalidation that awaits a chunk.
         SpawnManager manager = spawnManager;
@@ -1077,7 +1080,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             return CompletableFuture.failedFuture(new IllegalStateException(
                     "no world is bound; origin.world names no loaded world"));
         }
-        return manager.findSafeSpawnInCell(cell, owner);
+        return manager.findSafeSpawnInCell(cell, owner, failed);
     }
 
     /**

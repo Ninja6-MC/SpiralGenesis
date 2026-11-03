@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Spawns are no longer placed on top of bamboo, logs or other tall plants.** Allocation
+  and the in-cell repair took the surface from the motion-blocking heightmap, which skips
+  leaves but not bamboo or logs, so a bamboo jungle could give a plot at the top of a stalk,
+  no spawn structure, and a fall to the ground. The surface is now the ground under natural
+  plants, and a candidate is also rejected, as `NO_FLOOR`, when the respawn re-check would
+  find nothing to stand on, so allocation, repair and that re-check agree on what ground is.
+  A repair never returns the point that just failed its re-check, and when the cell has no
+  other usable point the log says so instead of reporting a repair.
+
 ## [1.0.0-beta.3] - 2026-10-23
 
 **Compatibility** is unchanged from 1.0.0-beta.2: Paper, Purpur, other Paper forks and

@@ -7,6 +7,7 @@ import com.ninja6.spiralgenesis.math.SpiralCell;
 import com.ninja6.spiralgenesis.math.SpiralCentre;
 import com.ninja6.spiralgenesis.math.SpiralMath;
 import com.ninja6.spiralgenesis.protection.ClaimLookup;
+import com.ninja6.spiralgenesis.terrain.NaturalPlants;
 import org.bukkit.HeightMap;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -339,16 +340,27 @@ public class SpawnManager {
      * fails resolves to {@code null}, because putting the player back on a point already
      * known to be lethal is worse than sending them somewhere unremarkable.
      *
+     * <p>The point that failed its re-check is never the answer, even when its column scores
+     * as acceptable: handing it back would record the same point, which fails again at the
+     * next death, and report it as a repair. A candidate on that block is passed over, and a
+     * cell with nothing else resolves to {@code null} like any other cell where nothing
+     * passed.
+     *
      * @param cell the cell the player already holds
      * @param owner the player the cell is held by, whose own claims do not count against
      *              a candidate
-     * @return a future resolving to a safe point in that cell, or {@code null} if the
-     *         sampled candidates all failed
+     * @param failed the stored point that failed its re-check, which is never returned;
+     *               {@code null} to exclude nothing
+     * @return a future resolving to a safe point in that cell other than {@code failed}, or
+     *         {@code null} if the sampled candidates all failed
      */
-    public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner) {
+    public CompletableFuture<LocationResult> findSafeSpawnInCell(SpiralCell cell, UUID owner,
+                                                                 Location failed) {
         CompletableFuture<AllocationOutcome> search = new CompletableFuture<>();
-        nextCell(new Scan((originX, originZ, cellSize) -> cell, ScanPurpose.REPAIR, owner,
-                search));
+        Scan scan = new Scan((originX, originZ, cellSize) -> cell, ScanPurpose.REPAIR, owner,
+                search);
+        scan.excluded = failed;
+        nextCell(scan);
         // A repair never leaves its cell, so it resolves to null in finishCell before the
         // exhaustion branch is reached; a BorderExhausted here is a defect, not an outcome.
         return search.thenApply(outcome -> switch (outcome) {
@@ -450,9 +462,9 @@ public class SpawnManager {
      * floor if it passes the same test. Nothing deeper is accepted: a point over a real
      * drop has no floor.
      *
-     * <p>Revalidation only. Allocation keeps its own surface rules for a new plot. Both
-     * reads are in the point's own column, so this needs no chunk {@link #isSafeNow} does
-     * not already own.
+     * <p>Allocation and the in-cell repair hold every candidate to it too (see
+     * {@link #score}), so the three agree on what ground is. Both reads are in the point's
+     * own column, so this needs no chunk {@link #isSafeNow} does not already own.
      */
     private int floorUnder(int x, int y, int z) {
         if (supportsCentre(world.getBlockAt(x, y - 1, z))) {
@@ -1062,6 +1074,12 @@ public class SpawnManager {
     private void evaluateCandidate(Scan scan, int x, int z) {
         Candidate candidate = score(scan, x, z);
         scan.candidatesProbed++;
+        if (scan.excludes(candidate.location())) {
+            // The point a repair is replacing. Not scored, so it can win nothing; its
+            // rejections are not counted either, since it was not rejected for the terrain.
+            runGlobally(scan.result, () -> nextCandidate(scan));
+            return;
+        }
         for (RejectionReason reason : candidate.reasons()) {
             scan.rejections.merge(reason, 1, Integer::sum);
         }
@@ -1258,6 +1276,15 @@ public class SpawnManager {
             badness += PENALTY_UNSAFE;
             reasons.add(RejectionReason.NO_HEADROOM);
         }
+        // The floor as revalidation judges it, so a point allocation or a repair records is
+        // never one the re-check on the next respawn rejects for having nothing to stand on,
+        // only to be offered again by the next repair. A hazard underfoot already says what
+        // is wrong with water or lava, which has no collision either.
+        if (!reasons.contains(RejectionReason.HAZARD)
+                && floorUnder(x, surfaceY + 1, z) == NO_FLOOR) {
+            badness += PENALTY_UNSAFE;
+            reasons.add(RejectionReason.NO_FLOOR);
+        }
 
         List<int[]> profile = sampleChunkProfile(x, z);
         int roughness = 0;
@@ -1320,8 +1347,31 @@ public class SpawnManager {
         return samples;
     }
 
+    /**
+     * The Y of the ground in a column: the first block under its natural plants.
+     *
+     * <p>{@code MOTION_BLOCKING_NO_LEAVES} skips leaves but not bamboo, logs, cactus or sugar
+     * cane, so on its own it puts the surface at the top of a stalk or a bare trunk, which
+     * has open air above it and passes headroom. From there the column is walked down past
+     * every {@link NaturalPlants natural plant}, and the air between them, to the first
+     * block that is neither. A point whose feet or head is then inside a trunk or a stalk
+     * fails headroom, so the search moves to a neighbouring point, and a structure placed at
+     * the point is built on the ground and replaces the plants in its footprint.
+     *
+     * <p>Every read is in the column itself, so this needs no chunk the caller does not
+     * already own.
+     */
     private int surfaceAt(int x, int z) {
-        return world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
+        int y = world.getHighestBlockYAt(x, z, HeightMap.MOTION_BLOCKING_NO_LEAVES);
+        int bottom = world.getMinHeight();
+        while (y > bottom) {
+            Material type = world.getBlockAt(x, y, z).getType();
+            if (!NaturalPlants.contains(type) && !type.isAir()) {
+                break;
+            }
+            y--;
+        }
+        return y;
     }
 
     private boolean isOcean(int x, int surfaceY, int z) {
@@ -1335,8 +1385,9 @@ public class SpawnManager {
     }
 
     /**
-     * Confirms the player actually fits. {@code MOTION_BLOCKING_NO_LEAVES} ignores leaves,
-     * so the two blocks above a surface can be canopy or a low overhang.
+     * Confirms the player actually fits. The surface is the ground under any plants (see
+     * {@link #surfaceAt}), so the two blocks above it can be a trunk, a stalk, canopy or a
+     * low overhang.
      */
     private boolean hasHeadroom(int x, int surfaceY, int z) {
         return isPassable(world.getBlockAt(x, surfaceY + 1, z))
@@ -1515,6 +1566,11 @@ public class SpawnManager {
         private final ScanPurpose purpose;
         /** The player a repair is for, whose own claims it may use; {@code null} otherwise. */
         private final UUID owner;
+        /**
+         * The point a repair is replacing, which it never returns; {@code null} for
+         * anything else. See {@link #findSafeSpawnInCell}.
+         */
+        private Location excluded;
         private final CompletableFuture<AllocationOutcome> result;
 
         /**
@@ -1549,6 +1605,14 @@ public class SpawnManager {
             this.purpose = purpose;
             this.owner = owner;
             this.result = result;
+        }
+
+        /** Whether {@code point} is on the block this scan must not settle on. */
+        private boolean excludes(Location point) {
+            return excluded != null
+                    && point.getBlockX() == excluded.getBlockX()
+                    && point.getBlockY() == excluded.getBlockY()
+                    && point.getBlockZ() == excluded.getBlockZ();
         }
 
         /** Hands back every reserved cell but the one {@code kept} is in, if any. */

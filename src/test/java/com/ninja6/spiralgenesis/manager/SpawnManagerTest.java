@@ -1601,7 +1601,7 @@ class SpawnManagerTest {
         AtomicInteger indices = new AtomicInteger();
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the spiral index must not advance");
         assertEquals(1, res.gridU());
@@ -1629,7 +1629,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(CELL + 0.5, res.location().getX(), 1e-9,
                 "the repair must stay on the record's own centre, not index 1 of the moved one");
@@ -1645,7 +1645,7 @@ class SpawnManagerTest {
         world.getBlockAt(small.centreX(), MOCK_SURFACE_Y, small.centreZ()).setType(Material.LAVA);
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(small, OWNER).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(small, OWNER, null).get(10, TimeUnit.SECONDS),
                 "a candidate outside the 17-block cell must never be probed");
     }
 
@@ -1733,7 +1733,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER, null).get(10, TimeUnit.SECONDS),
                 "allocation's least-bad fallback must not apply to a repair");
     }
 
@@ -2217,7 +2217,7 @@ class SpawnManagerTest {
 
         SpawnManager manager = managerWith(config(0, 8));
 
-        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(1), OWNER, null).get(10, TimeUnit.SECONDS),
                 "a cell outside the border holds no usable point");
     }
 
@@ -2302,7 +2302,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerWith(config(0, 8));
 
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
-        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER).join(),
+        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER, null).join(),
                 "the repair must not return a point outside the border or outside the cell");
 
         borderAround(0, 0, 1000);
@@ -2324,7 +2324,7 @@ class SpawnManagerTest {
         assertEquals(SpawnManager.SpawnVerdict.UNSAFE, manager.verifyStoredSpawn(stored));
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(1), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(1), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(1, res.index(), "the repair must stay in the owner's cell");
         assertTrue(world.getWorldBorder().isInside(res.location()),
@@ -2493,7 +2493,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerAvoiding(config(0, 8), ownEverywhere);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(0), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(0.5, res.location().getX(), 1e-9);
         assertNull(res.rejections().get(RejectionReason.CLAIMED));
@@ -2508,7 +2508,7 @@ class SpawnManagerTest {
         SpawnManager manager = managerAvoiding(config(0, 8), claims);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(0), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(STRIDE + 0.5, res.location().getX(), 1e-9);
         assertEquals(1, res.rejections().get(RejectionReason.CLAIMED));
@@ -2522,7 +2522,7 @@ class SpawnManagerTest {
         OneForeignClaim claims = new OneForeignClaim(CellArea.inclusive(-40, -40, 40, 40));
         SpawnManager manager = managerAvoiding(config(0, 8), claims);
 
-        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS),
+        assertNull(manager.findSafeSpawnInCell(originCell(0), OWNER, null).get(10, TimeUnit.SECONDS),
                 "a repair never settles inside a claim that is not the owner's");
     }
 
@@ -2532,10 +2532,133 @@ class SpawnManagerTest {
         SpawnManager manager = managerAvoiding(config(0, 8), ClaimLookup.NONE);
 
         SpawnManager.LocationResult res =
-                manager.findSafeSpawnInCell(originCell(0), OWNER).get(10, TimeUnit.SECONDS);
+                manager.findSafeSpawnInCell(originCell(0), OWNER, null).get(10, TimeUnit.SECONDS);
 
         assertEquals(0.5, res.location().getX(), 1e-9);
         assertNull(res.rejections().get(RejectionReason.CLAIMED));
+    }
+
+    // --- Ground under plants ----------------------------------------------------------
+
+    /**
+     * A bamboo stalk as vanilla gives it: a thin post offset from the column centre by a
+     * per-position amount, so it collides but leaves the centre clear.
+     */
+    private static final BlockShapes.Shape BAMBOO_STALK = new BlockShapes.Shape("bamboo",
+            false, List.of(new BoundingBox(2 / 16.0, 0, 2 / 16.0, 5 / 16.0, 1, 5 / 16.0)));
+
+    /** Stacks {@code height} blocks of {@code type} on the mock surface at a column. */
+    private void growColumn(int x, int z, Material type, BlockShapes.Shape shape, int height) {
+        for (int y = MOCK_SURFACE_Y + 1; y <= MOCK_SURFACE_Y + height; y++) {
+            if (shape == null) {
+                world.getBlockAt(x, y, z).setType(type);
+            } else {
+                shapes.place(world.getBlockAt(x, y, z), type, shape);
+            }
+        }
+    }
+
+    @Test
+    @DisplayName("A spawn is never placed on top of a bamboo stalk; the surface is the ground under it")
+    void bambooStalkIsNotTheSurface() throws Exception {
+        // Eleven blocks of bamboo on the cell centre, with open air above the top, as in the
+        // reported bamboo jungle. The heightmap puts the surface at the top of the stalk.
+        growColumn(0, 0, Material.BAMBOO, BAMBOO_STALK, 11);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(new AtomicInteger()));
+
+        assertEquals(0, res.index(), "the cell is kept; only the stalk is passed over");
+        assertEquals(MOCK_SURFACE_Y, res.surfaceY(), "the surface is the ground, not the stalk");
+        assertEquals(MOCK_SURFACE_Y + 1.0, res.location().getY(), 1e-9);
+        assertNotEquals(0.5, res.location().getX(), "the stalk's own column has no room to stand");
+        assertEquals(1, res.rejections().get(RejectionReason.NO_HEADROOM),
+                "the stalk's column fails headroom at ground level: " + res.rejections());
+        assertTrue(manager.isSafeNow(res.location()),
+                "revalidation accepts the ground allocation chose");
+    }
+
+    @Test
+    @DisplayName("A repair never moves a plot onto a bamboo stalk")
+    void repairPassesOverABambooStalk() throws Exception {
+        growColumn(CELL, 0, Material.BAMBOO, BAMBOO_STALK, 11);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location stalkTop = new Location(world, CELL + 0.5, MOCK_SURFACE_Y + 12.0, 0.5);
+        assertFalse(manager.isSafeNow(stalkTop), "revalidation finds no floor on the stalk");
+
+        SpawnManager.LocationResult res = manager.findSafeSpawnInCell(originCell(1), OWNER,
+                stalkTop).get(10, TimeUnit.SECONDS);
+
+        assertEquals(MOCK_SURFACE_Y, res.surfaceY());
+        assertNotEquals(CELL + 0.5, res.location().getX());
+        assertTrue(manager.isSafeNow(res.location()),
+                "the repair and revalidation agree on the ground it chose");
+    }
+
+    @Test
+    @DisplayName("A spawn is never placed on a bare log top; the surface is the ground under the trunk")
+    void bareLogTopIsNotTheSurface() throws Exception {
+        // A trunk with no leaves above it, like a bare log or a jungle branch: full blocks,
+        // so the top is a floor with open air over it, and only its material says it is a
+        // plant.
+        growColumn(0, 0, Material.OAK_LOG, null, 6);
+        SpawnManager manager = managerWith(config(0, 8));
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(new AtomicInteger()));
+
+        assertEquals(MOCK_SURFACE_Y, res.surfaceY(), "the surface is the ground under the trunk");
+        assertNotEquals(0.5, res.location().getX(), "the trunk's own column has no room to stand");
+        assertEquals(1, res.rejections().get(RejectionReason.NO_HEADROOM), res.rejections().toString());
+    }
+
+    @Test
+    @DisplayName("A surface revalidation would find no floor on is rejected as having none")
+    void surfaceWithNoFloorIsRejected() throws Exception {
+        // Two open trapdoors stacked on the centre: neither collides over the column centre,
+        // so the re-check on respawn finds nothing to stand on within a step, and allocation
+        // must not record the point only for the next repair to be offered it again.
+        Block lower = world.getBlockAt(0, MOCK_SURFACE_Y + 1, 0);
+        Block upper = world.getBlockAt(0, MOCK_SURFACE_Y + 2, 0);
+        shapes.place(lower, Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        shapes.place(upper, Material.OAK_TRAPDOOR, BlockShapes.TRAPDOOR_OPEN);
+        SpawnManager manager = managerWith(config(0, 8));
+        assertFalse(manager.isSafeNow(new Location(world, 0.5, MOCK_SURFACE_Y + 3.0, 0.5)));
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(new AtomicInteger()));
+
+        assertNotEquals(0.5, res.location().getX(), "moved off the column with no floor");
+        assertEquals(1, res.rejections().get(RejectionReason.NO_FLOOR), res.rejections().toString());
+    }
+
+    // --- The point a repair replaces ---------------------------------------------------
+
+    @Test
+    @DisplayName("A repair never returns the point that just failed, even when it scores as fine")
+    void repairExcludesTheFailedPoint() throws Exception {
+        // The cell centre is ordinary flat ground, so without the exclusion it is the first
+        // candidate and wins at once.
+        SpawnManager manager = managerWith(config(0, 8));
+        Location failed = new Location(world, CELL + 0.5, MOCK_SURFACE_Y + 1.0, 0.5);
+
+        SpawnManager.LocationResult res =
+                manager.findSafeSpawnInCell(originCell(1), OWNER, failed).get(10, TimeUnit.SECONDS);
+
+        assertNotEquals(failed.getBlockX(), res.location().getBlockX(),
+                "the failed point must not come back as its own repair");
+        assertEquals(1, res.index());
+    }
+
+    @Test
+    @DisplayName("A repair whose only candidate is the failed point finds nothing")
+    void repairWithOnlyTheFailedPointFindsNothing() throws Exception {
+        // A 17-block cell fits no ring at stride 16, so its centre is its only candidate.
+        SpiralCell small = new SpiralCentre(3, 0, 0, 17).cell(1);
+        SpawnManager manager = managerWith(config(0, 8));
+        Location failed = new Location(world, small.centreX() + 0.5, MOCK_SURFACE_Y + 1.0,
+                small.centreZ() + 0.5);
+
+        assertNull(manager.findSafeSpawnInCell(small, OWNER, failed).get(10, TimeUnit.SECONDS),
+                "with nothing else in the cell the repair reports no candidate");
     }
 
     /**

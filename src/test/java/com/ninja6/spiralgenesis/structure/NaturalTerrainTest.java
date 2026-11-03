@@ -15,7 +15,8 @@ class NaturalTerrainTest {
     @EnumSource(value = Material.class, names = {"GRASS_BLOCK", "DIRT", "STONE", "DEEPSLATE",
             "SAND", "GRAVEL", "SNOW", "OAK_LOG", "MANGROVE_LOG", "OAK_LEAVES", "AZALEA_LEAVES",
             "SHORT_GRASS", "TALL_GRASS", "FERN", "POPPY", "RED_TULIP", "OAK_SAPLING",
-            "PINK_PETALS", "WHITE_TERRACOTTA", "TERRACOTTA", "SWEET_BERRY_BUSH", "MOSS_CARPET"})
+            "PINK_PETALS", "WHITE_TERRACOTTA", "TERRACOTTA", "SWEET_BERRY_BUSH", "MOSS_CARPET",
+            "BAMBOO", "CACTUS", "SUGAR_CANE", "JUNGLE_LOG"})
     @DisplayName("natural terrain and plants are cleared")
     void natural(Material material) {
         assertTrue(NaturalTerrain.contains(material), material.name());

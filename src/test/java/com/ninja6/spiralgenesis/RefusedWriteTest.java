@@ -198,7 +198,8 @@ class RefusedWriteTest {
         }
 
         @Override
-        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner) {
+        CompletableFuture<SpawnManager.LocationResult> searchInCell(SpiralCell cell, UUID owner,
+                                                                Location failed) {
             return CompletableFuture.completedFuture(new SpawnManager.LocationResult(
                     repairTo, cell.index(), 0, 0, 63, 1, 1, false, Map.of()));
         }
