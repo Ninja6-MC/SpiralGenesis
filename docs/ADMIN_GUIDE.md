@@ -277,6 +277,34 @@ has proven anything, which permanently burns a spiral index per connection and r
 login plugin's own position restore. SpiralGenesis logs a warning at startup if it sees a
 known login plugin while this trigger is set.
 
+### Starter kits on first allocation
+
+Use console commands on first allocation to give a kit even when a player's login
+account was registered on another server with a shared account database:
+
+```yaml
+allocation:
+  first-allocation-commands:
+    - 'kit starter {player}'
+```
+
+The list is empty by default. `{player}` expands to the player name and `{uuid}` to
+their UUID. `/sgen reload` picks up changes. Commands run on the player's thread
+once their first plot teleport completes, including a successful retry of a failed
+teleport. Returning players, `/sgen reassign`, admin spawn moves and in-cell repairs
+do not run them. Players who predate installation do not receive a kit this way.
+
+Remove the kit command from the login plugin's register hook so new registrations
+do not receive two kits. For AuthMe, remove it from `onRegister` in `commands.yml`.
+With `allocation.action-timeout-seconds` enabled, allocation can happen before a
+player authenticates; the kit commands then run while they are still in login limbo.
+Set the timeout to `0` to wait indefinitely for an uncancelled action instead.
+
+A run-once marker is saved in the player's `data.yml` record before dispatch. A
+crash after that write may skip part or all of the kit; it is never retried. A warning
+names unfinished batches on the next load so an operator can give the kit by hand.
+Failed commands also produce warnings. Check inventories before replacing a kit.
+
 ### Players from before the plugin was installed
 
 On every path above, a player without a record who played on the server before

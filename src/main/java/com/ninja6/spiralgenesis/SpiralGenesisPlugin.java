@@ -162,6 +162,9 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private static final List<String> KNOWN_LOGIN_PLUGINS = List.of(
             "AuthMe", "nLogin", "LibreLogin", "OpeNLogin", "UserLogin", "JPremium");
 
+    /** Fresh allocations waiting for their first completed teleport in this session. */
+    private final Map<UUID, Location> firstCommandArrivals = new ConcurrentHashMap<>();
+
     /** Players with an allocation currently in flight; guards against double assignment. */
     private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
 
@@ -903,12 +906,18 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * plot is recorded.
      *
      * @param returning whether the plot was recorded while the player was away, which only
-     *                  changes the line logged on arrival
+     *                  changes the line logged on arrival and skips first-allocation commands
      */
     private void sendToPlot(Player player, Location plot, String label, boolean returning) {
+        if (!returning && !pluginConfig.getFirstAllocationCommands().isEmpty()) {
+            firstCommandArrivals.put(player.getUniqueId(), plot.clone());
+        }
         player.setRespawnLocation(plot, true);
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
+                if (!returning) {
+                    dispatchFirstAllocationCommands(player, plot);
+                }
                 arrivalHints.arrived(player);
                 scheduleArrivalCheck(player, plot);
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
@@ -959,6 +968,60 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // step made. Placed later, on the thread owning the plot, and never in the way of
         // anything above.
         getStructures().placeForAllocation(player.getUniqueId(), player.getName());
+    }
+
+    private void dispatchFirstAllocationCommands(Player player, Location plot) {
+        UUID uuid = player.getUniqueId();
+        if (!firstCommandArrivals.remove(uuid, plot)) {
+            return;
+        }
+        runForPlayer(player, () -> {
+            List<String> commands = pluginConfig.getFirstAllocationCommands();
+            StoredSpawn record = dataStorage.getRecord(uuid);
+            if (commands.isEmpty() || record == null || !plot.equals(record.toLocation())) {
+                return;
+            }
+            if (!dataStorage.beginFirstAllocationCommands(uuid)) {
+                return;
+            }
+            int dispatched = 0;
+            boolean completed = false;
+            try {
+                if (!player.isConnected()) {
+                    return;
+                }
+                for (String template : commands) {
+                    String command = template.replace("{player}", player.getName())
+                            .replace("{uuid}", uuid.toString());
+                    dispatched++;
+                    try {
+                        if (!dispatchAllocationCommand(command)) {
+                            getLogger().warning("First-allocation command failed for "
+                                    + player.getName() + ": " + command);
+                        }
+                    } catch (RuntimeException ex) {
+                        getLogger().log(Level.WARNING, "First-allocation command failed for "
+                                + player.getName() + ": " + command
+                                + "; give the kit by hand if needed.", ex);
+                    }
+                }
+                completed = true;
+                dataStorage.finishFirstAllocationCommands(uuid);
+            } finally {
+                getLogger().info("First-allocation commands for " + player.getName()
+                        + ": dispatched " + dispatched + " command(s).");
+                if (!completed) {
+                    getLogger().warning("First-allocation commands for " + player.getName()
+                            + " could not complete after their marker was written;"
+                            + " give the kit by hand if needed. They will not be retried.");
+                }
+            }
+        }, null);
+    }
+
+    /** Console dispatch seam for tests without a running command plugin. */
+    boolean dispatchAllocationCommand(String command) {
+        return getServer().dispatchCommand(getServer().getConsoleSender(), command);
     }
 
     /** Ticks from the first teleport onto a new plot to its one re-check: 5 seconds. */
@@ -1500,6 +1563,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 if (Boolean.TRUE.equals(success)) {
                     // The first time they reach the plot, as the teleport that was refused
                     // would have been.
+                    dispatchFirstAllocationCommands(player, target);
                     scheduleArrivalCheck(player, target);
                     getLogger().info("Re-asserted the plot teleport for " + player.getName()
                             + " after their first uncancelled action.");

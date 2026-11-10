@@ -384,6 +384,12 @@ public class YamlDataStorage implements DataStorage {
                         sec.getInt(CENTRE_KEY, 0)
                 );
 
+                if (sec.getBoolean("first-allocation-commands-incomplete", false)) {
+                    plugin.getLogger().warning("First-allocation commands for " + record.playerName()
+                            + " (" + uuid + ") may not have completed before shutdown;"
+                            + " give the kit by hand if needed. They will not be retried.");
+                }
+
                 spawnCache.put(uuid, record);
                 if (record.playerName() != null && !record.playerName().isEmpty()) {
                     nameIndex.put(record.playerName().toLowerCase(Locale.ROOT), uuid);
@@ -886,6 +892,49 @@ public class YamlDataStorage implements DataStorage {
         }
         dirty.set(true);
         return true;
+    }
+
+    @Override
+    public boolean beginFirstAllocationCommands(UUID uuid) {
+        synchronized (writeLock) {
+            String playerName;
+            synchronized (yamlLock) {
+                if (failure != null || yaml == null || !spawnCache.containsKey(uuid)) {
+                    return false;
+                }
+                playerName = spawnCache.get(uuid).playerName();
+                String path = "players." + uuid;
+                if (yaml.getBoolean(path + ".first-allocation-commands-run", false)) {
+                    return false;
+                }
+                yaml.set(path + ".first-allocation-commands-run", true);
+                yaml.set(path + ".first-allocation-commands-incomplete", true);
+                dirty.set(true);
+            }
+            save();
+            if (consecutiveSaveFailures > 0) {
+                plugin.getLogger().warning("First-allocation commands for "
+                        + playerName + " (" + uuid
+                        + ") were not dispatched because their marker could not be saved;"
+                        + " give the kit by hand if needed.");
+                return false;
+            }
+            return true;
+        }
+    }
+
+    @Override
+    public void finishFirstAllocationCommands(UUID uuid) {
+        synchronized (writeLock) {
+            synchronized (yamlLock) {
+                if (failure != null || yaml == null) {
+                    return;
+                }
+                yaml.set("players." + uuid + ".first-allocation-commands-incomplete", null);
+                dirty.set(true);
+            }
+            save();
+        }
     }
 
     @Override

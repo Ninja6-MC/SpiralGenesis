@@ -55,6 +55,7 @@ public class PluginConfig {
     private final int maxRoughness;
     private final AllocationTrigger allocationTrigger;
     private final int actionTimeoutSeconds;
+    private final List<String> firstAllocationCommands;
     private final boolean protectionEnabled;
     private final ProtectionProviderType protectionProvider;
     private final int protectionSize;
@@ -97,6 +98,8 @@ public class PluginConfig {
         this.maxRoughness = clamp(config.getInt("safety.max-roughness", 12),
                 MIN_ROUGHNESS, MAX_ROUGHNESS);
 
+        this.firstAllocationCommands = List.copyOf(
+                config.getStringList("allocation.first-allocation-commands"));
         this.allocationTrigger = AllocationTrigger.parse(
                 config.getString("allocation.trigger"), AllocationTrigger.FIRST_ACTION);
         // 0 disables the backstop entirely, so it is preserved rather than clamped up.
@@ -296,6 +299,10 @@ public class PluginConfig {
 
     public int getMaxRoughness() {
         return maxRoughness;
+    }
+
+    public List<String> getFirstAllocationCommands() {
+        return firstAllocationCommands;
     }
 
     public AllocationTrigger getAllocationTrigger() {

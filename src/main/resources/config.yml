@@ -84,6 +84,9 @@ allocation:
   # the limbo cannot be read. Generous by default: a first-time player reading the rules
   # while choosing a password should never trip it. Clamped to 15-3600.
   action-timeout-seconds: 300
+  # Console commands run once after a player's first plot teleport completes. Supports
+  # {player} and {uuid}. Empty by default; returning players, repairs and reassign skip it.
+  first-allocation-commands: []
 
 # Optional, for servers running GriefPrevention; nothing else in SpiralGenesis needs a
 # claim plugin. Claims a small square around each player's spawn point, so their bed and
