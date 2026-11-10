@@ -6,5 +6,13 @@
 
 repo: SpiralGenesis
 
-# This repository has no exceptions: it conforms to every rule in the register.
-exceptions: []
+exceptions:
+  - rule: N6-REL-05
+    type: transitional
+    reason: >
+      The Hangar page sync and GitHub latest marker still use newest-on-channel
+      and a per-tag concurrency group. Issue https://github.com/Ninja6-MC/SpiralGenesis/issues/230
+      item 2 will adopt destination ownership and concurrency across tags.
+    approved_by: bharathasl74185@gmail.com
+    approved_on: 2026-11-10
+    revisit_by: 2027-01-31

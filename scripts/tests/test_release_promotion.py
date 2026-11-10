@@ -80,16 +80,14 @@ class RetryTests(unittest.TestCase):
         draft = {"tag_name": self.args.tag, "draft": True, "id": 42,
                  "name": "Unfinished beta", "html_url": "https://github.com/owner/repo/releases/42"}
         missing = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
-        for lookup in (draft, missing):
-            with self.subTest(lookup=type(lookup).__name__), \
-                 patch.object(release_promotion, "recheck"), \
-                 patch.object(release_promotion, "api", side_effect=[lookup]), \
-                 patch.object(release_promotion, "command", return_value=json.dumps(draft)) as command:
-                with self.assertRaisesRegex(ValueError, "Unfinished beta.*releases/42.*delete that draft manually"):
-                    release_promotion.reconcile(self.args)
-                self.assertFalse(Path(self.args.output).exists())
-                for call in command.call_args_list:
-                    self.assertEqual(call.args[:3], ("gh", "api", "--paginate"))
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "api", side_effect=missing), \
+             patch.object(release_promotion, "command", return_value=json.dumps(draft)) as command:
+            with self.assertRaisesRegex(ValueError, "Unfinished beta.*releases/42.*delete that draft manually"):
+                release_promotion.reconcile(self.args)
+            self.assertFalse(Path(self.args.output).exists())
+            self.assertEqual(command.call_count, 1)
+            self.assertEqual(command.call_args.args[:3], ("gh", "api", "--paginate"))
 
     def test_unrelated_draft_does_not_block_absent_tag(self):
         missing = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")

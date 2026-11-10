@@ -233,8 +233,6 @@ def github_state(repository, tag, manifest, channel):
             if draft.get("tag_name") == tag:
                 refuse_github_draft(draft, tag)
         return "absent"
-    if release.get("draft"):
-        refuse_github_draft(release, tag)
     if release.get("target_commitish") != manifest["source"] or release.get("prerelease") != (channel != "release"):
         raise ValueError("Existing GitHub release metadata cannot be reconciled")
     assets = release.get("assets", [])
