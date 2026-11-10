@@ -699,6 +699,11 @@ claim, and a spawn claim SpiralGenesis made earlier and left behind, for example
   counts as usual, and a claimed candidate is never the least-bad fallback. If one claim
   covers everything inside the world border, the scan walks past it until its cells are
   outside the border and reports that.
+* **Other unusable cells are logged too.** When player allocation finds no usable candidate
+  and moves on, it logs an INFO line such as `Skipped plot #0,3: no usable candidate spawn.
+  Rejections: {OCEAN=12}.` Counts belong to that cell, not the whole scan; a candidate can
+  fail more than one rule. These cells still count toward `safety.max-scan-attempts` as
+  before. Simulation and in-cell repair scans do not print this line.
 * **Unclaimed builds are not detected.** Nothing looks at the blocks players have placed,
   which would be costly on a live server and unreliable. Keep the origin away from them;
   see section 10.

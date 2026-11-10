@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invulnerability.
 
 ### Fixed
+- **Unusable cells skipped during player allocation are now logged.** Each skipped plot
+  reports its own rejection reasons and counts at INFO, making terrain and hazard skips
+  visible without changing allocation or scan budgets.
 - **Allocation no longer places a spawn beside a lava pool its chunk samples missed.**
   Lava nearby was looked for only in eight sample columns across the chunk, so a pool
   between them, or across a chunk edge, went unseen. Every block in a 9 by 9 box around
