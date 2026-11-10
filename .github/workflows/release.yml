@@ -1,70 +1,76 @@
 name: Publish Release
+run-name: Publish ${{ inputs.tag }} to ${{ inputs.destinations }} [${{ inputs.nonce }}]
 
+# Dispatched on the release tag ref. `plan` needs no approval and holds no publishing
+# credential; each destination then publishes in its own job behind the `release`
+# environment, so one approval covers the run and a failure at one destination does not
+# stop the others. RELEASE_PROCESS.md has the procedure and the retry table.
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag
+        description: Existing release tag; dispatch on that tag ref
         required: true
         type: string
       candidate_run_id:
         description: Successful Verify Release Candidate run ID
         required: true
         type: string
+      destinations:
+        description: Destinations to publish in this run, comma-separated
+        required: true
+        default: github,modrinth,hangar
+        type: string
       modrinth_absence_confirmed:
-        description: Confirm the intended version is absent from the private Modrinth dashboard
+        description: I inspected the Modrinth owner inventory for this exact version, including drafts, scheduled and unlisted versions, and it is absent
         required: true
         default: false
         type: boolean
       hangar_absence_confirmed:
-        description: Confirm the intended version is absent from the private Hangar dashboard including deleted versions
+        description: I inspected the Hangar owner inventory for this exact version, including hidden and deleted versions, and it is absent
         required: true
         default: false
         type: boolean
+      nonce:
+        description: Label shown in the run name, to find this dispatch
+        required: false
+        default: manual
+        type: string
 
 permissions:
   contents: read
 
+# Keyed on the ref, not on the tag input: a workflow-level group is evaluated when the run
+# is queued, before any step can validate the input. Every workflow able to write release
+# versions uses this group.
 concurrency:
-  group: release-${{ inputs.tag }}
+  group: publish-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  approval-summary:
-    if: github.ref == format('refs/tags/{0}', inputs.tag)
-    name: Review promotion identity
+  plan:
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v')
+    name: Plan promotion
     runs-on: ubuntu-latest
-    steps:
-      - name: Record requested promotion and manual confirmation
-        env:
-          RELEASE_TAG: ${{ inputs.tag }}
-          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
-          MODRINTH_ABSENCE_CONFIRMED: ${{ inputs.modrinth_absence_confirmed }}
-          HANGAR_ABSENCE_CONFIRMED: ${{ inputs.hangar_absence_confirmed }}
-          SOURCE: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_RUN_ATTEMPT" != 1 && ( "$MODRINTH_ABSENCE_CONFIRMED" == true || "$HANGAR_ABSENCE_CONFIRMED" == true ) ]]; then
-            echo 'Manual absence confirmation requires a new dispatch for each attempt.'
-            exit 1
-          fi
-          {
-            echo '## Promotion awaiting release environment review'
-            printf 'Repository: `%s`\n\nTag: `%s`\n\nSource: `%s`\n\nCandidate run: `%s`\n\nPublisher run/attempt: `%s/%s`\n\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$SOURCE" "$CANDIDATE_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
-            printf 'Manual Modrinth absence confirmation: **%s**\n\n' "$MODRINTH_ABSENCE_CONFIRMED"
-            printf 'Manual Hangar absence confirmation: **%s**\n\n' "$HANGAR_ABSENCE_CONFIRMED"
-            echo 'A true confirmation attests that this exact tag/version has no existing private, draft, scheduled, unlisted or deleted version in the corresponding registry dashboard. It applies only to this dispatch and candidate. Review before approving the release environment.'
-          } >> "$GITHUB_STEP_SUMMARY"
-  publish:
-    needs: approval-summary
-    if: github.ref == format('refs/tags/{0}', inputs.tag)
-    name: Promote verified candidate
-    runs-on: ubuntu-latest
-    environment: release
     permissions:
       actions: read
-      contents: write
+      contents: read
+    outputs:
+      destinations: ${{ steps.plan.outputs.destinations }}
+      github: ${{ steps.plan.outputs.github }}
+      modrinth: ${{ steps.plan.outputs.modrinth }}
+      hangar: ${{ steps.plan.outputs.hangar }}
+      channel: ${{ steps.plan.outputs.channel }}
+      hangar_channel: ${{ steps.plan.outputs.hangar_channel }}
+      version_json: ${{ steps.plan.outputs.version_json }}
+      newest: ${{ steps.plan.outputs.newest }}
     steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
       - name: Checkout exact release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -83,65 +89,213 @@ jobs:
       - name: Check release notes
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output release-notes.md
-          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$RELEASE_TAG" -f target_commitish="$(git rev-parse HEAD)" --jq .body >> release-notes.md
-      - name: Require registry credentials
-        env:
-          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
-        run: |
-          test -n "$MODRINTH_TOKEN" || { echo 'MODRINTH_TOKEN is required'; exit 1; }
-          test -n "$HANGAR_API_TOKEN" || { echo 'HANGAR_API_TOKEN is required'; exit 1; }
-      - name: Check existing destinations
-        id: destinations
+        run: python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output release-notes.md
+      - name: Check public state, attestations and projects
+        id: plan
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
-          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
-          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
-          MODRINTH_ABSENCE_CONFIRMED: ${{ inputs.modrinth_absence_confirmed }}
-          HANGAR_ABSENCE_CONFIRMED: ${{ inputs.hangar_absence_confirmed }}
+          DESTINATIONS: ${{ inputs.destinations }}
+          MODRINTH_ATTESTED: ${{ inputs.modrinth_absence_confirmed }}
+          HANGAR_ATTESTED: ${{ inputs.hangar_absence_confirmed }}
+        run: |
+          python3 scripts/release_promotion.py plan --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" \
+            --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --destinations "$DESTINATIONS" \
+            --modrinth-attested "$MODRINTH_ATTESTED" --hangar-attested "$HANGAR_ATTESTED" --output "$GITHUB_OUTPUT"
+      - name: Validate Gradle wrapper for the Hangar dry run
+        if: steps.plan.outputs.hangar == 'true'
+        uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Set up Java 21 for the Hangar dry run
+        if: steps.plan.outputs.hangar == 'true'
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Setup Gradle for the Hangar dry run
+        if: steps.plan.outputs.hangar == 'true'
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Dry-run the Hangar upload
+        if: steps.plan.outputs.hangar == 'true'
+        env:
+          VERSION: ${{ fromJSON(steps.plan.outputs.version_json) }}
+          HANGAR_CHANNEL: ${{ steps.plan.outputs.hangar_channel }}
         run: |
           set -euo pipefail
-          confirmation=()
-          if [[ "$MODRINTH_ABSENCE_CONFIRMED" == true ]]; then
-            [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo 'Manual confirmation requires a new dispatch'; exit 1; }
-            confirmation+=(--modrinth-absence-confirmed)
+          chmod +x gradlew
+          ./gradlew publishPluginPublicationToHangar -PpluginVersion="$VERSION" -PhangarChannel="$HANGAR_CHANNEL" -PreleaseCandidateJar="candidate/SpiralGenesis-$VERSION.jar" --dry-run --no-daemon > hangar-graph.txt
+          if grep -E '^:(shadowJar|jar|assemble|build) ' hangar-graph.txt; then
+            echo 'Hangar publication invokes packaging.'
+            exit 1
           fi
-          if [[ "$HANGAR_ABSENCE_CONFIRMED" == true ]]; then
-            [[ "$GITHUB_RUN_ATTEMPT" == 1 ]] || { echo 'Manual confirmation requires a new dispatch'; exit 1; }
-            confirmation+=(--hangar-absence-confirmed)
-          fi
-          python3 scripts/release_promotion.py destinations --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT" "${confirmation[@]}"
-      - name: Publish GitHub release
-        if: steps.destinations.outputs.github == 'absent'
+      - name: Record promotion for review
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+          DESTINATIONS: ${{ steps.plan.outputs.destinations }}
+          MODRINTH_ATTESTED: ${{ inputs.modrinth_absence_confirmed }}
+          HANGAR_ATTESTED: ${{ inputs.hangar_absence_confirmed }}
+          GITHUB_PUBLIC: ${{ steps.plan.outputs.github_public }}
+          MODRINTH_PUBLIC: ${{ steps.plan.outputs.modrinth_public }}
+          HANGAR_PUBLIC: ${{ steps.plan.outputs.hangar_public }}
+          NEWEST: ${{ steps.plan.outputs.newest }}
+          SOURCE: ${{ github.sha }}
+        run: |
+          {
+            echo '## Promotion awaiting release environment review'
+            printf 'Repository: `%s`\n\nTag: `%s`\n\nSource: `%s`\n\nCandidate run: `%s`\n\nPublisher run/attempt: `%s/%s`\n\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$SOURCE" "$CANDIDATE_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+            printf 'Destinations: `%s`\n\n' "$DESTINATIONS"
+            printf 'Public state: GitHub `%s`, Modrinth `%s`, Hangar `%s` (blank when not selected)\n\n' "$GITHUB_PUBLIC" "$MODRINTH_PUBLIC" "$HANGAR_PUBLIC"
+            printf 'Absence attestation: Modrinth **%s**, Hangar **%s**\n\n' "$MODRINTH_ATTESTED" "$HANGAR_ATTESTED"
+            printf 'Newest public version on its channel: **%s** (project page sync and GitHub latest only when true)\n\n' "$NEWEST"
+            echo 'A true attestation states that the maintainer inspected the owner inventory for this exact version, including hidden, draft, scheduled, unlisted and deleted versions, and found none. It applies only to this dispatch, candidate and first attempt. Review before approving the release environment.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-github:
+    needs: plan
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.plan.outputs.github == 'true'
+    name: Publish to GitHub Releases
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
         run: |
-          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
-          gh release create "$RELEASE_TAG" candidate/* --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title "SpiralGenesis $RELEASE_TAG (${{ steps.destinations.outputs.channel }})" --notes-file release-notes.md $(python3 scripts/release_promotion.py prerelease --tag "$RELEASE_TAG")
-      - name: Recheck before Modrinth
-        if: steps.destinations.outputs.modrinth == 'absent'
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Check credentials for every selected destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
+          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+        run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
+      - name: Check existing GitHub release
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py reconcile --destination github --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+      - name: Write release notes
+        if: steps.state.outputs.state == 'absent'
         env:
           RELEASE_TAG: ${{ inputs.tag }}
-          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          test -n "$MODRINTH_TOKEN" || { echo 'MODRINTH_TOKEN is required'; exit 1; }
-          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
+          set -euo pipefail
+          python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output release-notes.md
+          gh api -X POST "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$RELEASE_TAG" -f target_commitish="$(git rev-parse HEAD)" --jq .body >> release-notes.md
+      - name: Publish GitHub release
+        if: steps.state.outputs.state == 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CHANNEL: ${{ needs.plan.outputs.channel }}
+          NEWEST: ${{ needs.plan.outputs.newest }}
+        run: |
+          set -euo pipefail
+          python3 scripts/release_promotion.py guard --destination github --attested false --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
+          latest=--latest=false
+          [[ "$CHANNEL" == release && "$NEWEST" == true ]] && latest=--latest
+          gh release create "$RELEASE_TAG" candidate/* --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title "SpiralGenesis $RELEASE_TAG ($CHANNEL)" --notes-file release-notes.md $latest $(python3 scripts/release_promotion.py prerelease --tag "$RELEASE_TAG")
+      - name: Verify the published GitHub release
+        if: steps.state.outputs.state == 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py verify-published --destination github --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+
+  publish-modrinth:
+    needs: plan
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.plan.outputs.modrinth == 'true'
+    name: Publish to Modrinth
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Check credentials for every selected destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
+          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+        run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
+      - name: Check existing Modrinth version
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ATTESTED: ${{ inputs.modrinth_absence_confirmed }}
+        run: python3 scripts/release_promotion.py reconcile --destination modrinth --attested "$ATTESTED" --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+      - name: Write release notes
+        if: steps.state.outputs.state == 'absent'
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output release-notes.md
+      - name: Check attestation and candidate before upload
+        if: steps.state.outputs.state == 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ATTESTED: ${{ inputs.modrinth_absence_confirmed }}
+        run: python3 scripts/release_promotion.py guard --destination modrinth --attested "$ATTESTED" --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
       - name: Publish to Modrinth
-        if: steps.destinations.outputs.modrinth == 'absent'
+        if: steps.state.outputs.state == 'absent'
         uses: Kira-NT/mc-publish@c23376546a97f5ba7984e94445da359459b14419 # v3.3.2
         with:
           modrinth-id: spiralgenesis
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
           modrinth-featured: false
           modrinth-unfeature-mode: none
-          name: SpiralGenesis ${{ fromJSON(steps.destinations.outputs.version_json) }}
-          version: ${{ fromJSON(steps.destinations.outputs.version_json) }}
-          version-type: ${{ steps.destinations.outputs.channel }}
+          name: SpiralGenesis ${{ fromJSON(needs.plan.outputs.version_json) }}
+          version: ${{ fromJSON(needs.plan.outputs.version_json) }}
+          version-type: ${{ needs.plan.outputs.channel }}
           changelog-file: release-notes.md
           dependencies: |
             floodgate(optional){modrinth:bWrNNfkb}
@@ -161,31 +315,99 @@ jobs:
             26.1.2
             26.2
             26.3
+      - name: Verify the published Modrinth version
+        if: steps.state.outputs.state == 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py verify-published --destination modrinth --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+
+  publish-hangar:
+    needs: plan
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.plan.outputs.hangar == 'true'
+    name: Publish to Hangar
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Check credentials for every selected destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
+          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+        run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
+      - name: Check existing Hangar version
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          ATTESTED: ${{ inputs.hangar_absence_confirmed }}
+        run: python3 scripts/release_promotion.py reconcile --destination hangar --attested "$ATTESTED" --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
       - name: Validate Gradle wrapper for Hangar
-        if: steps.destinations.outputs.hangar == 'absent'
+        if: steps.state.outputs.state == 'absent'
         uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
       - name: Set up Java 21 for Hangar
-        if: steps.destinations.outputs.hangar == 'absent'
+        if: steps.state.outputs.state == 'absent'
         uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           java-version: '21'
           distribution: temurin
       - name: Setup Gradle for Hangar
-        if: steps.destinations.outputs.hangar == 'absent'
+        if: steps.state.outputs.state == 'absent'
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
       - name: Publish to Hangar
-        if: steps.destinations.outputs.hangar == 'absent'
+        if: steps.state.outputs.state == 'absent'
         env:
+          GH_TOKEN: ${{ github.token }}
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
-          VERSION: ${{ fromJSON(steps.destinations.outputs.version_json) }}
-          HANGAR_CHANNEL: ${{ steps.destinations.outputs.hangar_channel }}
+          ATTESTED: ${{ inputs.hangar_absence_confirmed }}
+          VERSION: ${{ fromJSON(needs.plan.outputs.version_json) }}
+          HANGAR_CHANNEL: ${{ needs.plan.outputs.hangar_channel }}
         run: |
           set -euo pipefail
-          python3 scripts/release_promotion.py recheck --tag "$RELEASE_TAG"
-          test -n "$HANGAR_API_TOKEN" || { echo 'HANGAR_API_TOKEN is required'; exit 1; }
           mkdir -p build
-          cp release-notes.md build/release-notes.md
+          python3 scripts/release_promotion.py notes --tag "$RELEASE_TAG" --output build/release-notes.md
           chmod +x gradlew
+          python3 scripts/release_promotion.py guard --destination hangar --attested "$ATTESTED" --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
           ./gradlew publishPluginPublicationToHangar -PpluginVersion="$VERSION" -PhangarChannel="$HANGAR_CHANNEL" -PreleaseCandidateJar="candidate/SpiralGenesis-$VERSION.jar" --no-daemon
-          ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon
+      - name: Verify the published Hangar version
+        if: steps.state.outputs.state == 'absent'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py verify-published --destination hangar --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+      - name: Sync the Hangar project page
+        if: steps.state.outputs.state == 'absent' && needs.plan.outputs.newest == 'true'
+        env:
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+        run: ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon
