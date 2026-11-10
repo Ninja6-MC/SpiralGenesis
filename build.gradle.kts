@@ -109,7 +109,7 @@ dependencies {
     // A real protocol client, for driving an actual player connection in CI. From the
     // GeyserMC repository already declared above for Floodgate.
     "botClientImplementation"("org.geysermc.mcprotocollib:protocol:1.21.11-SNAPSHOT")
-    "botClient26Implementation"("org.geysermc.mcprotocollib:protocol:26.3-SNAPSHOT")
+    "botClient26Implementation"("org.geysermc.mcprotocollib:protocol:26.3-3")
 }
 
 // Hangar publication. Everything is driven by properties and the HANGAR_API_TOKEN

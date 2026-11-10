@@ -83,7 +83,7 @@ updates:
         update-types:
           - major
     ignore:
-      # Every coordinate below is compileOnly, and a compileOnly dependency decides the
+      # The first four coordinates are compileOnly, and a compileOnly dependency decides the
       # OLDEST server or plugin this can run against, not the newest. Raising one narrows
       # the supported range silently -- it compiles, it enables, and the loss only shows
       # on a server old enough to be excluded. These stay manual decisions.
@@ -94,6 +94,12 @@ updates:
       - dependency-name: org.geysermc.floodgate:api
       - dependency-name: fr.xephi:authme
       - dependency-name: com.github.TechFortress:GriefPrevention
+      # The last one is different: an implementation dependency of the CI bot clients, not
+      # of the plugin. They pin one protocol release per Minecraft version they log into,
+      # so each line must stay on its own version. Dependabot sees the one coordinate and
+      # proposes moving both to the newest, which breaks the 1.21.11 client (#198, #214,
+      # #223). Bumped by hand, one client at a time.
+      - dependency-name: org.geysermc.mcprotocollib:protocol
     commit-message:
       # `build` rather than `ci`: ci is the Conventional Commits type for workflow
       # actions, build is the one for build-system dependencies.
