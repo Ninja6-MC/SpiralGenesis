@@ -318,8 +318,8 @@ def conflicting_runs(runs, current, tag):
             continue
         # A run created after this one shares its concurrency group, so it cannot start
         # while this run holds the group and cannot have written anything. That holds
-        # whatever its status: one cancelled while waiting, because a newer dispatch
-        # replaced it or by hand, is completed with a fresh updated_at.
+        # whatever its status: one cancelled while queued for the group, because a newer
+        # dispatch replaced it or by hand, is completed with a fresh updated_at.
         if run.get("created_at", "") > current["created_at"]:
             continue
         if run.get("status") != "completed":

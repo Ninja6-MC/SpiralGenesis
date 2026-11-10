@@ -153,9 +153,9 @@ attestation:
   after this one does not count, whatever its status: it shares this run's
   concurrency group, so it cannot start while this run holds the group and
   cannot have written anything. That includes a later run cancelled while
-  waiting, which shows as completed with a recent update. Completion time is
-  taken from the run's last update, which errs towards refusing. Inspect the
-  inventory again and dispatch a new run.
+  queued for the group, which shows as completed with a recent update.
+  Completion time is taken from the run's last update, which errs towards
+  refusing. Inspect the inventory again and dispatch a new run.
 
 Publish Release's concurrency group is keyed on `github.ref`, which is the tag
 ref every publishing job requires. Every workflow able to write release
@@ -233,9 +233,10 @@ For example, to retry Hangar alone after a Hangar outage:
 after confirming in the Hangar dashboard that no `1.2.3` version, deleted or
 otherwise, exists.
 
-The concurrency group keeps only one waiting run per tag: a second dispatch
-for the same tag replaces a run that is still waiting, and GitHub cancels the
-replaced run. To retry two destinations, use one dispatch that selects both,
+The concurrency group keeps only one run queued behind the running one per
+tag: a second dispatch for the same tag replaces a run still queued for the
+group (status `pending`), and GitHub cancels the replaced run. A run waiting
+at the `release` environment gate holds the group and is not replaced. To retry two destinations, use one dispatch that selects both,
 for example `--destinations modrinth,hangar`, or wait for the first run to
 finish before starting the next.
 

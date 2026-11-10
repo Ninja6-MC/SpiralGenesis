@@ -249,7 +249,7 @@ class AttestationTests(unittest.TestCase):
              patch.object(release_promotion, "publisher_runs", return_value=runs):
             release_promotion.check_attestation("Ninja6-MC/SpiralGenesis", "v1.2.3-beta.1", 500, 1)
 
-    def test_later_run_cancelled_while_waiting_does_not_refuse(self):
+    def test_later_run_cancelled_while_queued_does_not_refuse(self):
         # This run waits for approval, B queues behind it and C replaces B, so B completes
         # as cancelled after this run was created. B was created later and never ran.
         later = [self.other(id=601, conclusion="cancelled", created_at="2026-11-10T12:05:00Z",
