@@ -835,8 +835,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
-     * Whether a player's plot was recorded while they were away and they have not been
-     * placed on it yet.
+     * Whether a player's recorded plot still owes a placement or its first-allocation
+     * commands. Both route through a completed arrival, including after a rejoin.
      *
      * <p>The join handler routes such a player as it would an unassigned one, so they are
      * placed at the point a new player would have been allocated: at once for Bedrock and
@@ -848,11 +848,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public boolean isPlacementOwed(UUID uuid) {
         StoredSpawn record = dataStorage.getRecord(uuid);
-        return record != null && record.placementOwed();
+        return record != null && (record.placementOwed()
+                || (!pluginConfig.getFirstAllocationCommands().isEmpty()
+                && dataStorage.areFirstAllocationCommandsOwed(uuid)));
     }
 
     /**
-     * Places a player on a plot recorded while they were away, if one is owed: sets their
+     * Places a player whose record still owes a placement or commands: sets their
      * respawn point there, sends them there and requests its claim, exactly as a first
      * allocation does.
      *
@@ -883,7 +885,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }
             StoredSpawn record = dataStorage.getRecord(uuid);
             Location plot = record == null ? null : record.toLocation();
-            if (plot == null || !record.placementOwed()) {
+            if (plot == null || (!record.placementOwed()
+                    && !dataStorage.areFirstAllocationCommandsOwed(uuid))) {
                 return;
             }
             if (!dataStorage.clearPlacementOwed(uuid)) {
@@ -906,9 +909,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      *                  changes the line logged on arrival
      */
     private void sendToPlot(Player player, Location plot, String label, boolean returning) {
+        if (!returning && !pluginConfig.getFirstAllocationCommands().isEmpty()) {
+            dataStorage.oweFirstAllocationCommands(player.getUniqueId());
+        }
         player.setRespawnLocation(plot, true);
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
+                dispatchFirstAllocationCommands(player, plot);
                 arrivalHints.arrived(player);
                 scheduleArrivalCheck(player, plot);
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
@@ -959,6 +966,60 @@ public class SpiralGenesisPlugin extends JavaPlugin {
         // step made. Placed later, on the thread owning the plot, and never in the way of
         // anything above.
         getStructures().placeForAllocation(player.getUniqueId(), player.getName());
+    }
+
+    private void dispatchFirstAllocationCommands(Player player, Location plot) {
+        UUID uuid = player.getUniqueId();
+        if (!dataStorage.areFirstAllocationCommandsOwed(uuid)) {
+            return;
+        }
+        runForPlayer(player, () -> {
+            List<String> commands = pluginConfig.getFirstAllocationCommands();
+            StoredSpawn record = dataStorage.getRecord(uuid);
+            if (commands.isEmpty() || record == null || !plot.equals(record.toLocation())) {
+                return;
+            }
+            if (!dataStorage.beginFirstAllocationCommands(uuid)) {
+                return;
+            }
+            int dispatched = 0;
+            boolean completed = false;
+            try {
+                if (!player.isConnected()) {
+                    return;
+                }
+                for (String template : commands) {
+                    String command = template.replace("{player}", player.getName())
+                            .replace("{uuid}", uuid.toString());
+                    dispatched++;
+                    try {
+                        if (!dispatchAllocationCommand(command)) {
+                            getLogger().warning("First-allocation command failed for "
+                                    + player.getName() + ": " + command);
+                        }
+                    } catch (RuntimeException ex) {
+                        getLogger().log(Level.WARNING, "First-allocation command failed for "
+                                + player.getName() + ": " + command
+                                + "; give the kit by hand if needed.", ex);
+                    }
+                }
+                completed = true;
+                dataStorage.finishFirstAllocationCommands(uuid);
+            } finally {
+                getLogger().info("First-allocation commands for " + player.getName()
+                        + ": dispatched " + dispatched + " command(s).");
+                if (!completed) {
+                    getLogger().warning("First-allocation commands for " + player.getName()
+                            + " could not complete after their marker was written;"
+                            + " give the kit by hand if needed. They will not be retried.");
+                }
+            }
+        }, null);
+    }
+
+    /** Console dispatch seam for tests without a running command plugin. */
+    boolean dispatchAllocationCommand(String command) {
+        return getServer().dispatchCommand(getServer().getConsoleSender(), command);
     }
 
     /** Ticks from the first teleport onto a new plot to its one re-check: 5 seconds. */
@@ -1500,6 +1561,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
                 if (Boolean.TRUE.equals(success)) {
                     // The first time they reach the plot, as the teleport that was refused
                     // would have been.
+                    dispatchFirstAllocationCommands(player, target);
                     scheduleArrivalCheck(player, target);
                     getLogger().info("Re-asserted the plot teleport for " + player.getName()
                             + " after their first uncancelled action.");

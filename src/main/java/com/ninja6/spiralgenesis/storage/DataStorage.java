@@ -97,8 +97,8 @@ public interface DataStorage {
      * the file in between, so anything that acts on the record - a respawn point, a
      * teleport, a claim - has to be gated on this return value and not on that check.
      *
-     * <p>Replaces any earlier record whole, so a record written here is never owed a
-     * placement.
+     * <p>Replaces the earlier spawn assignment, so a record written here is never owed a
+     * placement. First-allocation command markers are preserved.
      *
      * @return true if the record was written, false if it was refused because storage is
      *         failed, in which case nothing changed
@@ -148,6 +148,24 @@ public interface DataStorage {
      *         nothing changed
      */
     boolean clearPlacementOwed(UUID uuid);
+
+    /** Records commands owed by a fresh allocation before its first teleport. */
+    default void oweFirstAllocationCommands(UUID uuid) {
+    }
+
+    /** Whether this stored player record still owes a first-allocation command batch. */
+    default boolean areFirstAllocationCommandsOwed(UUID uuid) {
+        return false;
+    }
+
+    /** Durably consumes the first-allocation command run; false means do not dispatch. */
+    default boolean beginFirstAllocationCommands(UUID uuid) {
+        return false;
+    }
+
+    /** Records that the consumed command batch finished, for crash diagnostics. */
+    default void finishFirstAllocationCommands(UUID uuid) {
+    }
 
     /**
      * The structure placed on plot {@code (centre, index)}, or {@code null} if none is
