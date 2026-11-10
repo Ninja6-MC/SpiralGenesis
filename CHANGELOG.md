@@ -46,10 +46,12 @@ Three things in the log and in `/sgen simulate` change. Allocation now rejects a
 with nothing to stand on as `NO_FLOOR` and one with lava within 4 blocks, or water above
 the feet, as `NEARBY_FLUID`; both are counted as their own reasons by `/sgen simulate`, so
 its rejection breakdown can show more rejections than before on the same terrain. A new
-plot is re-checked once, 5 seconds after the player first reaches it. Each cell skipped
-during player allocation is logged at INFO as `Skipped plot <label>: no usable candidate
-spawn. Rejections: {...}.`, which can add many lines on a server with a lot of ocean or
-cave terrain. And when an in-cell repair finds no point other than the one that failed,
+plot is re-checked once, 5 seconds after the player first reaches it. A cell that
+player allocation skips because none of its candidates is usable is logged at INFO as
+`Skipped plot <label>: no usable candidate spawn. Rejections: {...}.`, which can add many
+lines on a server with a lot of ocean or cave terrain. A cell where every candidate is
+inside an existing claim keeps its earlier line, and a cell skipped for overlapping
+another centre's plot still logs nothing. And when an in-cell repair finds no point other than the one that failed,
 the line now begins `No safe point other than the one that failed was found among the`
 and no longer `No safe point found among the`, and no `Repaired plot` line is logged for
 it; update any log filter that matches the old wording.
