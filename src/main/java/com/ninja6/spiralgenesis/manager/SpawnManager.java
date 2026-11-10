@@ -1020,6 +1020,7 @@ public class SpawnManager {
         scan.centreZ = cell.centreZ();
         scan.candidate = -1;
         scan.claimedInCell = 0;
+        scan.rejectionsInCell.clear();
         scan.bestInCell = null;
         nextCandidate(scan);
     }
@@ -1052,6 +1053,7 @@ public class SpawnManager {
         if (!isInsideBorder(x, z)) {
             scan.candidatesProbed++;
             scan.rejections.merge(RejectionReason.OUTSIDE_BORDER, 1, Integer::sum);
+            scan.rejectionsInCell.merge(RejectionReason.OUTSIDE_BORDER, 1, Integer::sum);
             // Never scored, so it can never win the cell and can never become the least-bad
             // fallback either. Outside the border the terrain is beside the point: however
             // good the ground is, a player standing on it takes border damage until they
@@ -1076,6 +1078,7 @@ public class SpawnManager {
             scan.candidatesProbed++;
             scan.claimedInCell++;
             scan.rejections.merge(RejectionReason.CLAIMED, 1, Integer::sum);
+            scan.rejectionsInCell.merge(RejectionReason.CLAIMED, 1, Integer::sum);
             runGlobally(scan.result, () -> nextCandidate(scan));
             return;
         }
@@ -1104,6 +1107,7 @@ public class SpawnManager {
         }
         for (RejectionReason reason : candidate.reasons()) {
             scan.rejections.merge(reason, 1, Integer::sum);
+            scan.rejectionsInCell.merge(reason, 1, Integer::sum);
         }
 
         if (candidate.acceptable() && !config.getPlacementStrategy().needsFullSweep()) {
@@ -1158,6 +1162,11 @@ public class SpawnManager {
             return;
         }
         if (scan.attempt < config.getMaxScanAttempts()) {
+            if (scan.purpose == ScanPurpose.PLAYER_ALLOCATION) {
+                plugin.getLogger().info("Skipped plot " + SpiralCentre.label(scan.centre.id(),
+                        scan.index) + ": no usable candidate spawn. Rejections: "
+                        + scan.rejectionsInCell + ".");
+            }
             nextCell(scan);
             return;
         }
@@ -1695,6 +1704,7 @@ public class SpawnManager {
         /** Candidates scored, which is those inside the border and outside every claim. */
         private int scored;
         private final Map<RejectionReason, Integer> rejections = new EnumMap<>(RejectionReason.class);
+        private final Map<RejectionReason, Integer> rejectionsInCell = new EnumMap<>(RejectionReason.class);
 
         private Scan(CellReserver cells, ScanPurpose purpose, UUID owner,
                      CompletableFuture<AllocationOutcome> result) {

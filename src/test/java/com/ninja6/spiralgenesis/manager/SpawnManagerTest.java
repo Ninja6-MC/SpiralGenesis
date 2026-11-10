@@ -294,6 +294,7 @@ class SpawnManagerTest {
     @DisplayName("A fully unusable cell is skipped and the spiral advances to the next index")
     void oceanCellIsSkipped() throws Exception {
         makeCellOcean(0, 0);
+        List<LogRecord> logs = recordLogs();
 
         SpawnManager manager = managerWith(config(0, 8));
         AtomicInteger indices = new AtomicInteger();
@@ -305,6 +306,45 @@ class SpawnManagerTest {
         assertEquals(0, res.gridV());
         assertEquals(CELL + 0.5, res.location().getX(), 1e-9);
         assertEquals(2, indices.get(), "one index per cell, including the rejected one");
+        assertEquals(List.of("Skipped plot #0,0: no usable candidate spawn. Rejections: {OCEAN=12}."),
+                logs.stream().filter(r -> r.getLevel() == Level.INFO
+                                && r.getMessage().startsWith("Skipped plot "))
+                        .map(LogRecord::getMessage).toList());
+    }
+
+    @Test
+    @DisplayName("Skipped-cell rejection counts reset while scan totals remain cumulative")
+    void skippedCellLogsUseOnlyThatCellsRejections() throws Exception {
+        makeCellOcean(0, 0);
+        makeCellOcean(1, 0);
+        List<LogRecord> logs = recordLogs();
+        SpawnManager manager = managerWith(config(0, 8));
+
+        SpawnManager.LocationResult res = allocate(manager, sequentialIndices(new AtomicInteger()));
+
+        assertEquals(2, res.index());
+        assertEquals(24, res.rejections().get(RejectionReason.OCEAN));
+        assertEquals(List.of(
+                        "Skipped plot #0,0: no usable candidate spawn. Rejections: {OCEAN=12}.",
+                        "Skipped plot #0,1: no usable candidate spawn. Rejections: {OCEAN=12}."),
+                logs.stream().filter(r -> r.getMessage().startsWith("Skipped plot "))
+                        .map(LogRecord::getMessage).toList());
+    }
+
+    @Test
+    @DisplayName("Simulation and repair scans do not log terrain-rejected cells as skipped plots")
+    void diagnosticAndRepairScansDoNotLogTerrainSkips() throws Exception {
+        makeCellOcean(0, 0);
+        List<LogRecord> logs = recordLogs();
+        SpawnManager manager = managerWith(config(0, 8));
+
+        SpawnManager.LocationResult simulated = assertInstanceOf(SpawnManager.LocationResult.class,
+                manager.simulateNextSafeSpawn(sequentialIndices(new AtomicInteger()))
+                        .get(10, TimeUnit.SECONDS));
+        assertEquals(1, simulated.index());
+        assertNull(manager.findSafeSpawnInCell(new SpiralCentre(0, 0, 0, CELL).cell(0), OWNER, null)
+                .get(10, TimeUnit.SECONDS));
+        assertTrue(logs.stream().noneMatch(r -> r.getMessage().startsWith("Skipped plot ")));
     }
 
     @Test
