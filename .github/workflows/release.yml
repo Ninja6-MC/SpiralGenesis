@@ -146,7 +146,7 @@ jobs:
             printf 'Repository: `%s`\n\nTag: `%s`\n\nSource: `%s`\n\nCandidate run: `%s`\n\nPublisher run/attempt: `%s/%s`\n\n' "$GITHUB_REPOSITORY" "$RELEASE_TAG" "$SOURCE" "$CANDIDATE_RUN_ID" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
             printf 'Destinations: `%s`\n\n' "$DESTINATIONS"
             printf 'Public state: GitHub `%s`, Modrinth `%s`, Hangar `%s` (blank when not selected)\n\n' "$GITHUB_PUBLIC" "$MODRINTH_PUBLIC" "$HANGAR_PUBLIC"
-            echo 'GitHub drafts are not visible before approval with the read-only plan token. publish-github checks drafts after approval and before any release create.'
+            printf 'GitHub drafts are not visible before approval with the read-only plan token. publish-github checks drafts after approval and before any release create.\n\n'
             printf 'Absence attestation: Modrinth **%s**, Hangar **%s**\n\n' "$MODRINTH_ATTESTED" "$HANGAR_ATTESTED"
             printf 'Newest public version on its channel: **%s** (project page sync and GitHub latest only when true)\n\n' "$NEWEST"
             echo 'A true attestation states that the maintainer inspected the owner inventory for this exact version, including hidden, draft, scheduled, unlisted and deleted versions, and found none. It applies only to this dispatch, candidate and first attempt. Review before approving the release environment.'
