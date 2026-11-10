@@ -149,10 +149,12 @@ attestation:
   reuses the outputs of the jobs it depends on. Dispatch a new run instead.
 * is refused while another Publish Release run for the same tag is in
   progress, or when one finished after this run was created, since that run
-  may have written a version this inspection did not see. A run created later
-  that has not started cannot have written anything and does not count; the
-  concurrency group holds it until this run ends. Completion time is taken
-  from the run's last update, which errs towards refusing. Inspect the
+  may have written a version this inspection did not see. A run created
+  after this one does not count, whatever its status: it shares this run's
+  concurrency group, so it cannot start while this run holds the group and
+  cannot have written anything. That includes a later run cancelled while
+  waiting, which shows as completed with a recent update. Completion time is
+  taken from the run's last update, which errs towards refusing. Inspect the
   inventory again and dispatch a new run.
 
 Publish Release's concurrency group is keyed on `github.ref`, which is the tag
@@ -230,6 +232,12 @@ For example, to retry Hangar alone after a Hangar outage:
 `scripts/release.sh publish 1.2.3 123456789 --destinations hangar --attest hangar`,
 after confirming in the Hangar dashboard that no `1.2.3` version, deleted or
 otherwise, exists.
+
+The concurrency group keeps only one waiting run per tag: a second dispatch
+for the same tag replaces a run that is still waiting, and GitHub cancels the
+replaced run. To retry two destinations, use one dispatch that selects both,
+for example `--destinations modrinth,hangar`, or wait for the first run to
+finish before starting the next.
 
 Candidate artifacts expire 90 days after the candidate run. There is no
 fallback rebuild in the publisher. An expired candidate stops the publisher

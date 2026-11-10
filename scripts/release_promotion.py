@@ -29,9 +29,6 @@ CANDIDATE_WORKFLOW = ".github/workflows/release-candidate.yml"
 # Every workflow able to write release versions. Each shares the publisher's concurrency
 # group, and each counts when deciding whether an attestation is still current.
 PUBLISHER_WORKFLOWS = ("release.yml",)
-# A run created after this one that has not started yet is held behind it by the
-# concurrency group and cannot have written anything.
-NOT_STARTED = {"queued", "pending", "requested"}
 VERIFY_TRIES = 6
 VERIFY_DELAY = 20
 
@@ -319,11 +316,16 @@ def conflicting_runs(runs, current, tag):
     for run in runs:
         if run.get("id") == current["id"] or run.get("head_branch") != tag:
             continue
-        if run.get("status") == "completed":
-            # updated_at is never earlier than completion, so this errs towards refusing.
-            if run.get("updated_at", "") > current["created_at"]:
-                conflicts.append(run)
-        elif not (run.get("created_at", "") > current["created_at"] and run.get("status") in NOT_STARTED):
+        # A run created after this one shares its concurrency group, so it cannot start
+        # while this run holds the group and cannot have written anything. That holds
+        # whatever its status: one cancelled while waiting, because a newer dispatch
+        # replaced it or by hand, is completed with a fresh updated_at.
+        if run.get("created_at", "") > current["created_at"]:
+            continue
+        if run.get("status") != "completed":
+            conflicts.append(run)
+        # updated_at is never earlier than completion, so this errs towards refusing.
+        elif run.get("updated_at", "") > current["created_at"]:
             conflicts.append(run)
     return conflicts
 

@@ -235,7 +235,6 @@ class AttestationTests(unittest.TestCase):
             "earlier run waiting for approval": self.other(status="waiting"),
             "earlier run still queued": self.other(status="queued"),
             "run finished after this run was created": self.other(updated_at="2026-11-10T12:10:00Z"),
-            "later run already started": self.other(id=600, status="in_progress", created_at="2026-11-10T12:05:00Z"),
         }
         for name, run in cases.items():
             with self.subTest(name), patch.object(release_promotion, "api", return_value=RUN), \
@@ -249,6 +248,24 @@ class AttestationTests(unittest.TestCase):
         with patch.object(release_promotion, "api", return_value=RUN), \
              patch.object(release_promotion, "publisher_runs", return_value=runs):
             release_promotion.check_attestation("Ninja6-MC/SpiralGenesis", "v1.2.3-beta.1", 500, 1)
+
+    def test_later_run_cancelled_while_waiting_does_not_refuse(self):
+        # This run waits for approval, B queues behind it and C replaces B, so B completes
+        # as cancelled after this run was created. B was created later and never ran.
+        later = [self.other(id=601, conclusion="cancelled", created_at="2026-11-10T12:05:00Z",
+                            updated_at="2026-11-10T12:20:00Z"),
+                 self.other(id=602, status="pending", created_at="2026-11-10T12:20:00Z",
+                            updated_at="2026-11-10T12:20:00Z")]
+        self.assertEqual(release_promotion.conflicting_runs([RUN] + later, RUN, "v1.2.3-beta.1"), [])
+        with patch.object(release_promotion, "api", return_value=RUN), \
+             patch.object(release_promotion, "publisher_runs", return_value=[RUN] + later):
+            release_promotion.check_attestation("Ninja6-MC/SpiralGenesis", "v1.2.3-beta.1", 500, 1)
+
+    def test_later_run_of_any_status_is_ignored(self):
+        for status in ("in_progress", "waiting", "queued", "pending", "completed"):
+            run = self.other(id=600, status=status, created_at="2026-11-10T12:05:00Z", updated_at="2026-11-10T12:30:00Z")
+            with self.subTest(status=status):
+                self.assertEqual(release_promotion.conflicting_runs([RUN, run], RUN, "v1.2.3-beta.1"), [])
 
     def test_attestation_refused_off_the_tag_ref(self):
         with patch.object(release_promotion, "api", return_value=dict(RUN, head_branch="main")):
