@@ -6,7 +6,12 @@
     The checks live in release.sh, which is also the version CI's conventions are built
     around. This wrapper only locates Git Bash and hands over, so there is one
     implementation of the release guard rather than two that can drift apart. Every
-    argument is passed through unchanged, including the publish mode.
+    argument is passed through, including the publish mode.
+
+    PowerShell parses an unquoted comma list such as modrinth,hangar as an array, and a
+    [string[]] parameter would hand it on as "modrinth hangar", which release.sh rejects.
+    The parameter is therefore [object[]], and each array argument is joined back with
+    commas before Git Bash sees it. scripts/tests/test_release_wrapper.py checks this.
 .EXAMPLE
     scripts\release.ps1 1.0.0-beta.1
 .EXAMPLE
@@ -19,8 +24,11 @@
 [CmdletBinding()]
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]] $ScriptArgs
+    [object[]] $ScriptArgs
 )
+
+# An unquoted a,b arrives as one array element; release.sh expects the literal "a,b".
+$bashArgs = @(foreach ($arg in $ScriptArgs) { @($arg) -join ',' })
 
 . (Join-Path $PSScriptRoot 'Find-GitBash.ps1')
 
@@ -37,7 +45,7 @@ $script = (Join-Path $PSScriptRoot 'release.sh').Replace([char]92, [char]47)
 
 Push-Location $repoRoot
 try {
-    & $bash $script @ScriptArgs
+    & $bash $script @bashArgs
     exit $LASTEXITCODE
 }
 finally {

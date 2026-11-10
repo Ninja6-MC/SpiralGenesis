@@ -168,9 +168,9 @@ repository's published (non-draft) GitHub releases with the same channel.
 Two steps qualify. Hangar's resource page is synced from
 `docs/modrinth-description.md` after the version upload and read back for
 equality. The GitHub release is marked latest only for a stable tag that is
-the newest; any other release is created with `--latest=false`. Nothing in the workflow edits the
-Modrinth project description; that remains a manual paste, as
-`scripts/modrinth-description.py` describes.
+the newest; any other release is created with `--latest=false`. Nothing in
+the workflow edits the Modrinth project description; that remains a manual
+paste, as `scripts/modrinth-description.py` describes.
 
 ## Registry metadata
 
@@ -222,7 +222,7 @@ own support or removal process before another promotion.
 | `plan` or a guard refuses an attestation | Later attempt, or another publisher run for the tag ran or is running | Inspect the inventory again and dispatch a new run; never re-run the old one |
 | Credential preflight fails in the publish jobs | Nothing was written anywhere | Fix the credential or project, then dispatch again with the same destinations |
 | One upload fails (outage, rejected metadata, a prerequisite above) | The other destinations still published | Fix the cause, then dispatch selecting only that destination, attesting it again if it is still absent |
-| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand |
+| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, the page sync was skipped too and a retry that finds Hangar complete does not run it, so when the tag is the newest on its channel also run the manual page sync in the next row |
 | Hangar page sync failed after the upload | The version is published; the page is stale | Run `./gradlew syncPluginPublicationMainResourcePagePageToHangar` from the tagged source with a key holding `edit_page`, then compare the public page to `docs/modrinth-description.md`; do not dispatch a version upload for it |
 | A publish job failed before its upload for a transient reason | Nothing was written by that job | Re-running that job is allowed only without an attestation for its destination; otherwise dispatch a new run |
 
