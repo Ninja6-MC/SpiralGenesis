@@ -162,9 +162,6 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     private static final List<String> KNOWN_LOGIN_PLUGINS = List.of(
             "AuthMe", "nLogin", "LibreLogin", "OpeNLogin", "UserLogin", "JPremium");
 
-    /** Fresh allocations waiting for their first completed teleport in this session. */
-    private final Map<UUID, Location> firstCommandArrivals = new ConcurrentHashMap<>();
-
     /** Players with an allocation currently in flight; guards against double assignment. */
     private final Set<UUID> allocating = ConcurrentHashMap.newKeySet();
 
@@ -838,8 +835,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
     }
 
     /**
-     * Whether a player's plot was recorded while they were away and they have not been
-     * placed on it yet.
+     * Whether a player's recorded plot still owes a placement or its first-allocation
+     * commands. Both route through a completed arrival, including after a rejoin.
      *
      * <p>The join handler routes such a player as it would an unassigned one, so they are
      * placed at the point a new player would have been allocated: at once for Bedrock and
@@ -851,11 +848,13 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      */
     public boolean isPlacementOwed(UUID uuid) {
         StoredSpawn record = dataStorage.getRecord(uuid);
-        return record != null && record.placementOwed();
+        return record != null && (record.placementOwed()
+                || (!pluginConfig.getFirstAllocationCommands().isEmpty()
+                && dataStorage.areFirstAllocationCommandsOwed(uuid)));
     }
 
     /**
-     * Places a player on a plot recorded while they were away, if one is owed: sets their
+     * Places a player whose record still owes a placement or commands: sets their
      * respawn point there, sends them there and requests its claim, exactly as a first
      * allocation does.
      *
@@ -886,7 +885,8 @@ public class SpiralGenesisPlugin extends JavaPlugin {
             }
             StoredSpawn record = dataStorage.getRecord(uuid);
             Location plot = record == null ? null : record.toLocation();
-            if (plot == null || !record.placementOwed()) {
+            if (plot == null || (!record.placementOwed()
+                    && !dataStorage.areFirstAllocationCommandsOwed(uuid))) {
                 return;
             }
             if (!dataStorage.clearPlacementOwed(uuid)) {
@@ -906,18 +906,16 @@ public class SpiralGenesisPlugin extends JavaPlugin {
      * plot is recorded.
      *
      * @param returning whether the plot was recorded while the player was away, which only
-     *                  changes the line logged on arrival and skips first-allocation commands
+     *                  changes the line logged on arrival
      */
     private void sendToPlot(Player player, Location plot, String label, boolean returning) {
         if (!returning && !pluginConfig.getFirstAllocationCommands().isEmpty()) {
-            firstCommandArrivals.put(player.getUniqueId(), plot.clone());
+            dataStorage.oweFirstAllocationCommands(player.getUniqueId());
         }
         player.setRespawnLocation(plot, true);
         player.teleportAsync(plot).thenAccept(success -> {
             if (Boolean.TRUE.equals(success)) {
-                if (!returning) {
-                    dispatchFirstAllocationCommands(player, plot);
-                }
+                dispatchFirstAllocationCommands(player, plot);
                 arrivalHints.arrived(player);
                 scheduleArrivalCheck(player, plot);
                 getLogger().info((returning ? "Teleported returning player " : "Assigned & teleported ")
@@ -972,7 +970,7 @@ public class SpiralGenesisPlugin extends JavaPlugin {
 
     private void dispatchFirstAllocationCommands(Player player, Location plot) {
         UUID uuid = player.getUniqueId();
-        if (!firstCommandArrivals.remove(uuid, plot)) {
+        if (!dataStorage.areFirstAllocationCommandsOwed(uuid)) {
             return;
         }
         runForPlayer(player, () -> {

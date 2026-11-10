@@ -153,6 +153,56 @@ class FirstAllocationCommandsTest {
         assertEquals(2, plugin.dispatched.size());
     }
 
+    @Test void refusedTeleportThenQuitAndRejoinRunsExactlyOnce() {
+        assertRejoinRunsOnce(false);
+    }
+
+    @Test void refusedTeleportThenQuitAndRestartStillRunsExactlyOnce() {
+        assertRejoinRunsOnce(true);
+    }
+
+    private void assertRejoinRunsOnce(boolean restart) {
+        InlinePlayerMock player = join("Rejoining");
+        player.teleportSucceeds = false;
+        plugin.allocateNow(player, "JAVA");
+        assertTrue(plugin.dispatched.isEmpty());
+        UUID uuid = player.getUniqueId();
+        Location plot = plugin.getDataStorage().getSpawn(uuid);
+        int nextIndex = plugin.getDataStorage().getCurrentIndex();
+        player.disconnect();
+        if (restart) {
+            // Reload from the bytes owed before the failed teleport, without another save.
+            plugin.getDataStorage().load();
+        }
+        assertTrue(plugin.getDataStorage().areFirstAllocationCommandsOwed(uuid));
+        InlinePlayerMock returning = new InlinePlayerMock(server, player.getName(), uuid);
+        server.addPlayer(returning);
+        assertTrue(plugin.dispatched.isEmpty(), "the join still waits for the action gate");
+        server.getPluginManager().callEvent(new PlayerMoveEvent(returning,
+                new Location(world, 0, 64, 0), new Location(world, 1, 64, 0)));
+        assertEquals(plot, returning.getLocation());
+        assertEquals(List.of("kit starter Rejoining", "record " + uuid), plugin.dispatched);
+        assertFalse(plugin.getDataStorage().areFirstAllocationCommandsOwed(uuid));
+        assertEquals(nextIndex, plugin.getDataStorage().getCurrentIndex());
+        returning.disconnect();
+        InlinePlayerMock again = new InlinePlayerMock(server, player.getName(), uuid);
+        server.addPlayer(again);
+        plugin.allocateNow(again, "JAVA");
+        assertEquals(2, plugin.dispatched.size());
+    }
+
+    @Test void reassignClearsAnOwedBatchWithoutDispatchingIt() {
+        InlinePlayerMock player = join("Reassigned");
+        player.teleportSucceeds = false;
+        plugin.allocateNow(player, "JAVA");
+        assertTrue(plugin.getDataStorage().areFirstAllocationCommandsOwed(player.getUniqueId()));
+        player.teleportSucceeds = true;
+        server.executeConsole("sgen", "reassign", "Reassigned").assertSucceeded();
+        assertFalse(plugin.getDataStorage().areFirstAllocationCommandsOwed(player.getUniqueId()));
+        plugin.allocateNow(player, "JAVA");
+        assertTrue(plugin.dispatched.isEmpty());
+    }
+
     @Test void returningAndReassignDoNotRunCommands() {
         InlinePlayerMock returning = join("Returning");
         assertTrue(plugin.getDataStorage().setSpawn(returning.getUniqueId(),
@@ -168,6 +218,7 @@ class FirstAllocationCommandsTest {
         Location plot = new Location(world, 10.5, 64, 10.5);
         Location repaired = new Location(world, 44.5, 66, 44.5);
         plugin.getDataStorage().setSpawn(player.getUniqueId(), plot, 3, 0, 0, "Repair", "JAVA");
+        plugin.getDataStorage().oweFirstAllocationCommands(player.getUniqueId());
         player.teleport(plot);
         player.setRespawnLocation(plot, true);
         SpawnManager manager = new SpawnManager(plugin, world, plugin.getPluginConfig()) {
@@ -188,6 +239,8 @@ class FirstAllocationCommandsTest {
         assertEquals(repaired, plugin.getDataStorage().getSpawn(player.getUniqueId()));
         plugin.repairSpawn(player, plugin.getDataStorage().getRecord(player.getUniqueId()), false);
         assertTrue(plugin.dispatched.isEmpty());
+        assertTrue(plugin.getDataStorage().areFirstAllocationCommandsOwed(player.getUniqueId()),
+                "repair preserves the owed batch without running it");
     }
 
     @Test void eachFailedCommandWarnsAndExceptionsDoNotRetry() {
@@ -208,22 +261,35 @@ class FirstAllocationCommandsTest {
         InlinePlayerMock player = join("Interrupted");
         plugin.getDataStorage().setSpawn(player.getUniqueId(), new Location(world, 10, 64, 10),
                 1, 0, 0, "Interrupted", "JAVA");
+        plugin.getDataStorage().oweFirstAllocationCommands(player.getUniqueId());
         assertTrue(plugin.getDataStorage().beginFirstAllocationCommands(player.getUniqueId()));
         YamlDataStorage restarted = new YamlDataStorage(plugin);
         restarted.load();
         assertFalse(restarted.beginFirstAllocationCommands(player.getUniqueId()));
-        assertTrue(logs.stream().anyMatch(r -> r.getMessage()
+        assertEquals(1, interruptedWarnings());
+        YamlDataStorage secondRestart = new YamlDataStorage(plugin);
+        secondRestart.load();
+        restarted.load();
+        assertEquals(1, interruptedWarnings(), "neither another restart nor reload warns again");
+        assertFalse(secondRestart.beginFirstAllocationCommands(player.getUniqueId()));
+    }
+
+    private long interruptedWarnings() {
+        return logs.stream().filter(r -> r.getMessage()
                 .startsWith("First-allocation commands for Interrupted")
-                && r.getMessage().contains("give the kit by hand")));
+                && r.getMessage().contains("give the kit by hand")).count();
     }
 
     @Test void failedMarkerWriteDispatchesNothing() throws Exception {
-        Files.createDirectory(plugin.getDataFolder().toPath().resolve("data.yml.tmp"));
+        java.nio.file.Path scratch = plugin.getDataFolder().toPath().resolve("data.yml.tmp");
+        Files.createDirectory(scratch);
+        Files.writeString(scratch.resolve("blocker"), "Keep the scratch path unwritable");
         plugin.allocateNow(join("Unwritable"), "JAVA");
         assertTrue(plugin.dispatched.isEmpty());
         assertTrue(logs.stream().anyMatch(r -> r.getMessage()
                 .startsWith("First-allocation commands for Unwritable")
                 && r.getMessage().contains("could not be saved")));
-        Files.deleteIfExists(plugin.getDataFolder().toPath().resolve("data.yml.tmp"));
+        Files.delete(scratch.resolve("blocker"));
+        Files.delete(scratch);
     }
 }

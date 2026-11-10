@@ -260,12 +260,35 @@ public class YamlDataStorage implements DataStorage {
             boolean installRecorded = settleInstalledAt(loaded, earliestAssigned);
             failure = null;
             startFlushTask();
-            if (installRecorded) {
+            boolean commandsReported = reportIncompleteCommands();
+            if (installRecorded || commandsReported) {
                 // Written now rather than on the next flush: it is set once, and a crash
                 // before that flush would have the next start take a later time for it.
                 save();
             }
             return outcome;
+        }
+    }
+
+    /** Warn once for interrupted batches, then persist the cleared diagnostic flags. */
+    private boolean reportIncompleteCommands() {
+        synchronized (yamlLock) {
+            boolean reported = false;
+            for (Map.Entry<UUID, StoredSpawn> entry : spawnCache.entrySet()) {
+                String path = "players." + entry.getKey() + ".first-allocation-commands-incomplete";
+                if (yaml.getBoolean(path, false)) {
+                    plugin.getLogger().warning("First-allocation commands for "
+                            + entry.getValue().playerName() + " (" + entry.getKey()
+                            + ") may not have completed before shutdown;"
+                            + " give the kit by hand if needed. They will not be retried.");
+                    yaml.set(path, null);
+                    reported = true;
+                }
+            }
+            if (reported) {
+                dirty.set(true);
+            }
+            return reported;
         }
     }
 
@@ -383,12 +406,6 @@ public class YamlDataStorage implements DataStorage {
                         // plots are on the one spiral it had: centre 0.
                         sec.getInt(CENTRE_KEY, 0)
                 );
-
-                if (sec.getBoolean("first-allocation-commands-incomplete", false)) {
-                    plugin.getLogger().warning("First-allocation commands for " + record.playerName()
-                            + " (" + uuid + ") may not have completed before shutdown;"
-                            + " give the kit by hand if needed. They will not be retried.");
-                }
 
                 spawnCache.put(uuid, record);
                 if (record.playerName() != null && !record.playerName().isEmpty()) {
@@ -838,6 +855,11 @@ public class YamlDataStorage implements DataStorage {
                 }
                 return false;
             }
+            StoredSpawn previous = spawnCache.get(uuid);
+            if (yaml != null && (previous == null || !record.onSpiral()
+                    || previous.centre() != record.centre() || previous.index() != record.index())) {
+                yaml.set("players." + uuid + ".first-allocation-commands-owed", null);
+            }
             unindexPlot(uuid, spawnCache.put(uuid, record));
             indexPlot(uuid, record);
             if (record.onSpiral()) {
@@ -895,6 +917,40 @@ public class YamlDataStorage implements DataStorage {
     }
 
     @Override
+    public void oweFirstAllocationCommands(UUID uuid) {
+        synchronized (writeLock) {
+            String playerName;
+            synchronized (yamlLock) {
+                if (failure != null || yaml == null || !spawnCache.containsKey(uuid)) {
+                    return;
+                }
+                String path = "players." + uuid;
+                if (yaml.getBoolean(path + ".first-allocation-commands-run", false)) {
+                    return;
+                }
+                playerName = spawnCache.get(uuid).playerName();
+                yaml.set(path + ".first-allocation-commands-owed", true);
+                dirty.set(true);
+            }
+            save();
+            if (consecutiveSaveFailures > 0) {
+                plugin.getLogger().warning("First-allocation commands owed for " + playerName
+                        + " (" + uuid + ") could not be saved; give the kit by hand if needed.");
+            }
+        }
+    }
+
+    @Override
+    public boolean areFirstAllocationCommandsOwed(UUID uuid) {
+        synchronized (yamlLock) {
+            String path = "players." + uuid;
+            return failure == null && yaml != null && spawnCache.containsKey(uuid)
+                    && yaml.getBoolean(path + ".first-allocation-commands-owed", false)
+                    && !yaml.getBoolean(path + ".first-allocation-commands-run", false);
+        }
+    }
+
+    @Override
     public boolean beginFirstAllocationCommands(UUID uuid) {
         synchronized (writeLock) {
             String playerName;
@@ -904,9 +960,10 @@ public class YamlDataStorage implements DataStorage {
                 }
                 playerName = spawnCache.get(uuid).playerName();
                 String path = "players." + uuid;
-                if (yaml.getBoolean(path + ".first-allocation-commands-run", false)) {
+                if (!areFirstAllocationCommandsOwed(uuid)) {
                     return false;
                 }
+                yaml.set(path + ".first-allocation-commands-owed", null);
                 yaml.set(path + ".first-allocation-commands-run", true);
                 yaml.set(path + ".first-allocation-commands-incomplete", true);
                 dirty.set(true);

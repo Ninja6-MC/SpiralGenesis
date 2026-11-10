@@ -149,6 +149,15 @@ public interface DataStorage {
      */
     boolean clearPlacementOwed(UUID uuid);
 
+    /** Records commands owed by a fresh allocation before its first teleport. */
+    default void oweFirstAllocationCommands(UUID uuid) {
+    }
+
+    /** Whether this stored player record still owes a first-allocation command batch. */
+    default boolean areFirstAllocationCommandsOwed(UUID uuid) {
+        return false;
+    }
+
     /** Durably consumes the first-allocation command run; false means do not dispatch. */
     default boolean beginFirstAllocationCommands(UUID uuid) {
         return false;

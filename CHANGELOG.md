@@ -12,8 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Optional `allocation.first-allocation-commands` console commands for a player's first
   completed plot arrival, with `{player}` and `{uuid}` placeholders and a durable
-  run-once marker. Empty by default and reloadable; returning players, reassignments
-  and repairs do not run them.
+  run-once marker. Commands still owed after a failed teleport survive quits and restarts.
+  Empty by default and reloadable; ordinary returning players, reassignments and repairs
+  do not run them.
 - **A new plot is re-checked 5 seconds after the player first reaches it.** Allocation
   judged a plot from the blocks read when its chunk loaded, so lava or water that flowed
   onto it a few ticks later was only found once the player died there. The respawn
