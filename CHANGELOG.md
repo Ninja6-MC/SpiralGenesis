@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Each release destination publishes in its own job, and one can be retried alone.**
+  Publish Release takes a `destinations` input and runs a `plan` job without approval or
+  publishing credentials that checks the candidate run, public registry state and the
+  absence attestations before anyone is asked to approve. GitHub Releases, Modrinth and
+  Hangar then publish in separate jobs behind one approval, so an outage at one registry
+  no longer blocks the others, and `scripts/release.sh publish ... --destinations hangar`
+  retries only Hangar. An attestation is refused on a re-run attempt and after another
+  publisher run for the same tag. The Hangar page sync and the GitHub latest marker apply
+  only to the newest release on its channel. Release candidates are kept for 90 days
+  instead of 30. The Modrinth and Hangar changelogs now carry the `CHANGELOG.md` section
+  without GitHub's generated change list.
+
 ## [1.0.0-beta.4] - 2026-11-10
 
 **Compatibility** is unchanged from 1.0.0-beta.3: Paper, Purpur, other Paper forks and
