@@ -26,6 +26,17 @@ class WrapperTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=120)
         return result.returncode, result.stdout + result.stderr
 
+    def test_page_only_refuses_attestation_before_network(self):
+        code, output = self.run_wrapper("publish", "1.2.3", "99", "--destinations", "hangar-page",
+                                        "--attest", "hangar", "--dry-run")
+        self.assertEqual(code, 1)
+        self.assertIn("hangar-page takes no absence attestation", output)
+
+    def test_page_only_refuses_combined_destinations_before_network(self):
+        code, output = self.run_wrapper("publish", "1.2.3", "99", "--destinations", "hangar,hangar-page", "--dry-run")
+        self.assertEqual(code, 1)
+        self.assertIn("hangar-page must be selected alone", output)
+
     def test_unquoted_attest_list_reaches_release_sh_intact(self):
         code, output = self.run_wrapper("publish", "1.2.3", "99", "--destinations", "github",
                                         "--attest", "modrinth,hangar", "--dry-run")

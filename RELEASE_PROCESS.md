@@ -50,6 +50,7 @@ hold.
    for `Ninja6-MC/SpiralGenesis`. The nonce appears in the run name, so the
    run can be found again. `destinations` defaults to
    `github,modrinth,hangar`; select fewer only to retry (see the retry table).
+   Select `hangar-page` alone to retry only the project page sync.
 6. The `plan` job runs first, with no environment, no publishing credentials
    and a read-only token, so its failures appear before anyone is asked to
    approve. It checks that the candidate run is a completed, successful,
@@ -90,8 +91,8 @@ destination is retried later by a new dispatch that selects only it.
 
 The candidate job and `plan` have `contents: read`, no registry credentials
 and no public publishing step. Only `publish-github` has `contents: write`;
-`publish-modrinth` and `publish-hangar` read. Each publish job also has
-`actions: read` to download the candidate. `MODRINTH_TOKEN` and
+`publish-modrinth`, `publish-hangar` and `sync-hangar-page` read. Each
+publish job also has `actions: read` to download the candidate. `MODRINTH_TOKEN` and
 `HANGAR_API_TOKEN` must exist as **environment secrets** on `release`, with
 `Create versions`, `Read projects` and `Read versions` for Modrinth and
 `create_version` and `edit_page` for Hangar. The Modrinth token holds those
@@ -110,6 +111,9 @@ Modrinth, that `MODRINTH_TOKEN` is set, reads the project, finds it not
 archived and reads its version list; Hangar, that `HANGAR_API_TOKEN` is set
 and exchanges for a session that is a project member and holds
 `create_version`, plus `edit_page` when the project page will be synced.
+For `hangar-page`, it requires the Hangar key, project membership and
+`edit_page` only; it does not upload a version or require `create_version`.
+Keep this key in the `release` environment for page retries too.
 
 ### Prerequisites only an upload can prove
 
@@ -174,6 +178,27 @@ the newest; any other release is created with `--latest=false`. Nothing in
 the workflow edits the Modrinth project description; that remains a manual
 paste, as `scripts/modrinth-description.py` describes.
 
+For a page-only retry, select `hangar-page` alone in Publish Release, using
+that tag's original candidate run ID and both absence attestations false.
+The tag must already have a non-draft GitHub release and a complete public
+Hangar version matching the retained candidate. The plan refuses a tag that
+is not newest on its channel, an incomplete version or any attestation.
+`sync-hangar-page` depends on `plan`, uses `environment: release` and stays
+in the publisher's tag concurrency group. After approval it fetches and
+verifies the retained candidate, preflights the Hangar key, then rechecks the
+published version and newest-on-channel rule immediately before syncing.
+No version is added. The same 90-day candidate retention prerequisite applies.
+
+Preview the dispatch without writing anything:
+
+```bash
+scripts/release.sh publish 1.2.3 123456789 --destinations hangar-page --dry-run
+```
+
+```powershell
+scripts\release.ps1 publish 1.2.3 123456789 --destinations hangar-page --dry-run
+```
+
 ## Registry metadata
 
 The Modrinth publication declares optional Floodgate, GriefPrevention,
@@ -190,12 +215,19 @@ after the upload, which patches them and needs `Write versions`. The
 1.0.0-beta.2 publish uploaded its version, then failed at that unfeature step
 with a 401, leaving a partial publication to resume. Feature a version on the
 project page by hand on Modrinth if wanted; do not widen the token for it.
+The upload sets `retry-attempts: 0`: a lost response must be reconciled by a
+new dispatch rather than uploading again within the same run.
 
 ## Retry and partial publication
 
 Each publish job reconciles its destination before writing. A GitHub release
 is complete only if its source, prerelease flag, exact asset list and
-downloaded asset digests match. A Modrinth version is complete only if its
+downloaded asset digests match. A draft for the tag stops promotion with
+its name and URL or release ID, before any second create. Open the repository's
+Releases page, inspect and delete that draft manually, then dispatch again.
+The publisher never deletes a draft or treats its assets as verified public
+bytes. The authenticated release inventory includes drafts when the tag
+lookup returns no release. A Modrinth version is complete only if its
 version type and filename match and its downloaded JAR's SHA-256 matches the
 manifest. Modrinth supplies SHA-1/SHA-512 metadata, not SHA-256; the
 publisher computes SHA-256 from the consumer download. It also looks up the
@@ -223,9 +255,10 @@ own support or removal process before another promotion.
 | `plan` fails: missing attestation | A selected registry is not publicly complete | Inspect that owner inventory, then dispatch again with its attestation |
 | `plan` or a guard refuses an attestation | Later attempt, or another publisher run for the tag ran or is running | Inspect the inventory again and dispatch a new run; never re-run the old one |
 | Credential preflight fails in the publish jobs | Nothing was written anywhere | Fix the credential or project, then dispatch again with the same destinations |
+| GitHub draft detected for the tag | A failed create left an unpublished release | Inspect and delete the named draft manually on the Releases page, then dispatch `github` again; nothing is deleted automatically |
 | One upload fails (outage, rejected metadata, a prerequisite above) | The other destinations still published | Fix the cause, then dispatch selecting only that destination, attesting it again if it is still absent |
-| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, the page sync was skipped too and a retry that finds Hangar complete does not run it, so when the tag is the newest on its channel also run the manual page sync in the next row |
-| Hangar page sync failed after the upload | The version is published; the page is stale | Run `./gradlew syncPluginPublicationMainResourcePagePageToHangar` from the tagged source with a key holding `edit_page`, then compare the public page to `docs/modrinth-description.md`; do not dispatch a version upload for it |
+| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, also dispatch `hangar-page` alone without attestations once the version is complete, if the tag is newest on its channel |
+| Hangar page sync failed after the upload | The version is published; the page is stale | Dispatch `hangar-page` alone with the original candidate run ID and no attestations; the tag must be newest on its channel |
 | A publish job failed before its upload for a transient reason | Nothing was written by that job | Re-running that job is allowed only without an attestation for its destination; otherwise dispatch a new run |
 
 For example, to retry Hangar alone after a Hangar outage:
@@ -266,4 +299,5 @@ attestation on a later attempt, in `plan` and before an upload; a missing
 attestation for a selected destination that is not publicly complete; a
 candidate run from another workflow, repository, branch, attempt, commit or
 tag; a concurrent or later-finished publisher run for the same tag; and a
-missing credential for any selected destination.
+missing credential for any selected destination; page-only retry prerequisites
+and attestations; and GitHub drafts stopping a second create.

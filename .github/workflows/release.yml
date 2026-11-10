@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       destinations:
-        description: Destinations to publish in this run, comma-separated
+        description: Destinations, comma-separated; or hangar-page alone for page sync
         required: true
         default: github,modrinth,hangar
         type: string
@@ -60,6 +60,7 @@ jobs:
       github: ${{ steps.plan.outputs.github }}
       modrinth: ${{ steps.plan.outputs.modrinth }}
       hangar: ${{ steps.plan.outputs.hangar }}
+      hangar_page: ${{ steps.plan.outputs.hangar_page }}
       channel: ${{ steps.plan.outputs.channel }}
       hangar_channel: ${{ steps.plan.outputs.hangar_channel }}
       version_json: ${{ steps.plan.outputs.version_json }}
@@ -291,6 +292,7 @@ jobs:
         with:
           modrinth-id: spiralgenesis
           modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          retry-attempts: 0
           modrinth-featured: false
           modrinth-unfeature-mode: none
           name: SpiralGenesis ${{ fromJSON(needs.plan.outputs.version_json) }}
@@ -411,3 +413,63 @@ jobs:
         env:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
         run: ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon
+
+  sync-hangar-page:
+    needs: plan
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.plan.outputs.hangar_page == 'true'
+    name: Sync the published Hangar project page
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Check credentials for every selected destination
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODRINTH_TOKEN: ${{ secrets.MODRINTH_TOKEN }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
+          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+        run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
+      - name: Validate Gradle wrapper for Hangar
+        uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Set up Java 21 for Hangar
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Setup Gradle for Hangar
+        uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Recheck published version and sync the Hangar project page
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          python3 scripts/release_promotion.py page-guard --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+          ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon

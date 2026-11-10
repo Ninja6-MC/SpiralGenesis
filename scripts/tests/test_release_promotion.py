@@ -52,6 +52,7 @@ class RetryTests(unittest.TestCase):
         self.args.attested = attested
         not_found = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
         with patch.object(release_promotion, "recheck"), patch.object(release_promotion, "api", side_effect=not_found), \
+             patch.object(release_promotion, "command", return_value=""), \
              patch.object(release_promotion, "modrinth_versions", return_value=modrinth or []), \
              patch.object(release_promotion, "hangar_version", return_value=hangar), \
              patch.object(release_promotion, "registry_json", side_effect=lambda url: hangar if "hangar" in url else (modrinth or [None])[0]), \
@@ -74,6 +75,29 @@ class RetryTests(unittest.TestCase):
 
     def test_missing_github_release_is_absent_without_attestation(self):
         self.assertIn("state=absent", self.reconcile("github", attested="false"))
+
+    def test_github_draft_stops_without_second_create(self):
+        draft = {"tag_name": self.args.tag, "draft": True, "id": 42,
+                 "name": "Unfinished beta", "html_url": "https://github.com/owner/repo/releases/42"}
+        missing = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
+        for lookup in (draft, missing):
+            with self.subTest(lookup=type(lookup).__name__), \
+                 patch.object(release_promotion, "recheck"), \
+                 patch.object(release_promotion, "api", side_effect=[lookup]), \
+                 patch.object(release_promotion, "command", return_value=json.dumps(draft)) as command:
+                with self.assertRaisesRegex(ValueError, "Unfinished beta.*releases/42.*delete that draft manually"):
+                    release_promotion.reconcile(self.args)
+                self.assertFalse(Path(self.args.output).exists())
+                for call in command.call_args_list:
+                    self.assertEqual(call.args[:3], ("gh", "api", "--paginate"))
+
+    def test_unrelated_draft_does_not_block_absent_tag(self):
+        missing = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "api", side_effect=missing), \
+             patch.object(release_promotion, "command", return_value=json.dumps({"draft": True, "tag_name": "v0.0.1"})):
+            release_promotion.reconcile(self.args)
+        self.assertIn("state=absent", Path(self.args.output).read_text())
 
     def test_retry_stops_on_conflicting_github_asset(self):
         release = {"target_commitish": "a" * 40, "prerelease": True,
@@ -342,6 +366,69 @@ class AttestationTests(unittest.TestCase):
         self.assertTrue(release_promotion.newest_on_channel("v2.0.0", []))
 
 
+class PageSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.args = argparse.Namespace(repository="Ninja6-MC/SpiralGenesis", tag="v1.2.3-beta.1",
+                                       destinations="hangar-page", modrinth_attested="false",
+                                       hangar_attested="false", attempt=1, run_id=500,
+                                       output=str(Path(self.temp.name) / "outputs"))
+
+    def plan(self, tags=None, state="complete"):
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "public_release_tags", return_value=tags if tags is not None else [self.args.tag]), \
+             patch.object(release_promotion, "public_state", return_value=state), \
+             patch.object(release_promotion, "project_checks"):
+            release_promotion.plan(self.args)
+
+    def test_page_only_plan_selects_no_upload(self):
+        self.plan()
+        output = Path(self.args.output).read_text()
+        self.assertIn("hangar_page=true", output)
+        for destination in release_promotion.DESTINATIONS:
+            self.assertIn(f"{destination}=false", output)
+
+    def test_page_only_plan_refuses_older_tag(self):
+        with self.assertRaisesRegex(ValueError, "not the newest public version on its channel"):
+            self.plan([self.args.tag, "v1.2.3-rc.1"])
+        self.assertFalse(Path(self.args.output).exists())
+
+    def test_page_only_requires_public_github_and_complete_hangar(self):
+        with self.assertRaisesRegex(ValueError, "already-published GitHub"):
+            self.plan([])
+        for state in (None, "absent"):
+            with self.subTest(state=state), self.assertRaisesRegex(ValueError, "complete Hangar"):
+                self.plan(state=state)
+
+    def test_page_only_refuses_either_attestation(self):
+        for name in release_promotion.ATTESTED:
+            with self.subTest(name=name):
+                setattr(self.args, f"{name}_attested", "true")
+                with self.assertRaisesRegex(ValueError, "attestation given"):
+                    self.plan()
+                setattr(self.args, f"{name}_attested", "false")
+
+    def test_page_only_cannot_be_combined_with_uploads(self):
+        with self.assertRaisesRegex(ValueError, "selected alone"):
+            release_promotion.select_destinations("hangar,hangar-page")
+
+    def test_page_guard_rechecks_newest_and_owner_bytes_after_approval(self):
+        with patch.object(release_promotion, "recheck") as recheck, \
+             patch.object(release_promotion, "public_release_tags", return_value=[self.args.tag]) as tags, \
+             patch.object(release_promotion, "owner_state", return_value="complete") as owner:
+            release_promotion.page_guard(self.args)
+            recheck.assert_called_once_with(self.args)
+            tags.assert_called_once_with(self.args.repository)
+            owner.assert_called_once_with("hangar", self.args.repository, self.args.tag)
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "public_release_tags", return_value=[self.args.tag, "v1.2.3-rc.1"]), \
+             patch.object(release_promotion, "owner_state") as owner:
+            with self.assertRaisesRegex(ValueError, "not the newest"):
+                release_promotion.page_guard(self.args)
+            owner.assert_not_called()
+
+
 class CandidateRunTests(unittest.TestCase):
     """A candidate from another workflow, repository, attempt, commit or tag is refused."""
 
@@ -422,6 +509,19 @@ class PreflightTests(unittest.TestCase):
              patch.object(release_promotion, "registry_json", return_value=[]), \
              patch.object(release_promotion, "hangar_session", return_value=("HangarAuth s", list(permissions))):
             release_promotion.preflight(self.args)
+
+    def test_page_only_preflight_requires_hangar_key(self):
+        self.args.destinations = "hangar-page"
+        with patch.dict(os.environ, {"HANGAR_API_TOKEN": ""}):
+            with self.assertRaisesRegex(ValueError, "HANGAR_API_TOKEN is required"):
+                release_promotion.preflight(self.args)
+
+    def test_page_only_preflight_requires_edit_page_without_create_version(self):
+        self.args.destinations = "hangar-page"
+        self.args.page_sync = "false"
+        self.run_preflight(("is_subject_member", "edit_page"))
+        with self.assertRaisesRegex(ValueError, "lacks edit_page"):
+            self.run_preflight(("is_subject_member", "create_version"))
 
     def test_all_selected_credentials_pass(self):
         self.run_preflight()
