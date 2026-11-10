@@ -94,6 +94,11 @@ updates:
       - dependency-name: org.geysermc.floodgate:api
       - dependency-name: fr.xephi:authme
       - dependency-name: com.github.TechFortress:GriefPrevention
+      # The CI bot clients pin one protocol release per Minecraft version they log into,
+      # so each line must stay on its own version. Dependabot sees the one coordinate and
+      # proposes moving both to the newest, which breaks the 1.21.11 client (#198, #214,
+      # #223). Bumped by hand, one client at a time.
+      - dependency-name: org.geysermc.mcprotocollib:protocol
     commit-message:
       # `build` rather than `ci`: ci is the Conventional Commits type for workflow
       # actions, build is the one for build-system dependencies.
