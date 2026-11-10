@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0-beta.4] - 2026-11-10
+
+**Compatibility** is unchanged from 1.0.0-beta.3: Paper, Purpur, other Paper forks and
+Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3, with CI verifying Folia on 1.20.4,
+1.21.11 and 26.2. Folia 26.3 is supported but not yet verified because no official build
+is available. Longer Paper 26.3 and Folia live soaks, and verification of Folia 26.3 once
+a build is available, remain for 1.0.0 in
+[#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191). Minecraft 26.1 and newer
+need the server to run on Java 25; Java 21 is enough for 1.20 and 1.21.
+
+**Upgrading** from 1.0.0-beta.3 is in place and needs no migration step; an upgrade from
+an earlier release also takes that release's upgrade notes. Stop the server and copy
+`plugins/SpiralGenesis` before you upgrade. An existing `data.yml` loads unchanged. The
+only change to it is three optional per-player keys, `first-allocation-commands-owed`,
+`first-allocation-commands-run` and `first-allocation-commands-incomplete`, which are
+written only while `allocation.first-allocation-commands` is non-empty and only for a
+player who is allocated a plot after that; a server that leaves the list empty, as it is
+by default, writes exactly what 1.0.0-beta.3 wrote. An existing `config.yml` is not
+rewritten: the new `allocation.first-allocation-commands` key it lacks takes its default,
+an empty list, so no command runs until you add one.
+
+Rolling back to 1.0.0-beta.3 keeps every plot and every recorded structure. 1.0.0-beta.3
+does not read the three keys and writes them back unchanged when it saves, so a later move
+forward to 1.0.0-beta.4 sees the markers as they were: no player is given the commands a
+second time, because `first-allocation-commands-run` is kept. A player still owed the
+commands when you rolled back stays owed, and gets them, and is sent to their plot, on
+their next completed arrival after the return, including a player who has been playing
+on 1.0.0-beta.3 meanwhile; 1.0.0-beta.3 does not clear the owed marker if you reassign
+that player, so the commands then run at the new plot. A player first allocated while on
+1.0.0-beta.3 is never owed them, so give that kit by hand. A player with a
+`first-allocation-commands-incomplete` marker is named in a warning once at the next
+1.0.0-beta.4 start.
+
+Three things in the log and in `/sgen simulate` change. Allocation now rejects a point
+with nothing to stand on as `NO_FLOOR` and one with lava within 4 blocks, or water above
+the feet, as `NEARBY_FLUID`; both are counted as their own reasons by `/sgen simulate`, so
+its rejection breakdown can show more rejections than before on the same terrain. A new
+plot is re-checked once, 5 seconds after the player first reaches it. A cell that
+player allocation skips because none of its candidates is usable is logged at INFO as
+`Skipped plot <label>: no usable candidate spawn. Rejections: {...}.`, which can add many
+lines on a server with a lot of ocean or cave terrain. A cell where every candidate is
+inside an existing claim, and a cell that overlaps another centre's plot, keep their
+earlier lines. And when an in-cell repair finds no point other than the one that failed,
+the line now begins `No safe point other than the one that failed was found among the`
+and no longer `No safe point found among the`, and no `Repaired plot` line is logged for
+it; update any log filter that matches the old wording.
+
 ### Added
 - Optional `allocation.first-allocation-commands` console commands for a player's first
   completed plot arrival, with `{player}` and `{uuid}` placeholders and a durable

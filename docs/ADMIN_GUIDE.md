@@ -1082,6 +1082,16 @@ go back under the 1.0.0-beta.2 jar. Take the same copy first all the same. A pla
 at world spawn because no safe plot was found has nothing recorded, so they are allocated
 again on their next join under either jar.
 
+1.0.0-beta.4 adds three optional keys to a player record, `first-allocation-commands-owed`,
+`-run` and `-incomplete`, written only while `allocation.first-allocation-commands` is
+non-empty (see [Starter kits on first allocation](#starter-kits-on-first-allocation)). Its
+`data.yml` can go back under the 1.0.0-beta.3 jar: that version ignores the keys and
+keeps them when it saves, so a later move forward to 1.0.0-beta.4 does not run a kit
+twice, and a player still owed one is given it on their next completed arrival. Take the
+same copy first all the same. A player allocated while 1.0.0-beta.3 runs is never owed a
+kit, so give it by hand; 1.0.0-beta.3 also leaves the owed marker in place if you
+reassign that player, so the kit then runs at the new plot.
+
 ### When `data.yml` cannot be read
 
 A missing file, or one that is empty, is a fresh install: the spiral starts at index 0.
