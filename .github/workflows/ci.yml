@@ -302,6 +302,13 @@ jobs:
             platform: folia
             minecraft: '26.2'
             java: '25'
+          # PaperMC publishes Folia 26.3 only on its experimental (alpha) channel so far.
+          # smoke-test.sh takes the latest build whatever its channel, so this entry boots
+          # the plugin on that build.
+          - label: 'folia 26.3'
+            platform: folia
+            minecraft: '26.3'
+            java: '25'
           # A deliberately hostile world. Seed 1901 is mountainous and is the only seed
           # measured that exhausts a scan: it produced 1 fallback and a spawn at Y=62 across
           # 60 samples, where the default seed produced none. It exists to exercise the

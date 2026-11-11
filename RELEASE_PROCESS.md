@@ -32,9 +32,9 @@ hold.
    version, channel, workflow run ID and attempt, JAR artifact ID, complete
    filename and SHA-256 list, and GitHub/Modrinth/Hangar destinations. The
    smoke jobs download that artifact, inspect its descriptor and main class,
-   and boot it on Paper and Folia at 1.20.4, 1.21.11 and 26.2, and on Paper at
-   26.3. Only when all seven pass does the run retain passing evidence bound to
-   the manifest digest and candidate identity.
+   and boot it on Paper and Folia at 1.20.4, 1.21.11, 26.2 and 26.3 (Folia 26.3
+   on PaperMC's experimental alpha builds). Only when all eight pass does the run
+   retain passing evidence bound to the manifest digest and candidate identity.
 3. Record the successful candidate run ID. Do not rerun a failed candidate:
    start a new dispatch so artifacts and attempt 1 remain unambiguous.
 4. From the main checkout, run `scripts/release.sh <version>` to create and

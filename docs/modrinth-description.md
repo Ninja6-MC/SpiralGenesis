@@ -231,13 +231,13 @@ in the [admin guide](https://github.com/Ninja6-MC/SpiralGenesis/blob/main/docs/A
 | Velocity / BungeeCord | No - proxies have no world to allocate in; install on the backend servers |
 
 Built against the 1.20.4 API, which newer servers still accept. CI boots the plugin on
-Paper at 1.20.4, 1.21.11, 26.2 and 26.3, and on Folia at 1.20.4, 1.21.11 and 26.2, and runs
-allocation against real generated terrain on each, so the range is checked on every change
-rather than assumed. Paper 26.3 is also verified with real clients in CI and in isolated
-runs. Folia is supported across the same range as Paper; CI verifies it on 1.20.4,
-1.21.11 and 26.2. Folia 26.3 is supported but not yet verified because no official build
-is available. Longer Paper 26.3 and Folia live soaks, and verification of Folia 26.3 once
-a build is available, are tracked for 1.0.0 in [#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191).
+Paper and Folia at 1.20.4, 1.21.11, 26.2 and 26.3, and runs allocation against real
+generated terrain on each, so the range is checked on every change rather than assumed.
+Paper 26.3 is also verified with real clients in CI and in isolated runs. Folia is
+supported across the same range as Paper. PaperMC has published Folia 26.3 only as
+experimental (alpha) builds so far, and CI verifies Folia 26.3 against the latest of
+those. Longer Paper 26.3 and Folia live soaks are tracked for 1.0.0 in
+[#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191).
 
 Minecraft 26.1 and newer refuse to start on anything below **Java 25**. That is a server
 requirement from Mojang, not this plugin: the jar is Java 21 bytecode, which a Java 25
