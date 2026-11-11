@@ -6,7 +6,7 @@ Release tags are `vMAJOR.MINOR.PATCH`, optionally followed by `-alpha.N`,
 `-beta.N` or `-rc.N`. Tags always identify a commit on `main`. Alpha maps to
 GitHub prerelease, Modrinth `alpha` and Hangar `Alpha`. Beta and RC map to
 GitHub prerelease, Modrinth `beta` and Hangar `Beta`. A plain version maps to
-GitHub latest (when it is the newest stable release), Modrinth `release` and
+GitHub latest (when it is the highest stable version), Modrinth `release` and
 Hangar `Release`.
 
 MAJOR means incompatible API or storage changes, MINOR new functionality, and
@@ -50,7 +50,7 @@ hold.
    for `Ninja6-MC/SpiralGenesis`. The nonce appears in the run name, so the
    run can be found again. `destinations` defaults to
    `github,modrinth,hangar`; select fewer only to retry (see the retry table).
-   Select `hangar-page` alone to retry only the project page sync.
+   Select `shared-state` alone to recover the Hangar page and GitHub latest.
 6. The `plan` job runs first, with no environment, no publishing credentials
    and a read-only token, so its failures appear before anyone is asked to
    approve. It checks that the candidate run is a completed, successful,
@@ -69,9 +69,14 @@ hold.
 7. Each selected destination then publishes in its own job:
    `publish-github`, `publish-modrinth` and `publish-hangar`. All three use the
    protected `release` environment and depend on `plan` alone, so they wait at
-   the gate together and one approval covers the run. The maintainer reviews
-   the plan summary and approves in the browser. Automation must not approve
-   or reject this gate.
+   the gate together. A run needs one approval for these publish jobs, a
+   second `release` approval for shared state after they finish when plan
+   selects an update, and a third (`modrinth-description`) only when a paste
+   is needed. The maintainer reviews the summaries and approves in the browser.
+   Pending shared-state approval holds the shared group: approve or reject it
+   promptly. Rejection leaves the page and latest marker unwritten; recover
+   with a `shared-state`-only dispatch for the owning tag. Automation must
+   not approve or reject any gate.
 8. Each publish job downloads the same retained candidate again and repeats
    the provenance and digest checks. Before writing anything, it runs the
    credential preflight for every destination selected in this dispatch, not
@@ -90,9 +95,10 @@ destination is retried later by a new dispatch that selects only it.
 ## Credentials
 
 The candidate job and `plan` have `contents: read`, no registry credentials
-and no public publishing step. Only `publish-github` has `contents: write`;
-`publish-modrinth`, `publish-hangar` and `sync-hangar-page` read. Each
-publish job also has `actions: read` to download the candidate. `MODRINTH_TOKEN` and
+and no public publishing step. `publish-github` and `shared-state` have
+`contents: write`; `publish-modrinth` and `publish-hangar` read. Each
+publisher and the description check also has `actions: read` to download the
+candidate. `MODRINTH_TOKEN` and
 `HANGAR_API_TOKEN` must exist as **environment secrets** on `release`, with
 `Create versions`, `Read projects` and `Read versions` for Modrinth and
 `create_version` and `edit_page` for Hangar. The Modrinth token holds those
@@ -111,8 +117,9 @@ Modrinth, that `MODRINTH_TOKEN` is set, reads the project, finds it not
 archived and reads its version list; Hangar, that `HANGAR_API_TOKEN` is set
 and exchanges for a session that is a project member and holds
 `create_version`, plus `edit_page` when the project page will be synced.
-For `hangar-page`, it requires the Hangar key, project membership and
-`edit_page` only; it does not upload a version or require `create_version`.
+For `shared-state`, it requires the Hangar key, project membership and
+`edit_page` when this tag has a complete Hangar version; it does not upload a
+version or require `create_version`. GitHub read access is preflighted too.
 Keep this key in the `release` environment for page retries too.
 
 ### Prerequisites only an upload can prove
@@ -166,42 +173,121 @@ ref every publishing job requires. Every workflow able to write release
 versions must share that group and be listed in `PUBLISHER_WORKFLOWS` in
 `scripts/release_promotion.py`; today that is `release.yml` alone.
 
-## Project page and latest release
+## Shared-state ownership and recovery
 
-A step that changes shared state rather than adding a version runs only when
-the tag is the newest public version on its channel, judged by the
-repository's published (non-draft) GitHub releases with the same channel.
-This is the old per-channel rule until #230 item 2 lands, recorded as a
-transitional `N6-REL-05` exception along with the per-tag concurrency group.
-Two steps qualify. Hangar's resource page is synced from
-`docs/modrinth-description.md` after the version upload and read back for
-equality. The GitHub release is marked latest only for a stable tag that is
-the newest; any other release is created with `--latest=false`. Nothing in
-the workflow edits the Modrinth project description; that remains a manual
-paste, as `scripts/modrinth-description.py` describes.
+Hangar's project page belongs to the highest public Release-channel version
+on Hangar. Until Hangar has a stable release, its highest public pre-release
+owns the page. Modrinth's page follows the same rule using its own listed
+public versions. The GitHub latest marker belongs only to the highest
+published stable GitHub release; it remains unset until the first stable.
+Versions are ordered by SemVer, including numeric pre-release identifiers.
+A stable hotfix owns its destination's page even after a higher pre-release;
+a pre-release cannot replace a stable page. These inventories are independent:
+a missing upload on one destination does not make GitHub its authority.
 
-For a page-only retry, select `hangar-page` alone in Publish Release, using
-that tag's original candidate run ID and both absence attestations false.
-The tag must already have a non-draft GitHub release and a complete public
-Hangar version matching the retained candidate. The plan refuses a tag that
-is not newest on its channel under the old rule until #230 item 2 lands,
-an incomplete version or any attestation.
-`sync-hangar-page` depends on `plan`, uses `environment: release` and stays
-in the publisher's tag concurrency group. After approval it fetches and
-verifies the retained candidate, preflights the Hangar key, then rechecks the
-published version and newest-on-channel rule immediately before syncing;
-this follows the old rule until #230 item 2 lands.
-No version is added. The same 90-day candidate retention prerequisite applies.
+`plan` records the current owners and predicts which selected uploads can
+own shared state. Modrinth-only dispatches and tags that cannot own either
+selected destination skip the shared-state job before its gate. Recovery-only
+plans consider only already-complete public destinations. The plan decision
+can only skip work; it never authorizes a write. Each GitHub release is created
+with `--latest=false`. After the publish jobs finish, `shared-state` runs under
+`environment: release`, with the same tag-ref guard, using the job-level
+`release-shared-state` concurrency group with `cancel-in-progress: false`.
+The group is repository-wide and does not contain the tag. This is a second
+`release` approval after the publish jobs, not part of their first approval.
+While that approval is pending it holds the shared group; approve or reject
+it promptly. Rejecting it leaves the page and latest marker unwritten.
+Recover with a `shared-state`-only dispatch for the owning tag. A read-only
+report job records skipped and rejected results and the recovery guidance
+in the run summary. The shared-state job downloads
+and verifies the retained candidate again and preflights its credentials.
+Immediately before each write it rechecks the tag, evidence and digests,
+verifies that destination's public version matches the retained bytes, then
+reads ownership again. A non-owner skips with its owner's tag in the log.
+All shared-state prerequisites must succeed before either write: the tag-ref
+check, checkout, candidate fetch, credential preflight and Gradle wrapper
+validation still stop the job on failure. Only the GitHub latest step uses
+`continue-on-error`. Its failure does not skip an eligible Hangar sync, which
+keeps the default success condition. A final step checks the latest step's
+original outcome and fails the job after Hangar has had its chance, naming
+the `shared-state`-only recovery dispatch for the owning tag. A Hangar failure
+also fails the job. Only an owner calls `gh release edit --latest` or syncs
+the Hangar page from `docs/modrinth-description.md`. Hangar's sync reads the
+public page back for exact equality. This job contains no build or packaging step.
 
-Preview the dispatch without writing anything:
+To recover shared state without adding a version, select `shared-state`
+alone with the original candidate run ID and both attestations false. This
+replaces the former `hangar-page` option and repairs both the Hangar page and
+GitHub latest for the tag where it owns them. The tag must have at least one
+complete published GitHub or Hangar version. Incomplete bytes fail closed;
+an absent destination is skipped, never uploaded. A complete Modrinth version
+also makes its description eligible for the separate check below.
+The same 90-day candidate retention prerequisite applies.
+
+GitHub keeps one running and one pending job in a concurrency group. A third
+queued shared-state job cancels the pending one even with
+`cancel-in-progress: false`; ordering is not guaranteed. A cancelled pending
+job has made no write. Every surviving job rechecks ownership under the lock,
+so a non-owner cannot replace state while attempting recovery. Cancellation
+can still leave a page stale or the latest marker unset, especially if the
+owner's pending job was replaced. Re-run the `shared-state` dispatch for the
+owning tag on each affected destination. A tag can own Hangar and GitHub
+independently, so this can require two dispatches, run one at a time.
+Do not widen the concurrency group to the manual description approval.
+
+Preview the recovery dispatch without writing anything:
 
 ```bash
-scripts/release.sh publish 1.2.3 123456789 --destinations hangar-page --dry-run
+scripts/release.sh publish 1.2.3 123456789 --destinations shared-state --dry-run
 ```
 
 ```powershell
-scripts\release.ps1 publish 1.2.3 123456789 --destinations hangar-page --dry-run
+scripts\release.ps1 publish 1.2.3 123456789 --destinations shared-state --dry-run
 ```
+
+## Modrinth description paste and confirmation
+
+`docs/modrinth-description.md` is generated from `README.md` by
+`python scripts/modrinth-description.py`; the existing CI description check
+fails when it is stale. The expected body strips the leading generated
+comment and surrounding blank lines exactly like Hangar's provider in
+`build.gradle.kts`. Comparison normalizes line endings and trailing whitespace
+only; indentation and other content differences remain significant.
+
+`check-modrinth-description` runs after the Modrinth publish job, with no
+secrets and no environment. It runs only for a tag selected for Modrinth or
+already complete there, and only compares the page when that tag owns it.
+It reads the public project `body` anonymously from
+`https://api.modrinth.com/v2/project/spiralgenesis`. A matching body ends the
+step without approval. Otherwise the run summary links to the file at the tag
+and asks the maintainer to paste it into the Modrinth description editor,
+omitting the generated comment, then approve `modrinth-description`. The
+summary warns that a newer owner found at approval replaces this tag.
+
+The **`modrinth-description` environment must exist**, with the maintainer as
+required reviewer, **no secrets**, and custom deployment policies permitting
+only `v*` tags (no branch or broader tag policy). Before requesting a paste,
+the check job uses its read-only job token to read the environment and every
+policy page. Missing protections, an absent environment, or a token unable
+to read these APIs fail closed with no paste output and no confirm job.
+The runtime job-token access has not been verified by a workflow dispatch.
+Configure the environment before the first release; this change never
+creates it or calls any settings write API. Automation must
+not approve this gate. Neither description job receives `MODRINTH_TOKEN`,
+and that token retains exactly its three upload-only scopes.
+
+`confirm-modrinth-description` runs after approval, outside the shared-state
+concurrency group. The manual paste is the write; the job only reads. It
+rechecks Modrinth ownership and compares the body with the committed file at
+the owner tag now. If the original tag was superseded it names the new owner
+and checks that owner's file, not the waiting tag's file. A mismatch fails
+with a short diff and links the precise file to paste. Paste that file, then
+re-run the confirm job. The job rejects a moved owner tag and checks ownership
+again after the read, retrying if it changed during comparison.
+
+Modrinth's server-side body normalization is not yet verified. It will be
+proven only on the first real release; the current tests mock the public body
+and establish only the documented local normalization and owner checks.
 
 ## Registry metadata
 
@@ -230,12 +316,12 @@ downloaded asset digests match. A draft for the tag stops promotion with
 its name and URL or release ID, before any second create. Open the repository's
 Releases page, inspect and delete that draft manually, then dispatch again.
 The publisher never deletes a draft or treats its assets as verified public
-bytes. Only `publish-github`, whose token has `contents: write`, can see
-drafts in the authenticated release inventory when the tag lookup returns
-no release. The read-only `plan` token cannot see drafts before approval;
+bytes. `publish-github`, whose token has `contents: write`, can see drafts
+in the authenticated release inventory when the tag lookup returns no
+release; `shared-state` uses the same check with its write-capable token. The read-only `plan` token cannot see drafts before approval;
 its summary says so, and `publish-github` checks them before any create.
-A Modrinth version is complete only if its version type and filename match and its downloaded JAR's SHA-256 matches the
-manifest. Modrinth supplies SHA-1/SHA-512 metadata, not SHA-256; the
+A Modrinth version is complete only if its version type and filename match
+and its downloaded JAR's SHA-256 matches the manifest. Modrinth supplies SHA-1/SHA-512 metadata, not SHA-256; the
 publisher computes SHA-256 from the consumer download. It also looks up the
 retained candidate's SHA-512 to recover an identical nonlisted upload, which
 cannot find a conflicting hidden one. A complete Modrinth version must be
@@ -263,8 +349,11 @@ own support or removal process before another promotion.
 | Credential preflight fails in the publish jobs | Nothing was written anywhere | Fix the credential or project, then dispatch again with the same destinations |
 | GitHub draft detected for the tag | A failed create left an unpublished release | Inspect and delete the named draft manually on the Releases page, then dispatch `github` again; nothing is deleted automatically |
 | One upload fails (outage, rejected metadata, a prerequisite above) | The other destinations still published | Fix the cause, then dispatch selecting only that destination, attesting it again if it is still absent |
-| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, also dispatch `hangar-page` alone without attestations once the version is complete, if the tag is newest on its channel under the old rule until #230 item 2 lands |
-| Hangar page sync failed after the upload | The version is published; the page is stale | Dispatch `hangar-page` alone with the original candidate run ID and no attestations; the tag must be newest on its channel under the old rule until #230 item 2 lands |
+| Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, also dispatch `shared-state` alone without attestations once the version is complete, for the tag that owns each destination |
+| Shared-state job cancelled or latest marker update failed | Versions are unchanged but shared state can be stale | Dispatch `shared-state` for the owning tag on the affected destination, with no attestations |
+| Hangar page sync failed after the upload | The version is published; the page is stale | Dispatch `shared-state` alone with the original candidate run ID and no attestations; non-owners are skipped after the ownership recheck |
+| Modrinth description environment check fails | Environment, reviewers, v* restriction or read access is missing | Configure the environment manually, then re-run the check job; no paste or confirm approval was requested |
+| Modrinth description confirmation fails | The public body differs from its current owner file | Paste the file linked in the job summary, then re-run only the confirm job |
 | A publish job failed before its upload for a transient reason | Nothing was written by that job | Re-running that job is allowed only without an attestation for its destination; otherwise dispatch a new run |
 
 For example, to retry Hangar alone after a Hangar outage:
@@ -305,5 +394,9 @@ attestation on a later attempt, in `plan` and before an upload; a missing
 attestation for a selected destination that is not publicly complete; a
 candidate run from another workflow, repository, branch, attempt, commit or
 tag; a concurrent or later-finished publisher run for the same tag; and a
-missing credential for any selected destination; page-only retry prerequisites
-and attestations; and GitHub drafts stopping a second create.
+missing credential for any selected destination; shared-state recovery
+prerequisites and attestations; GitHub drafts stopping a second create;
+stable-first destination ownership, pagination and the recheck before each
+write. `scripts/tests/test_release_description.py` covers matching and
+differing bodies, whitespace normalization, non-owners and a waiting tag
+superseded by a newer owner.

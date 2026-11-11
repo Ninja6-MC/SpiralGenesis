@@ -312,7 +312,7 @@ class AttestationTests(unittest.TestCase):
              patch.object(release_promotion, "public_state", side_effect=lambda name, *_: public[name]), \
              patch.object(release_promotion, "check_attestation") as check, \
              patch.object(release_promotion, "project_checks"), \
-             patch.object(release_promotion, "public_release_tags", return_value=["v1.2.2", "v1.2.3-beta.0"]):
+             patch.object(release_promotion, "public_owner", return_value="v1.2.2"):
             release_promotion.plan(args)
         return Path(args.output).read_text(), check
 
@@ -327,7 +327,7 @@ class AttestationTests(unittest.TestCase):
                                   {"modrinth": "false", "hangar": "false"})
         check.assert_not_called()
         self.assertIn("modrinth_public=complete", output)
-        self.assertIn("newest=true", output)
+        self.assertIn("owners_json=", output)
 
     def test_plan_checks_runs_and_attempt_for_any_true_attestation(self):
         output, check = self.plan({"github": "absent", "modrinth": None, "hangar": None})
@@ -353,53 +353,75 @@ class AttestationTests(unittest.TestCase):
                 release_promotion.select_destinations(text)
         self.assertEqual(release_promotion.select_destinations("hangar, github"), ["github", "hangar"])
 
-    def test_newest_public_version_on_channel(self):
-        tags = ["v1.0.0", "v1.1.0-beta.2", "v1.1.0-rc.1", "v0.9.0-alpha.3", "not-a-tag"]
-        self.assertTrue(release_promotion.newest_on_channel("v1.0.1", tags))
-        self.assertTrue(release_promotion.newest_on_channel("v1.0.0", tags))
-        self.assertFalse(release_promotion.newest_on_channel("v0.9.9", tags))
-        self.assertFalse(release_promotion.newest_on_channel("v1.1.0-beta.3", tags))
-        self.assertTrue(release_promotion.newest_on_channel("v1.1.0-rc.2", tags))
-        self.assertTrue(release_promotion.newest_on_channel("v0.9.0-alpha.4", tags))
-        self.assertTrue(release_promotion.newest_on_channel("v2.0.0", []))
+    def test_stable_owner_precedes_higher_prereleases(self):
+        tags = ["v1.0.0", "v2.0.0-beta.10", "v2.0.0-rc.1"]
+        self.assertEqual(release_promotion.state_owner(tags), "v1.0.0")
+        self.assertEqual(release_promotion.state_owner(tags + ["v1.0.1"]), "v1.0.1")
+        self.assertEqual(release_promotion.state_owner(["v2.0.0-beta.2", "v2.0.0-beta.10"]), "v2.0.0-beta.10")
+        self.assertIsNone(release_promotion.state_owner(["v2.0.0-beta.1"], stable_only=True))
 
 
-class PageSyncTests(unittest.TestCase):
+class SharedStateTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.args = argparse.Namespace(repository="Ninja6-MC/SpiralGenesis", tag="v1.2.3-beta.1",
-                                       destinations="hangar-page", modrinth_attested="false",
+                                       destinations="shared-state", modrinth_attested="false",
                                        hangar_attested="false", attempt=1, run_id=500,
-                                       output=str(Path(self.temp.name) / "outputs"))
+                                       output=str(Path(self.temp.name) / "outputs"), destination="hangar")
 
-    def plan(self, tags=None, state="complete"):
+    def plan(self, states=None):
+        states = states or {"github": "complete", "hangar": "complete"}
         with patch.object(release_promotion, "recheck"), \
-             patch.object(release_promotion, "public_release_tags", return_value=tags if tags is not None else [self.args.tag]), \
-             patch.object(release_promotion, "public_state", return_value=state), \
+             patch.object(release_promotion, "public_owner", return_value=self.args.tag), \
+             patch.object(release_promotion, "public_state", side_effect=lambda name, *_: states[name]), \
              patch.object(release_promotion, "project_checks"):
             release_promotion.plan(self.args)
 
-    def test_page_only_plan_selects_no_upload(self):
+    def test_plan_skips_gate_when_no_selected_destination_changes_shared_state(self):
+        self.args.destinations = "modrinth"
+        self.plan({"modrinth": "complete"})
+        output = Path(self.args.output).read_text()
+        self.assertIn("shared_needed=false", output)
+        self.assertIn("shared_github=false", output)
+        self.assertIn("shared_hangar=false", output)
+
+    def test_plan_skips_nonowner_recovery_gate(self):
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "public_owner", return_value="v1.2.3"), \
+             patch.object(release_promotion, "public_state", return_value="complete"), \
+             patch.object(release_promotion, "project_checks"):
+            release_promotion.plan(self.args)
+        self.assertIn("shared_needed=false", Path(self.args.output).read_text())
+
+    def test_plan_targets_follow_selection_and_expected_post_upload_owner(self):
+        cases = [
+            ("v1.0.1", ["hangar"], {}, {"hangar": "v2.0.0-beta.1"}, {"github": False, "hangar": True}),
+            ("v2.0.0-beta.1", ["hangar"], {}, {"hangar": "v1.0.0"}, {"github": False, "hangar": False}),
+            ("v1.0.1", ["github", "hangar"], {}, {"github": "v1.0.2", "hangar": "v1.0.2"}, {"github": False, "hangar": False}),
+            ("v2.0.0-beta.1", ["github"], {}, {"github": None}, {"github": False, "hangar": False}),
+            ("v1.0.0", ["github"], {}, {"github": None}, {"github": True, "hangar": False}),
+            ("v1.0.1", ["github"], {}, {"github": "v1.0.1", "hangar": "v1.0.1"}, {"github": True, "hangar": False}),
+            ("v1.0.1", ["shared-state"], {"github": "complete", "hangar": None},
+             {"github": "v1.0.1", "hangar": "v1.0.1"}, {"github": True, "hangar": False}),
+        ]
+        for tag, selected, states, owners, expected in cases:
+            with self.subTest(tag=tag, selected=selected):
+                self.assertEqual(release_promotion.shared_targets(tag, selected, states, owners), expected)
+
+    def test_shared_only_selects_no_upload(self):
         self.plan()
         output = Path(self.args.output).read_text()
-        self.assertIn("hangar_page=true", output)
+        self.assertIn("shared_state=true", output)
         for destination in release_promotion.DESTINATIONS:
             self.assertIn(f"{destination}=false", output)
 
-    def test_page_only_plan_refuses_older_tag(self):
-        with self.assertRaisesRegex(ValueError, "not the newest public version on its channel"):
-            self.plan([self.args.tag, "v1.2.3-rc.1"])
-        self.assertFalse(Path(self.args.output).exists())
+    def test_recovery_requires_a_complete_public_destination(self):
+        with self.assertRaisesRegex(ValueError, "already-published, complete"):
+            self.plan({"github": "absent", "hangar": None})
+        self.plan({"github": "complete", "hangar": None})
 
-    def test_page_only_requires_public_github_and_complete_hangar(self):
-        with self.assertRaisesRegex(ValueError, "already-published GitHub"):
-            self.plan([])
-        for state in (None, "absent"):
-            with self.subTest(state=state), self.assertRaisesRegex(ValueError, "complete Hangar"):
-                self.plan(state=state)
-
-    def test_page_only_refuses_either_attestation(self):
+    def test_shared_only_refuses_either_attestation(self):
         for name in release_promotion.ATTESTED:
             with self.subTest(name=name):
                 setattr(self.args, f"{name}_attested", "true")
@@ -407,24 +429,88 @@ class PageSyncTests(unittest.TestCase):
                     self.plan()
                 setattr(self.args, f"{name}_attested", "false")
 
-    def test_page_only_cannot_be_combined_with_uploads(self):
+    def test_shared_only_cannot_be_combined_with_uploads(self):
         with self.assertRaisesRegex(ValueError, "selected alone"):
-            release_promotion.select_destinations("hangar,hangar-page")
+            release_promotion.select_destinations("hangar,shared-state")
 
-    def test_page_guard_rechecks_newest_and_owner_bytes_after_approval(self):
+    def write(self, tags, destination="hangar", state="complete"):
+        self.args.destination = destination
+        def owner(*_):
+            return release_promotion.state_owner(tags, stable_only=destination == "github")
         with patch.object(release_promotion, "recheck") as recheck, \
-             patch.object(release_promotion, "public_release_tags", return_value=[self.args.tag]) as tags, \
-             patch.object(release_promotion, "owner_state", return_value="complete") as owner:
-            release_promotion.page_guard(self.args)
-            recheck.assert_called_once_with(self.args)
-            tags.assert_called_once_with(self.args.repository)
-            owner.assert_called_once_with("hangar", self.args.repository, self.args.tag)
-        with patch.object(release_promotion, "recheck"), \
-             patch.object(release_promotion, "public_release_tags", return_value=[self.args.tag, "v1.2.3-rc.1"]), \
-             patch.object(release_promotion, "owner_state") as owner:
-            with self.assertRaisesRegex(ValueError, "not the newest"):
-                release_promotion.page_guard(self.args)
-            owner.assert_not_called()
+             patch.object(release_promotion, "public_state", return_value=state), \
+             patch.object(release_promotion, "hangar_session", return_value=("session", ["edit_page"])), \
+             patch.object(release_promotion, "public_owner", side_effect=owner), \
+             patch.object(release_promotion, "command") as command:
+            release_promotion.shared_write(self.args)
+        recheck.assert_called_once_with(self.args)
+        return command
+
+    def test_owner_rule_for_each_write(self):
+        cases = [
+            ("v2.0.0-beta.1", ["v1.0.0", "v2.0.0-beta.1"], False),
+            ("v1.0.1", ["v1.0.1", "v1.0.2"], False),
+            ("v1.0.1", ["v1.0.1", "v2.0.0-beta.1"], True),
+            ("v1.0.0", ["v1.0.0", "v2.0.0-beta.1"], True),
+            ("v2.0.0-beta.10", ["v2.0.0-beta.2", "v2.0.0-beta.10"], True),
+        ]
+        for tag, tags, owns in cases:
+            self.args.tag = tag
+            for destination in ("github", "hangar"):
+                with self.subTest(tag=tag, destination=destination):
+                    command = self.write(tags, destination)
+                    expected = owns and (destination != "github" or "-" not in tag)
+                    self.assertEqual(command.call_count, int(expected))
+                    if expected and destination == "github":
+                        self.assertIn("--latest", command.call_args.args)
+
+    def test_recheck_refuses_new_owner_after_plan(self):
+        self.args.tag = "v1.2.3"
+        self.plan()
+        command = self.write([self.args.tag, "v1.2.4"])
+        command.assert_not_called()
+
+    def test_incomplete_version_is_never_used_for_shared_state(self):
+        self.write([self.args.tag], state=None).assert_not_called()
+
+    def test_byte_failure_stops_before_write(self):
+        with patch.object(release_promotion, "recheck", side_effect=ValueError("digest differs")), \
+             patch.object(release_promotion, "command") as command:
+            with self.assertRaisesRegex(ValueError, "digest differs"):
+                release_promotion.shared_write(self.args)
+            command.assert_not_called()
+
+    def test_semver_prerelease_precedence(self):
+        tags = ["v1.0.0-alpha", "v1.0.0-alpha.1", "v1.0.0-alpha.beta", "v1.0.0-beta", "v1.0.0-beta.2",
+                "v1.0.0-beta.11", "v1.0.0-rc.1", "v1.0.0"]
+        self.assertEqual(sorted(reversed(tags), key=release_promotion.version_key), tags)
+        with self.assertRaisesRegex(ValueError, "SemVer"):
+            release_promotion.version_key("v1.0.0-beta.01")
+
+    def test_hangar_ownership_uses_every_public_page(self):
+        def version(name, channel="Beta", visibility="public"):
+            return {"name": name, "channel": {"name": channel}, "visibility": visibility}
+        pages = [{"pagination": {"count": 3}, "result": [version("2.0.0-beta.1"), version("3.0.0", "Release", "hidden")]},
+                 {"pagination": {"count": 3}, "result": [version("1.0.1", "Release")]}]
+        with patch.object(release_promotion, "registry_json", side_effect=pages) as registry:
+            self.assertEqual(release_promotion.public_owner("hangar", self.args.repository), "v1.0.1")
+        self.assertIn("offset=2", registry.call_args.args[0])
+        for call in registry.call_args_list:
+            self.assertEqual(len(call.args), 1)
+
+    def test_hangar_incomplete_pagination_fails_closed(self):
+        with patch.object(release_promotion, "registry_json", return_value={"pagination": {"count": 2}, "result": []}):
+            with self.assertRaisesRegex(ValueError, "pagination is incomplete"):
+                release_promotion.public_owner("hangar", self.args.repository)
+
+    def test_modrinth_ownership_uses_only_listed_versions(self):
+        versions = [{"id": "stable", "version_number": "1.0.1", "version_type": "release", "status": "listed"},
+                    {"id": "beta", "version_number": "2.0.0-beta.1", "version_type": "beta", "status": "listed"},
+                    {"id": "hidden", "version_number": "3.0.0", "version_type": "release", "status": "unlisted"}]
+        with patch.object(release_promotion, "registry_json", return_value=versions) as registry:
+            self.assertEqual(release_promotion.public_owner("modrinth", self.args.repository), "v1.0.1")
+        self.assertEqual(len(registry.call_args.args), 1)
+
 
 
 class CandidateRunTests(unittest.TestCase):
@@ -503,19 +589,22 @@ class PreflightTests(unittest.TestCase):
 
     def run_preflight(self, permissions=("is_subject_member", "create_version", "edit_page")):
         with patch.object(release_promotion, "api", return_value=[]), \
+             patch.object(release_promotion, "public_state", return_value="complete"), \
              patch.object(release_promotion, "modrinth_project", return_value={"id": "p"}), \
              patch.object(release_promotion, "registry_json", return_value=[]), \
              patch.object(release_promotion, "hangar_session", return_value=("HangarAuth s", list(permissions))):
             release_promotion.preflight(self.args)
 
     def test_page_only_preflight_requires_hangar_key(self):
-        self.args.destinations = "hangar-page"
-        with patch.dict(os.environ, {"HANGAR_API_TOKEN": ""}):
+        self.args.destinations = "shared-state"
+        with patch.dict(os.environ, {"HANGAR_API_TOKEN": ""}), \
+             patch.object(release_promotion, "api", return_value=[]), \
+             patch.object(release_promotion, "public_state", return_value="complete"):
             with self.assertRaisesRegex(ValueError, "HANGAR_API_TOKEN is required"):
                 release_promotion.preflight(self.args)
 
     def test_page_only_preflight_requires_edit_page_without_create_version(self):
-        self.args.destinations = "hangar-page"
+        self.args.destinations = "shared-state"
         self.args.page_sync = "false"
         self.run_preflight(("is_subject_member", "edit_page"))
         with self.assertRaisesRegex(ValueError, "lacks edit_page"):

@@ -10,6 +10,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -23,7 +24,7 @@ from release_candidate import DESTINATIONS, TAG, details, digest, read_json, ver
 # Destinations whose absence cannot be proven from their API. Writing to one of them
 # needs a per-dispatch absence attestation unless it is already complete.
 ATTESTED = ("modrinth", "hangar")
-SELECTABLE = (*DESTINATIONS, "hangar-page")
+SELECTABLE = (*DESTINATIONS, "shared-state")
 LABELS = {"github": "GitHub", "modrinth": "Modrinth", "hangar": "Hangar"}
 HANGAR_CHANNELS = {"alpha": "Alpha", "beta": "Beta", "release": "Release"}
 CANDIDATE_WORKFLOW = ".github/workflows/release-candidate.yml"
@@ -110,8 +111,8 @@ def select_destinations(text):
     names = [part.strip() for part in (text or "").split(",")]
     if not names or any(name not in SELECTABLE for name in names) or len(set(names)) != len(names):
         raise ValueError(f"Destinations must be a comma-separated subset of {','.join(SELECTABLE)}")
-    if "hangar-page" in names and len(names) != 1:
-        raise ValueError("hangar-page must be selected alone")
+    if "shared-state" in names and len(names) != 1:
+        raise ValueError("shared-state must be selected alone")
     return [name for name in SELECTABLE if name in names]
 
 
@@ -367,21 +368,81 @@ def guard(args):
     recheck(args)
 
 
+SEMVER = re.compile(r"^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+                    r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
+                    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$")
+
+
 def version_key(tag):
-    match = TAG.fullmatch(tag)
-    rank = {"alpha": 0, "beta": 1, "rc": 2, None: 3}[match.group(4)]
-    return tuple(int(match.group(i)) for i in (1, 2, 3)) + (rank, int(match.group(5) or 0))
+    match = SEMVER.fullmatch(tag)
+    if not match:
+        raise ValueError(f"Not a SemVer version: {tag}")
+    identifiers = (match.group(4) or "").split(".") if match.group(4) else []
+    if any(part.isdigit() and len(part) > 1 and part.startswith("0") for part in identifiers):
+        raise ValueError(f"Not a SemVer version: {tag}")
+    prerelease = tuple((0, int(part)) if part.isdigit() else (1, part) for part in identifiers)
+    return tuple(int(match.group(i)) for i in (1, 2, 3)) + (not identifiers, prerelease)
 
 
-def newest_on_channel(tag, public_tags):
-    channel = details(tag)[1]
-    same = [item for item in public_tags if TAG.fullmatch(item) and details(item)[1] == channel]
-    return all(version_key(item) <= version_key(tag) for item in same)
+def state_owner(tags, stable_only=False):
+    versions = [(tag, version_key(tag)) for tag in tags]
+    stable = [(tag, key) for tag, key in versions if key[3]]
+    eligible = stable if stable or stable_only else versions
+    return max(eligible, key=lambda item: item[1])[0] if eligible else None
+
+
+def public_hangar_tags():
+    tags, seen, offset = [], set(), 0
+    while True:
+        page = registry_json(f"https://hangar.papermc.io/api/v1/projects/SpiralGenesis/versions?limit=25&offset={offset}")
+        if not isinstance(page, dict) or not isinstance(page.get("result"), list):
+            raise ValueError("Hangar public version inventory is invalid")
+        count = page.get("pagination", {}).get("count")
+        items = page["result"]
+        if not isinstance(count, int) or count < 0 or (not items and offset < count):
+            raise ValueError("Hangar public version pagination is incomplete")
+        for item in items:
+            name = item.get("name")
+            if not isinstance(name, str) or name in seen:
+                raise ValueError("Hangar public version inventory is ambiguous")
+            seen.add(name)
+            tag = "v" + name
+            version_key(tag)
+            if item.get("visibility") == "public":
+                expected = HANGAR_CHANNELS[details(tag)[1]] if TAG.fullmatch(tag) else None
+                if expected is None or item.get("channel", {}).get("name") != expected:
+                    raise ValueError(f"Hangar version channel cannot be reconciled: {name}")
+                tags.append(tag)
+        offset += len(items)
+        if offset >= count:
+            return tags
+
+
+def public_modrinth_tags():
+    versions = modrinth_inventory(registry_json("https://api.modrinth.com/v2/project/spiralgenesis/version"))
+    tags = []
+    for item in versions:
+        if item.get("status") != "listed":
+            continue
+        tag = "v" + item["version_number"]
+        version_key(tag)
+        if not TAG.fullmatch(tag) or item.get("version_type") != details(tag)[1]:
+            raise ValueError(f"Modrinth version type cannot be reconciled: {tag}")
+        tags.append(tag)
+    return tags
+
+
+def public_owner(destination, repository):
+    if destination == "hangar":
+        return state_owner(public_hangar_tags())
+    if destination == "modrinth":
+        return state_owner(public_modrinth_tags())
+    return state_owner(public_release_tags(repository), stable_only=True)
 
 
 def public_release_tags(repository):
     lines = command("gh", "api", "--paginate", f"repos/{repository}/releases?per_page=100",
-                    "--jq", ".[] | select(.draft | not) | .tag_name")
+                    "--jq", ".[] | select(.draft | not) | select(.prerelease | not) | .tag_name")
     return [line.strip() for line in lines.splitlines() if line.strip()]
 
 
@@ -389,10 +450,26 @@ def project_checks(selected):
     """Checks that need no secret: each selected registry project resolves publicly."""
     if "modrinth" in selected:
         modrinth_project()
-    if "hangar" in selected or "hangar-page" in selected:
+    if "hangar" in selected or "shared-state" in selected:
         project = registry_json("https://hangar.papermc.io/api/v1/projects/SpiralGenesis")
         if not isinstance(project, dict) or project.get("name") != "SpiralGenesis":
             raise ValueError("Hangar project identity cannot be established")
+
+
+def shared_targets(tag, selected, states, owners):
+    """Plan may avoid a gate; only the write-time inventory can authorize a write."""
+    recovery = selected == ["shared-state"]
+    targets = {}
+    for destination in ("github", "hangar"):
+        eligible = (recovery and states.get(destination) == "complete") or destination in selected
+        if destination == "github" and not version_key(tag)[3]:
+            eligible = False
+        owner = owners.get(destination)
+        if eligible and not recovery:
+            # A selected upload may make this tag the owner after plan has finished.
+            owner = state_owner(([owner] if owner else []) + [tag], stable_only=destination == "github")
+        targets[destination] = eligible and owner == tag
+    return targets
 
 
 def plan(args):
@@ -402,45 +479,57 @@ def plan(args):
         if value and name not in selected:
             raise ValueError(f"{LABELS[name]} absence attestation given, but {name} is not a selected destination")
     recheck(args)
-    if selected == ["hangar-page"]:
-        check_page_sync(args, public=True)
     version, channel = details(args.tag)
     states = {name: public_state(name, args.repository, args.tag) for name in selected if name in DESTINATIONS}
+    if selected == ["shared-state"]:
+        states = {name: public_state(name, args.repository, args.tag) for name in ("github", "hangar")}
+        if "complete" not in states.values():
+            raise ValueError("shared-state requires an already-published, complete GitHub or Hangar version")
     for name in ATTESTED:
         if name in selected and states[name] != "complete" and not attested[name]:
             raise ValueError(missing_attestation(name, version))
     if any(attested.values()):
         check_attestation(args.repository, args.tag, args.run_id, args.attempt)
     project_checks(selected)
-    newest = newest_on_channel(args.tag, public_release_tags(args.repository))
+    preview = ("github", "hangar") if selected == ["shared-state"] else selected
+    owners = {name: public_owner(name, args.repository) for name in preview}
+    targets = shared_targets(args.tag, selected, states, owners)
     outputs = {name.replace("-", "_"): str(name in selected).lower() for name in SELECTABLE}
     outputs.update({f"{name}_public": states.get(name) or "unproven" for name in DESTINATIONS if name in selected})
-    outputs.update({"destinations": ",".join(selected), "channel": channel,
-                    "hangar_channel": HANGAR_CHANNELS[channel], "version_json": json.dumps(version),
-                    "newest": str(newest).lower()})
+    outputs.update({f"shared_{name}": str(value).lower() for name, value in targets.items()})
+    outputs["shared_needed"] = str(any(targets.values())).lower()
+    outputs.update({"destinations": ",".join(selected), "channel": channel, "owners_json": json.dumps(owners),
+                    "hangar_channel": HANGAR_CHANNELS[channel], "version_json": json.dumps(version)})
     write_outputs(args.output, outputs)
 
 
-def check_page_sync(args, public=False):
-    tags = public_release_tags(args.repository)
-    if args.tag not in tags:
-        raise ValueError("hangar-page requires an already-published GitHub release for this tag")
-    if not newest_on_channel(args.tag, tags):
-        raise ValueError("hangar-page refused: tag is not the newest public version on its channel")
-    lookup = public_state if public else owner_state
-    if lookup("hangar", args.repository, args.tag) != "complete":
-        raise ValueError("hangar-page requires an already-published, complete Hangar version")
-
-
-def page_guard(args):
+def shared_write(args):
+    """Called only in the cross-tag serialized job, directly before its public write."""
     recheck(args)
-    check_page_sync(args)
+    state = public_state(args.destination, args.repository, args.tag)
+    if state != "complete":
+        print(f"Skip {args.destination} shared state: this tag has no complete public version")
+        return
+    if args.destination == "hangar":
+        _, granted = hangar_session()
+        if "edit_page" not in granted:
+            raise ValueError("Hangar API key lacks edit_page")
+    # Inventory is read last, after byte and credential checks, never reused from plan.
+    owner = public_owner(args.destination, args.repository)
+    if owner != args.tag:
+        print(f"Skip {args.destination} shared state for {args.tag}: owner is {owner or 'none'}")
+        return
+    if args.destination == "github":
+        command("gh", "release", "edit", args.tag, "-R", args.repository, "--latest", capture=False)
+    else:
+        command("./gradlew", "syncPluginPublicationMainResourcePagePageToHangar", "--no-daemon", capture=False)
 
 
 def preflight(args):
     """Credential checks that write nothing, for every destination selected in this dispatch."""
     selected = select_destinations(args.destinations)
-    if "github" in selected:
+    recovery = "shared-state" in selected
+    if "github" in selected or recovery:
         if not os.environ.get("GH_TOKEN"):
             raise ValueError("GH_TOKEN is required")
         api(f"repos/{args.repository}/releases?per_page=1")
@@ -450,9 +539,9 @@ def preflight(args):
             raise ValueError("MODRINTH_TOKEN is required")
         modrinth_project(token)
         modrinth_inventory(registry_json("https://api.modrinth.com/v2/project/spiralgenesis/version", token))
-    if "hangar" in selected or "hangar-page" in selected:
+    if "hangar" in selected or (recovery and public_state("hangar", args.repository, args.tag) == "complete"):
         _, granted = hangar_session()
-        needed = (["edit_page"] if "hangar-page" in selected else
+        needed = (["edit_page"] if "shared-state" in selected else
                   ["create_version"] + (["edit_page"] if flag(args.page_sync) else []))
         missing = [name for name in needed if name not in granted]
         if missing:
@@ -508,10 +597,10 @@ def notes(args):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
-    for name in ("fetch", "recheck", "plan", "preflight", "reconcile", "guard", "verify-published", "notes", "prerelease", "page-guard"):
+    for name in ("fetch", "recheck", "plan", "preflight", "reconcile", "guard", "verify-published", "notes", "prerelease", "shared-write"):
         item = sub.add_parser(name)
         item.add_argument("--tag", required=True)
-        if name in ("fetch", "plan", "preflight", "reconcile", "guard", "verify-published", "page-guard"):
+        if name in ("fetch", "plan", "preflight", "reconcile", "guard", "verify-published", "shared-write"):
             item.add_argument("--repository", required=True)
         if name in ("fetch", "plan", "guard"):
             item.add_argument("--run-id", type=int, required=True)
@@ -526,13 +615,13 @@ def main():
             item.add_argument("--hangar-attested", choices=("true", "false"), default="false")
         if name == "preflight":
             item.add_argument("--page-sync", choices=("true", "false"), default="false")
-        if name in ("reconcile", "guard", "verify-published"):
-            item.add_argument("--destination", choices=DESTINATIONS, required=True)
+        if name in ("reconcile", "guard", "verify-published", "shared-write"):
+            item.add_argument("--destination", choices=("github", "hangar") if name == "shared-write" else DESTINATIONS, required=True)
         if name in ("reconcile", "guard"):
             item.add_argument("--attested", choices=("true", "false"), default="false")
     args = parser.parse_args()
     handlers = {"fetch": fetch, "recheck": recheck, "plan": plan, "preflight": preflight,
-                "reconcile": reconcile, "guard": guard, "verify-published": verify_published, "notes": notes, "page-guard": page_guard}
+                "reconcile": reconcile, "guard": guard, "verify-published": verify_published, "notes": notes, "shared-write": shared_write}
     try:
         if args.action in handlers:
             handlers[args.action](args)
