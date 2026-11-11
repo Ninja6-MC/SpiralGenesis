@@ -204,11 +204,16 @@ and verifies the retained candidate again and preflights its credentials.
 Immediately before each write it rechecks the tag, evidence and digests,
 verifies that destination's public version matches the retained bytes, then
 reads ownership again. A non-owner skips with its owner's tag in the log.
-Each selected shared-state write runs independently, so a failed GitHub
-latest update does not skip an eligible Hangar sync; either failure still
-fails the job. Only an owner calls `gh release edit --latest` or syncs the Hangar page from
-`docs/modrinth-description.md`. Hangar's sync reads the public page back for
-exact equality. This job contains no build or packaging step.
+All shared-state prerequisites must succeed before either write: the tag-ref
+check, checkout, candidate fetch, credential preflight and Gradle wrapper
+validation still stop the job on failure. Only the GitHub latest step uses
+`continue-on-error`. Its failure does not skip an eligible Hangar sync, which
+keeps the default success condition. A final step checks the latest step's
+original outcome and fails the job after Hangar has had its chance, naming
+the `shared-state`-only recovery dispatch for the owning tag. A Hangar failure
+also fails the job. Only an owner calls `gh release edit --latest` or syncs
+the Hangar page from `docs/modrinth-description.md`. Hangar's sync reads the
+public page back for exact equality. This job contains no build or packaging step.
 
 To recover shared state without adding a version, select `shared-state`
 alone with the original candidate run ID and both attestations false. This

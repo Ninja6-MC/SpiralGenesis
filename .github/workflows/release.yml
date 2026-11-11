@@ -467,13 +467,15 @@ jobs:
       - name: Setup Gradle for Hangar
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
       - name: Recheck ownership and set GitHub latest
+        id: latest
+        continue-on-error: true
         if: needs.plan.outputs.shared_github == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: python3 scripts/release_promotion.py shared-write --destination github --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
       - name: Recheck ownership and sync the Hangar project page
-        if: ${{ !cancelled() && needs.plan.outputs.shared_hangar == 'true' }}
+        if: needs.plan.outputs.shared_hangar == 'true'
         env:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
@@ -481,6 +483,12 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
           python3 scripts/release_promotion.py shared-write --destination hangar --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+
+      - name: Fail shared state when the GitHub latest marker was not set
+        if: ${{ !cancelled() && steps.latest.outcome == 'failure' }}
+        run: |
+          printf 'The GitHub latest marker was not set. After fixing the cause, dispatch shared-state only for the owning tag with the original candidate run ID and no attestations.\n'
+          exit 1
 
   report-shared-state:
     needs: [plan, shared-state]
@@ -499,7 +507,7 @@ jobs:
             printf '## Shared-state result: %s\n\n' "$SHARED_RESULT"
             printf 'Planned shared-state update: **%s**. A skipped job attempted no page or latest write.\n\n' "$SHARED_NEEDED"
             printf 'Approvals: one for publish jobs, a second for shared state after uploads, and a third (modrinth-description) only when a paste is needed. Pending shared-state approval holds the shared group: approve or reject promptly.\n\n'
-            printf 'Rejecting shared-state approval leaves the page and latest marker unwritten. If the job ran and failed, inspect each independent write. Recover skipped or rejected updates with a shared-state-only dispatch for the owning tag on each affected destination.\n\n'
+            printf 'Rejecting shared-state approval leaves the page and latest marker unwritten. A failed prerequisite stops both writes. A latest-only failure lets the eligible Hangar step run, then fails the job. If the job ran and failed, inspect its prerequisite and write results. Recover skipped or rejected updates with a shared-state-only dispatch for the owning tag on each affected destination.\n\n'
           } >> "$GITHUB_STEP_SUMMARY"
 
   check-modrinth-description:
