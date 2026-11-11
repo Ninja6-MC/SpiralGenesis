@@ -81,11 +81,12 @@ it; update any log filter that matches the old wording.
   The Hangar project page follows the highest stable version, or the highest pre-release
   until the first stable, and the GitHub latest marker follows the highest stable release
   only. Both are rechecked under one lock across tags before each write, and
-  `shared-state` retries them without uploading a version. A changed Modrinth project description is pasted by hand
-  behind its own approval and then checked against the generated file. Modrinth uploads
-  are no longer retried within a run after a lost response, release candidates are kept
-  for 90 days instead of 30, and the Modrinth and Hangar changelogs carry the
-  `CHANGELOG.md` section without GitHub's generated change list.
+  `shared-state` retries them without uploading a version. A changed Modrinth project
+  description is pasted by hand behind its own approval and then checked against the
+  generated file. Modrinth uploads are no longer retried within a run after a lost
+  response, release candidates are kept for 90 days instead of 30, and the Modrinth and
+  Hangar changelogs carry the `CHANGELOG.md` section without GitHub's generated change
+  list.
 
 ### Fixed
 - **Unusable cells skipped during player allocation are now logged.** Each skipped plot
