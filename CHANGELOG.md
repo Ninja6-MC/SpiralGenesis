@@ -10,7 +10,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- Release page sync can be retried with `hangar-page` behind the release approval
+- Release pages now follow the highest stable public version on each registry,
+  with pre-releases owning them only until that registry's first stable release.
+  Hangar page sync and GitHub latest updates share one lock across tags and
+  recheck ownership before writing. `shared-state` replaces `hangar-page` for
+  recovery without uploading versions.
+- Modrinth descriptions are checked against the generated file at the owning tag.
+  A differing body requests a gated manual paste and verifies it after approval,
+  using the new owner's file if a waiting tag was superseded. Upload token scopes
+  remain unchanged.
+- Release shared state can be retried with `shared-state` behind the release approval
   gate, without uploading a version or keeping a registry key on a local machine.
   GitHub drafts stop a second release create, and Modrinth uploads no longer retry
   within one run after a lost response. Retry publication by a new dispatch.
@@ -23,8 +32,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Hangar then publish in separate jobs behind one approval, so an outage at one registry
   no longer blocks the others, and `scripts/release.sh publish ... --destinations hangar`
   retries only Hangar. An attestation is refused on a re-run attempt and after another
-  publisher run for the same tag. The Hangar page sync and the GitHub latest marker apply
-  only to the newest release on its channel. Release candidates are kept for 90 days
+  publisher run for the same tag. The Hangar page sync and the GitHub latest marker
+  now use the destination ownership rules above. Release candidates are kept for 90 days
   instead of 30. The Modrinth and Hangar changelogs now carry the `CHANGELOG.md` section
   without GitHub's generated change list.
 

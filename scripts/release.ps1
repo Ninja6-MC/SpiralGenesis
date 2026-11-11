@@ -21,7 +21,7 @@
 .EXAMPLE
     scripts\release.ps1 publish 1.0.0 123456789 --destinations hangar --attest hangar
 .EXAMPLE
-    scripts\release.ps1 publish 1.0.0 123456789 --destinations hangar-page --dry-run
+    scripts\release.ps1 publish 1.0.0 123456789 --destinations shared-state --dry-run
 #>
 [CmdletBinding()]
 param(

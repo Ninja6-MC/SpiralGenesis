@@ -12,11 +12,12 @@
 #   scripts/release.sh 0.9.1 --dry-run
 #   scripts/release.sh publish 1.0.0 123456789 --attest modrinth,hangar
 #   scripts/release.sh publish 1.0.0 123456789 --destinations hangar --attest hangar
-#   scripts/release.sh publish 1.0.0 123456789 --destinations hangar-page --dry-run
+#   scripts/release.sh publish 1.0.0 123456789 --destinations shared-state --dry-run
 #
 # Pass the version without the leading "v"; the tag gets it. `--destinations` is a
 # comma-separated subset of github,modrinth,hangar and defaults to all three, or
-# hangar-page alone to sync an already-published version without an attestation. `--attest`
+# shared-state alone to recover the Hangar page and GitHub latest without uploading.
+# Shared-state recovery takes no attestation. `--attest`
 # names the registries whose owner inventory you have just inspected and found without
 # this version; each is confirmed by typing the version. RELEASE_PROCESS.md says when an
 # attestation is needed and which destination to select for a retry.
@@ -72,13 +73,13 @@ publish() {
   IFS=, read -r -a selected <<< "$destinations"
   [ "${#selected[@]}" -gt 0 ] || fail "no destination selected."
   for name in "${selected[@]}"; do
-    case "$name" in github|modrinth|hangar|hangar-page) ;; *) fail "unknown destination '$name'." ;; esac
+    case "$name" in github|modrinth|hangar|shared-state) ;; *) fail "unknown destination '$name'." ;; esac
     if [[ "$seen" == *",$name,"* ]]; then fail "destination '$name' is listed twice."; fi
     seen="$seen$name,"
   done
-  if [[ "$seen" == *",hangar-page,"* ]]; then
-    [ "${#selected[@]}" -eq 1 ] || fail "hangar-page must be selected alone."
-    [ -z "$attest" ] || fail "hangar-page takes no absence attestation."
+  if [[ "$seen" == *",shared-state,"* ]]; then
+    [ "${#selected[@]}" -eq 1 ] || fail "shared-state must be selected alone."
+    [ -z "$attest" ] || fail "shared-state takes no absence attestation."
   fi
   if [ -n "$attest" ]; then
     IFS=, read -r -a attested <<< "$attest"

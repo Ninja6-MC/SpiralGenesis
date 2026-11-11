@@ -17,7 +17,7 @@ on:
         required: true
         type: string
       destinations:
-        description: Destinations, comma-separated; or hangar-page alone for page sync
+        description: Destinations, comma-separated; or shared-state alone for page and latest recovery
         required: true
         default: github,modrinth,hangar
         type: string
@@ -60,11 +60,10 @@ jobs:
       github: ${{ steps.plan.outputs.github }}
       modrinth: ${{ steps.plan.outputs.modrinth }}
       hangar: ${{ steps.plan.outputs.hangar }}
-      hangar_page: ${{ steps.plan.outputs.hangar_page }}
+      shared_state: ${{ steps.plan.outputs.shared_state }}
       channel: ${{ steps.plan.outputs.channel }}
       hangar_channel: ${{ steps.plan.outputs.hangar_channel }}
       version_json: ${{ steps.plan.outputs.version_json }}
-      newest: ${{ steps.plan.outputs.newest }}
     steps:
       - name: Require the release tag ref
         env:
@@ -138,7 +137,7 @@ jobs:
           GITHUB_PUBLIC: ${{ steps.plan.outputs.github_public }}
           MODRINTH_PUBLIC: ${{ steps.plan.outputs.modrinth_public }}
           HANGAR_PUBLIC: ${{ steps.plan.outputs.hangar_public }}
-          NEWEST: ${{ steps.plan.outputs.newest }}
+          OWNERS: ${{ steps.plan.outputs.owners_json }}
           SOURCE: ${{ github.sha }}
         run: |
           {
@@ -148,7 +147,8 @@ jobs:
             printf 'Public state: GitHub `%s`, Modrinth `%s`, Hangar `%s` (blank when not selected)\n\n' "$GITHUB_PUBLIC" "$MODRINTH_PUBLIC" "$HANGAR_PUBLIC"
             printf 'GitHub drafts are not visible before approval with the read-only plan token. publish-github checks drafts after approval and before any release create.\n\n'
             printf 'Absence attestation: Modrinth **%s**, Hangar **%s**\n\n' "$MODRINTH_ATTESTED" "$HANGAR_ATTESTED"
-            printf 'Newest public version on its channel: **%s** (project page sync and GitHub latest only when true)\n\n' "$NEWEST"
+            printf 'Current owners (before uploads): `%s`\n\n' "$OWNERS"
+            printf 'Shared-state ownership: highest stable on each destination, or highest pre-release until its first stable; GitHub latest is stable only. Rechecked under the cross-tag lock before writing.\n\n'
             echo 'A true attestation states that the maintainer inspected the owner inventory for this exact version, including hidden, draft, scheduled, unlisted and deleted versions, and found none. It applies only to this dispatch, candidate and first attempt. Review before approving the release environment.'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -190,7 +190,7 @@ jobs:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
           DESTINATIONS: ${{ needs.plan.outputs.destinations }}
-          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+          PAGE_SYNC: 'true'
         run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
       - name: Check existing GitHub release
         id: state
@@ -213,13 +213,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
           CHANNEL: ${{ needs.plan.outputs.channel }}
-          NEWEST: ${{ needs.plan.outputs.newest }}
         run: |
           set -euo pipefail
           python3 scripts/release_promotion.py guard --destination github --attested false --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT"
-          latest=--latest=false
-          [[ "$CHANNEL" == release && "$NEWEST" == true ]] && latest=--latest
-          gh release create "$RELEASE_TAG" candidate/* --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title "SpiralGenesis $RELEASE_TAG ($CHANNEL)" --notes-file release-notes.md $latest $(python3 scripts/release_promotion.py prerelease --tag "$RELEASE_TAG")
+          gh release create "$RELEASE_TAG" candidate/* --repo "$GITHUB_REPOSITORY" --target "$(git rev-parse HEAD)" --title "SpiralGenesis $RELEASE_TAG ($CHANNEL)" --notes-file release-notes.md --latest=false $(python3 scripts/release_promotion.py prerelease --tag "$RELEASE_TAG")
       - name: Verify the published GitHub release
         if: steps.state.outputs.state == 'absent'
         env:
@@ -265,7 +262,7 @@ jobs:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
           DESTINATIONS: ${{ needs.plan.outputs.destinations }}
-          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+          PAGE_SYNC: 'true'
         run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
       - name: Check existing Modrinth version
         id: state
@@ -364,7 +361,7 @@ jobs:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
           DESTINATIONS: ${{ needs.plan.outputs.destinations }}
-          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+          PAGE_SYNC: 'true'
         run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
       - name: Check existing Hangar version
         id: state
@@ -409,21 +406,19 @@ jobs:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: python3 scripts/release_promotion.py verify-published --destination hangar --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
-      - name: Sync the Hangar project page
-        if: steps.state.outputs.state == 'absent' && needs.plan.outputs.newest == 'true'
-        env:
-          HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
-        run: ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon
 
-  sync-hangar-page:
-    needs: plan
-    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.plan.outputs.hangar_page == 'true'
-    name: Sync the published Hangar project page
+  shared-state:
+    needs: [plan, publish-github, publish-modrinth, publish-hangar]
+    if: always() && !cancelled() && needs.plan.result == 'success' && github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v')
+    name: Reconcile shared release state
+    concurrency:
+      group: release-shared-state
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     environment: release
     permissions:
       actions: read
-      contents: read
+      contents: write
     steps:
       - name: Require the release tag ref
         env:
@@ -451,8 +446,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
-          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
-          PAGE_SYNC: ${{ needs.plan.outputs.newest }}
+          DESTINATIONS: shared-state
+          PAGE_SYNC: 'true'
         run: python3 scripts/release_promotion.py preflight --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --page-sync "$PAGE_SYNC"
       - name: Validate Gradle wrapper for Hangar
         uses: gradle/actions/wrapper-validation@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
@@ -463,13 +458,81 @@ jobs:
           distribution: temurin
       - name: Setup Gradle for Hangar
         uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
-      - name: Recheck published version and sync the Hangar project page
+      - name: Recheck ownership and set GitHub latest
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_promotion.py shared-write --destination github --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+      - name: Recheck ownership and sync the Hangar project page
+        env:
           HANGAR_API_TOKEN: ${{ secrets.HANGAR_API_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           chmod +x gradlew
-          python3 scripts/release_promotion.py page-guard --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
-          ./gradlew syncPluginPublicationMainResourcePagePageToHangar --no-daemon
+          python3 scripts/release_promotion.py shared-write --destination hangar --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
+
+  check-modrinth-description:
+    needs: [plan, publish-modrinth]
+    if: always() && !cancelled() && needs.plan.result == 'success' && github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v')
+    name: Check the public Modrinth description
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      paste_needed: ${{ steps.description.outputs.paste_needed }}
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Fetch retained candidate and evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          CANDIDATE_RUN_ID: ${{ inputs.candidate_run_id }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || { echo 'Invalid candidate run ID'; exit 1; }
+          python3 scripts/release_promotion.py fetch --repository "$GITHUB_REPOSITORY" --run-id "$CANDIDATE_RUN_ID" --tag "$RELEASE_TAG"
+      - name: Compare the public body and request a paste if needed
+        id: description
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          DESTINATIONS: ${{ needs.plan.outputs.destinations }}
+        run: python3 scripts/release_description.py check --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG" --destinations "$DESTINATIONS" --output "$GITHUB_OUTPUT"
+
+  confirm-modrinth-description:
+    needs: check-modrinth-description
+    if: github.ref == format('refs/tags/{0}', inputs.tag) && startsWith(inputs.tag, 'v') && needs.check-modrinth-description.outputs.paste_needed == 'true'
+    name: Confirm the pasted Modrinth description
+    runs-on: ubuntu-latest
+    environment: modrinth-description
+    permissions:
+      contents: read
+    steps:
+      - name: Require the release tag ref
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+)?$ ]] || { echo 'Invalid release tag'; exit 1; }
+          [[ "$GITHUB_REF" == "refs/tags/$RELEASE_TAG" ]] || { echo 'Dispatch on the release tag ref'; exit 1; }
+      - name: Checkout exact release tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Recheck the current owner and read back the pasted description
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python3 scripts/release_description.py confirm --repository "$GITHUB_REPOSITORY" --tag "$RELEASE_TAG"
