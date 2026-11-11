@@ -236,7 +236,8 @@ generated terrain on each, so the range is checked on every change rather than a
 Paper 26.3 is also verified with real clients in CI and in isolated runs. Folia is
 supported across the same range as Paper. PaperMC has published Folia 26.3 only as
 experimental (alpha) builds so far, and CI verifies Folia 26.3 against the latest of
-those, including a real client passing through the allocation gate. Longer Paper 26.3 and Folia live soaks are tracked for 1.0.0 in
+those, including a real client passing through the allocation gate. Longer Paper 26.3
+and Folia live soaks are tracked for 1.0.0 in
 [#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191).
 
 Minecraft 26.1 and newer refuse to start on anything below **Java 25**. That is a server
