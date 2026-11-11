@@ -23,6 +23,7 @@ from release_candidate import DESTINATIONS, TAG, details, digest, read_json, ver
 # Destinations whose absence cannot be proven from their API. Writing to one of them
 # needs a per-dispatch absence attestation unless it is already complete.
 ATTESTED = ("modrinth", "hangar")
+SELECTABLE = (*DESTINATIONS, "hangar-page")
 LABELS = {"github": "GitHub", "modrinth": "Modrinth", "hangar": "Hangar"}
 HANGAR_CHANNELS = {"alpha": "Alpha", "beta": "Beta", "release": "Release"}
 CANDIDATE_WORKFLOW = ".github/workflows/release-candidate.yml"
@@ -107,9 +108,11 @@ def recheck(args):
 
 def select_destinations(text):
     names = [part.strip() for part in (text or "").split(",")]
-    if not names or any(name not in DESTINATIONS for name in names) or len(set(names)) != len(names):
-        raise ValueError(f"Destinations must be a comma-separated subset of {','.join(DESTINATIONS)}")
-    return [name for name in DESTINATIONS if name in names]
+    if not names or any(name not in SELECTABLE for name in names) or len(set(names)) != len(names):
+        raise ValueError(f"Destinations must be a comma-separated subset of {','.join(SELECTABLE)}")
+    if "hangar-page" in names and len(names) != 1:
+        raise ValueError("hangar-page must be selected alone")
+    return [name for name in SELECTABLE if name in names]
 
 
 def flag(value):
@@ -210,12 +213,25 @@ def candidate_identity(tag):
     return manifest, version, channel, jar_name, manifest["files"][jar_name]
 
 
+def refuse_github_draft(release, tag):
+    identity = release.get("html_url") or f"release ID {release.get('id')}"
+    raise ValueError(f"GitHub draft {release.get('name') or tag} ({identity}) exists for {tag}; "
+                     "open the repository's Releases page, inspect and delete that draft manually, "
+                     "then dispatch again. No second release will be created")
+
+
 def github_state(repository, tag, manifest, channel):
     try:
         release = api(f"repos/{repository}/releases/tags/{tag}")
     except subprocess.CalledProcessError as error:
         if "HTTP 404" not in (error.stderr or ""):
             raise
+        lines = command("gh", "api", "--paginate", f"repos/{repository}/releases?per_page=100",
+                        "--jq", ".[] | select(.draft) | {tag_name, html_url, id, name}")
+        drafts = [json.loads(line) for line in lines.splitlines() if line.strip()]
+        for draft in drafts:
+            if draft.get("tag_name") == tag:
+                refuse_github_draft(draft, tag)
         return "absent"
     if release.get("target_commitish") != manifest["source"] or release.get("prerelease") != (channel != "release"):
         raise ValueError("Existing GitHub release metadata cannot be reconciled")
@@ -373,7 +389,7 @@ def project_checks(selected):
     """Checks that need no secret: each selected registry project resolves publicly."""
     if "modrinth" in selected:
         modrinth_project()
-    if "hangar" in selected:
+    if "hangar" in selected or "hangar-page" in selected:
         project = registry_json("https://hangar.papermc.io/api/v1/projects/SpiralGenesis")
         if not isinstance(project, dict) or project.get("name") != "SpiralGenesis":
             raise ValueError("Hangar project identity cannot be established")
@@ -386,8 +402,10 @@ def plan(args):
         if value and name not in selected:
             raise ValueError(f"{LABELS[name]} absence attestation given, but {name} is not a selected destination")
     recheck(args)
+    if selected == ["hangar-page"]:
+        check_page_sync(args, public=True)
     version, channel = details(args.tag)
-    states = {name: public_state(name, args.repository, args.tag) for name in selected}
+    states = {name: public_state(name, args.repository, args.tag) for name in selected if name in DESTINATIONS}
     for name in ATTESTED:
         if name in selected and states[name] != "complete" and not attested[name]:
             raise ValueError(missing_attestation(name, version))
@@ -395,12 +413,28 @@ def plan(args):
         check_attestation(args.repository, args.tag, args.run_id, args.attempt)
     project_checks(selected)
     newest = newest_on_channel(args.tag, public_release_tags(args.repository))
-    outputs = {name: str(name in selected).lower() for name in DESTINATIONS}
+    outputs = {name.replace("-", "_"): str(name in selected).lower() for name in SELECTABLE}
     outputs.update({f"{name}_public": states.get(name) or "unproven" for name in DESTINATIONS if name in selected})
     outputs.update({"destinations": ",".join(selected), "channel": channel,
                     "hangar_channel": HANGAR_CHANNELS[channel], "version_json": json.dumps(version),
                     "newest": str(newest).lower()})
     write_outputs(args.output, outputs)
+
+
+def check_page_sync(args, public=False):
+    tags = public_release_tags(args.repository)
+    if args.tag not in tags:
+        raise ValueError("hangar-page requires an already-published GitHub release for this tag")
+    if not newest_on_channel(args.tag, tags):
+        raise ValueError("hangar-page refused: tag is not the newest public version on its channel")
+    lookup = public_state if public else owner_state
+    if lookup("hangar", args.repository, args.tag) != "complete":
+        raise ValueError("hangar-page requires an already-published, complete Hangar version")
+
+
+def page_guard(args):
+    recheck(args)
+    check_page_sync(args)
 
 
 def preflight(args):
@@ -416,9 +450,10 @@ def preflight(args):
             raise ValueError("MODRINTH_TOKEN is required")
         modrinth_project(token)
         modrinth_inventory(registry_json("https://api.modrinth.com/v2/project/spiralgenesis/version", token))
-    if "hangar" in selected:
+    if "hangar" in selected or "hangar-page" in selected:
         _, granted = hangar_session()
-        needed = ["create_version"] + (["edit_page"] if flag(args.page_sync) else [])
+        needed = (["edit_page"] if "hangar-page" in selected else
+                  ["create_version"] + (["edit_page"] if flag(args.page_sync) else []))
         missing = [name for name in needed if name not in granted]
         if missing:
             raise ValueError(f"Hangar API key lacks {', '.join(missing)}")
@@ -473,10 +508,10 @@ def notes(args):
 def main():
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="action", required=True)
-    for name in ("fetch", "recheck", "plan", "preflight", "reconcile", "guard", "verify-published", "notes", "prerelease"):
+    for name in ("fetch", "recheck", "plan", "preflight", "reconcile", "guard", "verify-published", "notes", "prerelease", "page-guard"):
         item = sub.add_parser(name)
         item.add_argument("--tag", required=True)
-        if name in ("fetch", "plan", "preflight", "reconcile", "guard", "verify-published"):
+        if name in ("fetch", "plan", "preflight", "reconcile", "guard", "verify-published", "page-guard"):
             item.add_argument("--repository", required=True)
         if name in ("fetch", "plan", "guard"):
             item.add_argument("--run-id", type=int, required=True)
@@ -497,7 +532,7 @@ def main():
             item.add_argument("--attested", choices=("true", "false"), default="false")
     args = parser.parse_args()
     handlers = {"fetch": fetch, "recheck": recheck, "plan": plan, "preflight": preflight,
-                "reconcile": reconcile, "guard": guard, "verify-published": verify_published, "notes": notes}
+                "reconcile": reconcile, "guard": guard, "verify-published": verify_published, "notes": notes, "page-guard": page_guard}
     try:
         if args.action in handlers:
             handlers[args.action](args)

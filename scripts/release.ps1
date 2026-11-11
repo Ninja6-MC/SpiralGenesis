@@ -20,6 +20,8 @@
     scripts\release.ps1 publish 1.0.0 123456789 --attest modrinth,hangar
 .EXAMPLE
     scripts\release.ps1 publish 1.0.0 123456789 --destinations hangar --attest hangar
+.EXAMPLE
+    scripts\release.ps1 publish 1.0.0 123456789 --destinations hangar-page --dry-run
 #>
 [CmdletBinding()]
 param(

@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Release page sync can be retried with `hangar-page` behind the release approval
+  gate, without uploading a version or keeping a registry key on a local machine.
+  GitHub drafts stop a second release create, and Modrinth uploads no longer retry
+  within one run after a lost response. Retry publication by a new dispatch.
+
 ### Changed
 - **Each release destination publishes in its own job, and one can be retried alone.**
   Publish Release takes a `destinations` input and runs a `plan` job without approval or
