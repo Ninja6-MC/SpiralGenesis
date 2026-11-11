@@ -108,5 +108,5 @@ updates:
     labels:
       - dependencies
     # This ecosystem also proposes the Gradle wrapper, as gradle-wrapper in the groups
-    # above. A wrapper major lands in gradle-major, on its own.
+    # above. A wrapper major lands in gradle-major, beside any plugin majors due that week.
     open-pull-requests-limit: 5
