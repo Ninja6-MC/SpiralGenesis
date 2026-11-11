@@ -87,9 +87,10 @@ it; update any log filter that matches the old wording.
   response, release candidates are kept for 90 days instead of 30, and the Modrinth and
   Hangar changelogs carry the `CHANGELOG.md` section without GitHub's generated change
   list.
-- **CI and the release candidate gate boot the plugin on Folia 26.3.** The build runs on
+- **CI and the release candidate gate boot the plugin on Folia 26.3.** CI runs it on
   the latest Folia 26.3 build, which PaperMC publishes only as experimental (alpha) so
-  far, and a release candidate needs that boot to pass as well as the other seven.
+  far, and also sends a real client through the allocation gate there. A release
+  candidate needs the Folia 26.3 boot to pass as well as the other seven.
 
 ### Fixed
 - **Unusable cells skipped during player allocation are now logged.** Each skipped plot
