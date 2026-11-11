@@ -6,7 +6,7 @@ Release tags are `vMAJOR.MINOR.PATCH`, optionally followed by `-alpha.N`,
 `-beta.N` or `-rc.N`. Tags always identify a commit on `main`. Alpha maps to
 GitHub prerelease, Modrinth `alpha` and Hangar `Alpha`. Beta and RC map to
 GitHub prerelease, Modrinth `beta` and Hangar `Beta`. A plain version maps to
-GitHub latest (when it is the newest stable release), Modrinth `release` and
+GitHub latest (when it is the highest stable version), Modrinth `release` and
 Hangar `Release`.
 
 MAJOR means incompatible API or storage changes, MINOR new functionality, and
@@ -69,9 +69,14 @@ hold.
 7. Each selected destination then publishes in its own job:
    `publish-github`, `publish-modrinth` and `publish-hangar`. All three use the
    protected `release` environment and depend on `plan` alone, so they wait at
-   the gate together and one approval covers the run. The maintainer reviews
-   the plan summary and approves in the browser. Automation must not approve
-   or reject this gate.
+   the gate together. A run needs one approval for these publish jobs, a
+   second `release` approval for shared state after they finish when plan
+   selects an update, and a third (`modrinth-description`) only when a paste
+   is needed. The maintainer reviews the summaries and approves in the browser.
+   Pending shared-state approval holds the shared group: approve or reject it
+   promptly. Rejection leaves the page and latest marker unwritten; recover
+   with a `shared-state`-only dispatch for the owning tag. Automation must
+   not approve or reject any gate.
 8. Each publish job downloads the same retained candidate again and repeats
    the provenance and digest checks. Before writing anything, it runs the
    credential preflight for every destination selected in this dispatch, not
@@ -180,16 +185,28 @@ A stable hotfix owns its destination's page even after a higher pre-release;
 a pre-release cannot replace a stable page. These inventories are independent:
 a missing upload on one destination does not make GitHub its authority.
 
-`plan` records the current owners as a preview. Each GitHub release is created
+`plan` records the current owners and predicts which selected uploads can
+own shared state. Modrinth-only dispatches and tags that cannot own either
+selected destination skip the shared-state job before its gate. Recovery-only
+plans consider only already-complete public destinations. The plan decision
+can only skip work; it never authorizes a write. Each GitHub release is created
 with `--latest=false`. After the publish jobs finish, `shared-state` runs under
 `environment: release`, with the same tag-ref guard, using the job-level
 `release-shared-state` concurrency group with `cancel-in-progress: false`.
-The group is repository-wide and does not contain the tag. The job downloads
+The group is repository-wide and does not contain the tag. This is a second
+`release` approval after the publish jobs, not part of their first approval.
+While that approval is pending it holds the shared group; approve or reject
+it promptly. Rejecting it leaves the page and latest marker unwritten.
+Recover with a `shared-state`-only dispatch for the owning tag. A read-only
+report job records skipped and rejected results and the recovery guidance
+in the run summary. The shared-state job downloads
 and verifies the retained candidate again and preflights its credentials.
 Immediately before each write it rechecks the tag, evidence and digests,
 verifies that destination's public version matches the retained bytes, then
 reads ownership again. A non-owner skips with its owner's tag in the log.
-Only an owner calls `gh release edit --latest` or syncs the Hangar page from
+Each selected shared-state write runs independently, so a failed GitHub
+latest update does not skip an eligible Hangar sync; either failure still
+fails the job. Only an owner calls `gh release edit --latest` or syncs the Hangar page from
 `docs/modrinth-description.md`. Hangar's sync reads the public page back for
 exact equality. This job contains no build or packaging step.
 
@@ -243,8 +260,14 @@ omitting the generated comment, then approve `modrinth-description`. The
 summary warns that a newer owner found at approval replaces this tag.
 
 The **`modrinth-description` environment must exist**, with the maintainer as
-required reviewer and **no secrets**. Configure it before the first release;
-this change does not create it or change repository settings. Automation must
+required reviewer, **no secrets**, and custom deployment policies permitting
+only `v*` tags (no branch or broader tag policy). Before requesting a paste,
+the check job uses its read-only job token to read the environment and every
+policy page. Missing protections, an absent environment, or a token unable
+to read these APIs fail closed with no paste output and no confirm job.
+The runtime job-token access has not been verified by a workflow dispatch.
+Configure the environment before the first release; this change never
+creates it or calls any settings write API. Automation must
 not approve this gate. Neither description job receives `MODRINTH_TOKEN`,
 and that token retains exactly its three upload-only scopes.
 
@@ -324,6 +347,7 @@ own support or removal process before another promotion.
 | Upload succeeded but consumer verification failed | Bytes or visibility differ, or are not visible yet | Dispatch selecting only that destination without an attestation; if it is complete it is verified and skipped, otherwise reconcile on the registry by hand. For Hangar, also dispatch `shared-state` alone without attestations once the version is complete, for the tag that owns each destination |
 | Shared-state job cancelled or latest marker update failed | Versions are unchanged but shared state can be stale | Dispatch `shared-state` for the owning tag on the affected destination, with no attestations |
 | Hangar page sync failed after the upload | The version is published; the page is stale | Dispatch `shared-state` alone with the original candidate run ID and no attestations; non-owners are skipped after the ownership recheck |
+| Modrinth description environment check fails | Environment, reviewers, v* restriction or read access is missing | Configure the environment manually, then re-run the check job; no paste or confirm approval was requested |
 | Modrinth description confirmation fails | The public body differs from its current owner file | Paste the file linked in the job summary, then re-run only the confirm job |
 | A publish job failed before its upload for a transient reason | Nothing was written by that job | Re-running that job is allowed only without an attestation for its destination; otherwise dispatch a new run |
 

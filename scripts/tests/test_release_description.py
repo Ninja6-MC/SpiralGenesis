@@ -1,5 +1,7 @@
 import argparse
+import copy
 import os
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
@@ -20,6 +22,7 @@ class DescriptionTests(unittest.TestCase):
 
     def check(self, body, owner="v1.2.3", state="complete"):
         with patch.object(description, "recheck"), \
+             patch.object(description, "check_environment"), \
              patch.object(description, "public_state", return_value=state), \
              patch.object(description, "public_owner", return_value=owner), \
              patch.object(description, "source_body", return_value=self.expected) as source, \
@@ -107,6 +110,109 @@ class DescriptionTests(unittest.TestCase):
         diff = description.difference("\n".join(["old" * 100] * 100), "\n".join(["new" * 100] * 100))
         self.assertLessEqual(len(diff.splitlines()), 16)
         self.assertLessEqual(max(map(len, diff.splitlines())), 200)
+
+
+class EnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.environment = {
+            "protection_rules": [{"type": "required_reviewers", "reviewers": [
+                {"type": "User", "reviewer": {"id": 1, "login": "maintainer"}}]}],
+            "deployment_branch_policy": {"protected_branches": False, "custom_branch_policies": True},
+        }
+        self.policies = {"total_count": 1, "branch_policies": [{"type": "tag", "name": "v*"}]}
+        self.token = patch.dict(os.environ, {"GH_TOKEN": "read-only-job-token"})
+        self.token.start()
+        self.addCleanup(self.token.stop)
+
+    def test_existing_protected_environment_is_accepted_with_read_calls_only(self):
+        with patch.object(description, "api", side_effect=[self.environment, self.policies]) as api:
+            description.check_environment("owner/repo")
+        self.assertEqual(api.call_args_list[0].args, ("repos/owner/repo/environments/modrinth-description",))
+        self.assertIn("deployment-branch-policies?per_page=100&page=1", api.call_args_list[1].args[0])
+        self.assertTrue(all(len(call.args) == 1 and not call.kwargs for call in api.call_args_list))
+
+    def test_missing_environment_is_refused(self):
+        missing = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")
+        with patch.object(description, "api", side_effect=missing):
+            with self.assertRaisesRegex(ValueError, "environment.*missing or unreadable.*no paste requested"):
+                description.check_environment("owner/repo")
+
+    def test_unreadable_environment_or_policies_is_refused(self):
+        denied = subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 403")
+        for responses in ([denied], [self.environment, denied]):
+            with self.subTest(length=len(responses)), patch.object(description, "api", side_effect=responses):
+                with self.assertRaisesRegex(ValueError, "job token cannot read.*no paste requested"):
+                    description.check_environment("owner/repo")
+
+    def test_missing_job_token_is_refused_without_api(self):
+        with patch.dict(os.environ, {"GH_TOKEN": ""}), patch.object(description, "api") as api:
+            with self.assertRaisesRegex(ValueError, "GH_TOKEN is missing"):
+                description.check_environment("owner/repo")
+            api.assert_not_called()
+
+    def test_missing_required_reviewer_is_refused(self):
+        for rules in ([], [{"type": "required_reviewers", "reviewers": []}],
+                      [{"type": "required_reviewers", "reviewers": [{}]}]):
+            environment = copy.deepcopy(self.environment)
+            environment["protection_rules"] = rules
+            with self.subTest(rules=rules), patch.object(description, "api", return_value=environment):
+                with self.assertRaisesRegex(ValueError, "no required reviewer"):
+                    description.check_environment("owner/repo")
+
+    def test_missing_custom_tag_restriction_is_refused(self):
+        for policy in (None, {"protected_branches": True, "custom_branch_policies": False}):
+            environment = copy.deepcopy(self.environment)
+            environment["deployment_branch_policy"] = policy
+            with self.subTest(policy=policy), patch.object(description, "api", return_value=environment):
+                with self.assertRaisesRegex(ValueError, "restrict deployments to v"):
+                    description.check_environment("owner/repo")
+
+    def test_absent_broader_and_branch_policies_are_refused(self):
+        for policies in ({"total_count": 0, "branch_policies": []},
+                         {"total_count": 1, "branch_policies": [{"type": "tag", "name": "*"}]},
+                         {"total_count": 1, "branch_policies": [{"type": "branch", "name": "v*"}]},
+                         {"total_count": 2, "branch_policies": [{"type": "tag", "name": "v*"}, {"type": "branch", "name": "main"}]}):
+            with self.subTest(policies=policies), patch.object(description, "api", side_effect=[self.environment, policies]):
+                with self.assertRaisesRegex(ValueError, r"only v\*"):
+                    description.check_environment("owner/repo")
+
+    def test_all_policy_pages_are_checked(self):
+        first = {"total_count": 2, "branch_policies": [{"type": "tag", "name": "v*"}]}
+        second = {"total_count": 2, "branch_policies": [{"type": "tag", "name": "*"}]}
+        with patch.object(description, "api", side_effect=[self.environment, first, second]) as api:
+            with self.assertRaisesRegex(ValueError, r"only v\*"):
+                description.check_environment("owner/repo")
+        self.assertTrue(api.call_args.args[0].endswith("page=2"))
+
+    def test_unprotected_environment_never_outputs_paste_request(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            args = argparse.Namespace(repository="owner/repo", tag="v1.2.3", destinations="modrinth", output=str(output))
+            with patch.object(description, "recheck"), \
+                 patch.object(description, "public_state", return_value="complete"), \
+                 patch.object(description, "public_owner", return_value=args.tag), \
+                 patch.object(description, "source_body", return_value="new text"), \
+                 patch.object(description, "public_body", return_value="old text"), \
+                 patch.object(description, "api", side_effect=subprocess.CalledProcessError(1, ["gh"], stderr="HTTP 404")), \
+                 patch.object(description, "summary") as summary:
+                with self.assertRaisesRegex(ValueError, "missing or unreadable"):
+                    description.check(args)
+            self.assertFalse(output.exists())
+            summary.assert_not_called()
+
+    def test_matching_body_does_not_require_environment_or_approval(self):
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            args = argparse.Namespace(repository="owner/repo", tag="v1.2.3", destinations="modrinth", output=str(output))
+            with patch.object(description, "recheck"), \
+                 patch.object(description, "public_state", return_value="complete"), \
+                 patch.object(description, "public_owner", return_value=args.tag), \
+                 patch.object(description, "source_body", return_value="same text"), \
+                 patch.object(description, "public_body", return_value="same text"), \
+                 patch.object(description, "api") as api, patch.object(description, "summary"):
+                description.check(args)
+            api.assert_not_called()
+            self.assertIn("paste_needed=false", output.read_text())
 
 
 if __name__ == "__main__":

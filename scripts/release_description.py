@@ -8,7 +8,7 @@ import subprocess
 from pathlib import Path
 
 from release_candidate import TAG
-from release_promotion import (command, public_owner, public_state, recheck,
+from release_promotion import (api, command, public_owner, public_state, recheck,
                                registry_json, select_destinations, tag_source, write_outputs)
 
 PROJECT = "https://api.modrinth.com/v2/project/spiralgenesis"
@@ -59,6 +59,42 @@ def difference(expected, actual):
     return "\n".join(line[:200] for line in lines[:16])
 
 
+def check_environment(repository):
+    """Read existing protections only; never create an environment or request a paste blindly."""
+    base = f"repos/{repository}/environments/modrinth-description"
+    if not os.environ.get("GH_TOKEN"):
+        raise ValueError("The job token cannot read modrinth-description protections: GH_TOKEN is missing; no paste requested")
+    try:
+        environment = api(base)
+        rules = environment.get("protection_rules", [])
+        reviewers = [reviewer for rule in rules if rule.get("type") == "required_reviewers"
+                     for reviewer in rule.get("reviewers", [])]
+        if not any(item.get("type") in ("User", "Team") and item.get("reviewer", {}).get("id") for item in reviewers):
+            raise ValueError("modrinth-description has no required reviewer; configure it before requesting a paste")
+        policy = environment.get("deployment_branch_policy") or {}
+        if policy.get("custom_branch_policies") is not True or policy.get("protected_branches") is not False:
+            raise ValueError("modrinth-description must restrict deployments to v* tags using custom policies")
+        policies, page = [], 1
+        while True:
+            result = api(f"{base}/deployment-branch-policies?per_page=100&page={page}")
+            batch = result.get("branch_policies")
+            count = result.get("total_count")
+            if not isinstance(batch, list) or not isinstance(count, int) or count < 1 or (not batch and len(policies) < count):
+                raise ValueError("modrinth-description tag policies are missing or incomplete; only v* tags are allowed")
+            policies.extend(batch)
+            if len(policies) >= count:
+                break
+            page += 1
+        if any(item.get("type") != "tag" or item.get("name") != "v*" for item in policies):
+            raise ValueError("modrinth-description must allow only v* tag policies, with no branch or broader tag policies")
+    except subprocess.CalledProcessError as error:
+        if "HTTP 404" in (error.stderr or ""):
+            raise ValueError("modrinth-description environment or its tag policies are missing or unreadable by the job token; no paste requested") from None
+        raise ValueError("The job token cannot read modrinth-description environment protections or tag policies; no paste requested") from None
+    except (AttributeError, TypeError, KeyError):
+        raise ValueError("modrinth-description protection response is invalid; no paste requested") from None
+
+
 def check(args):
     recheck(args)
     selected = select_destinations(args.destinations)
@@ -74,6 +110,8 @@ def check(args):
         return
     expected = source_body(args.repository, owner)
     needed = not compare(expected, public_body())
+    if needed:
+        check_environment(args.repository)
     write_outputs(args.output, {"paste_needed": str(needed).lower()})
     if needed:
         summary(f"## Modrinth description paste required\n\n"

@@ -456,6 +456,22 @@ def project_checks(selected):
             raise ValueError("Hangar project identity cannot be established")
 
 
+def shared_targets(tag, selected, states, owners):
+    """Plan may avoid a gate; only the write-time inventory can authorize a write."""
+    recovery = selected == ["shared-state"]
+    targets = {}
+    for destination in ("github", "hangar"):
+        eligible = (recovery and states.get(destination) == "complete") or destination in selected
+        if destination == "github" and not version_key(tag)[3]:
+            eligible = False
+        owner = owners.get(destination)
+        if eligible and not recovery:
+            # A selected upload may make this tag the owner after plan has finished.
+            owner = state_owner(([owner] if owner else []) + [tag], stable_only=destination == "github")
+        targets[destination] = eligible and owner == tag
+    return targets
+
+
 def plan(args):
     selected = select_destinations(args.destinations)
     attested = {name: flag(getattr(args, f"{name}_attested")) for name in ATTESTED}
@@ -477,8 +493,11 @@ def plan(args):
     project_checks(selected)
     preview = ("github", "hangar") if selected == ["shared-state"] else selected
     owners = {name: public_owner(name, args.repository) for name in preview}
+    targets = shared_targets(args.tag, selected, states, owners)
     outputs = {name.replace("-", "_"): str(name in selected).lower() for name in SELECTABLE}
     outputs.update({f"{name}_public": states.get(name) or "unproven" for name in DESTINATIONS if name in selected})
+    outputs.update({f"shared_{name}": str(value).lower() for name, value in targets.items()})
+    outputs["shared_needed"] = str(any(targets.values())).lower()
     outputs.update({"destinations": ",".join(selected), "channel": channel, "owners_json": json.dumps(owners),
                     "hangar_channel": HANGAR_CHANNELS[channel], "version_json": json.dumps(version)})
     write_outputs(args.output, outputs)

@@ -378,6 +378,37 @@ class SharedStateTests(unittest.TestCase):
              patch.object(release_promotion, "project_checks"):
             release_promotion.plan(self.args)
 
+    def test_plan_skips_gate_when_no_selected_destination_changes_shared_state(self):
+        self.args.destinations = "modrinth"
+        self.plan({"modrinth": "complete"})
+        output = Path(self.args.output).read_text()
+        self.assertIn("shared_needed=false", output)
+        self.assertIn("shared_github=false", output)
+        self.assertIn("shared_hangar=false", output)
+
+    def test_plan_skips_nonowner_recovery_gate(self):
+        with patch.object(release_promotion, "recheck"), \
+             patch.object(release_promotion, "public_owner", return_value="v1.2.3"), \
+             patch.object(release_promotion, "public_state", return_value="complete"), \
+             patch.object(release_promotion, "project_checks"):
+            release_promotion.plan(self.args)
+        self.assertIn("shared_needed=false", Path(self.args.output).read_text())
+
+    def test_plan_targets_follow_selection_and_expected_post_upload_owner(self):
+        cases = [
+            ("v1.0.1", ["hangar"], {}, {"hangar": "v2.0.0-beta.1"}, {"github": False, "hangar": True}),
+            ("v2.0.0-beta.1", ["hangar"], {}, {"hangar": "v1.0.0"}, {"github": False, "hangar": False}),
+            ("v1.0.1", ["github", "hangar"], {}, {"github": "v1.0.2", "hangar": "v1.0.2"}, {"github": False, "hangar": False}),
+            ("v2.0.0-beta.1", ["github"], {}, {"github": None}, {"github": False, "hangar": False}),
+            ("v1.0.0", ["github"], {}, {"github": None}, {"github": True, "hangar": False}),
+            ("v1.0.1", ["github"], {}, {"github": "v1.0.1", "hangar": "v1.0.1"}, {"github": True, "hangar": False}),
+            ("v1.0.1", ["shared-state"], {"github": "complete", "hangar": None},
+             {"github": "v1.0.1", "hangar": "v1.0.1"}, {"github": True, "hangar": False}),
+        ]
+        for tag, selected, states, owners, expected in cases:
+            with self.subTest(tag=tag, selected=selected):
+                self.assertEqual(release_promotion.shared_targets(tag, selected, states, owners), expected)
+
     def test_shared_only_selects_no_upload(self):
         self.plan()
         output = Path(self.args.output).read_text()
