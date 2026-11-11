@@ -78,10 +78,10 @@ it; update any log filter that matches the old wording.
   approve, then publishes GitHub Releases, Modrinth and Hangar in separate jobs, so an
   outage at one registry no longer blocks the others, and
   `scripts/release.sh publish ... --destinations hangar` retries one destination alone.
-  The Hangar project page and the GitHub latest marker follow the highest stable version
-  on each destination, or the highest pre-release until the first stable, and are
-  rechecked under one lock across tags before each write; `shared-state` retries them
-  without uploading a version. A changed Modrinth project description is pasted by hand
+  The Hangar project page follows the highest stable version, or the highest pre-release
+  until the first stable, and the GitHub latest marker follows the highest stable release
+  only. Both are rechecked under one lock across tags before each write, and
+  `shared-state` retries them without uploading a version. A changed Modrinth project description is pasted by hand
   behind its own approval and then checked against the generated file. Modrinth uploads
   are no longer retried within a run after a lost response, release candidates are kept
   for 90 days instead of 30, and the Modrinth and Hangar changelogs carry the
