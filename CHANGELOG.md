@@ -12,10 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.0.0-beta.4] - 2026-11-11
 
 **Compatibility** is unchanged from 1.0.0-beta.3: Paper, Purpur, other Paper forks and
-Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3, with CI verifying Folia on 1.20.4,
-1.21.11 and 26.2. Folia 26.3 is supported but not yet verified because no official build
-is available. Longer Paper 26.3 and Folia live soaks, and verification of Folia 26.3 once
-a build is available, remain for 1.0.0 in
+Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3. CI now verifies Folia on 1.20.4,
+1.21.11, 26.2 and 26.3; PaperMC has published Folia 26.3 only as experimental (alpha)
+builds so far, and CI boots the plugin on the latest of those. Longer Paper 26.3 and
+Folia live soaks remain for 1.0.0 in
 [#191](https://github.com/Ninja6-MC/SpiralGenesis/issues/191). Minecraft 26.1 and newer
 need the server to run on Java 25; Java 21 is enough for 1.20 and 1.21.
 
@@ -87,6 +87,10 @@ it; update any log filter that matches the old wording.
   response, release candidates are kept for 90 days instead of 30, and the Modrinth and
   Hangar changelogs carry the `CHANGELOG.md` section without GitHub's generated change
   list.
+- **CI and the release candidate gate boot the plugin on Folia 26.3.** CI runs it on
+  the latest Folia 26.3 build, which PaperMC publishes only as experimental (alpha) so
+  far, and also sends a real client through the allocation gate there. A release
+  candidate needs the Folia 26.3 boot to pass as well as the other seven.
 
 ### Fixed
 - **Unusable cells skipped during player allocation are now logged.** Each skipped plot

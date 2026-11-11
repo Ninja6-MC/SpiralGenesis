@@ -288,6 +288,21 @@ jobs:
             bot: 'true'
             bot_jar: 'GateProbeBot-26.3.jar'
             samples: '5'
+          # Folia twin of the entry above, for the same reason the 1.21.11 pair has one:
+          # respawn revalidation has a Folia-only path. Runs on the latest Folia 26.3
+          # build, which PaperMC publishes only as experimental (alpha) so far.
+          - label: 'folia 26.3 real player through the gate'
+            platform: folia
+            minecraft: '26.3'
+            java: '25'
+            limbo_mode: 'PIN'
+            bot: 'true'
+            bot_jar: 'GateProbeBot-26.3.jar'
+            samples: '5'
+          # Paper only, like 'paper 1.21.11 teleport refused then re-asserted' below:
+          # Folia does not route teleportAsync through PlayerTeleportEvent, so a limbo
+          # cannot refuse the teleport there and a Folia entry would test Folia, not
+          # this plugin.
           - label: 'paper 26.3 refused teleport is re-asserted'
             platform: paper
             minecraft: '26.3'
@@ -301,6 +316,13 @@ jobs:
           - label: 'folia 26.2'
             platform: folia
             minecraft: '26.2'
+            java: '25'
+          # PaperMC publishes Folia 26.3 only on its experimental (alpha) channel so far.
+          # smoke-test.sh takes the latest build whatever its channel, so this entry boots
+          # the plugin on that build.
+          - label: 'folia 26.3'
+            platform: folia
+            minecraft: '26.3'
             java: '25'
           # A deliberately hostile world. Seed 1901 is mountainous and is the only seed
           # measured that exhausts a scan: it produced 1 fallback and a spawn at Y=62 across
