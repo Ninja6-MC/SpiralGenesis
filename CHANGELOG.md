@@ -9,39 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-- Release pages now follow the highest stable public version on each registry,
-  with pre-releases owning them only until that registry's first stable release.
-  Hangar page sync and GitHub latest updates share one lock across tags and
-  recheck ownership before writing. Plans skip an unnecessary shared-state approval;
-  Hangar sync can still run if the independent GitHub latest update fails.
-  `shared-state` replaces `hangar-page` for
-  recovery without uploading versions.
-- Modrinth descriptions are checked against the generated file at the owning tag.
-  A differing body requests a gated manual paste and verifies it after approval,
-  using the new owner's file if a waiting tag was superseded. Paste requests fail
-  closed unless the confirmation environment has reviewers and v* tag restrictions.
-  Upload token scopes
-  remain unchanged.
-- Release shared state can be retried with `shared-state` behind the release approval
-  gate, without uploading a version or keeping a registry key on a local machine.
-  GitHub drafts stop a second release create, and Modrinth uploads no longer retry
-  within one run after a lost response. Retry publication by a new dispatch.
-
-### Changed
-- **Each release destination publishes in its own job, and one can be retried alone.**
-  Publish Release takes a `destinations` input and runs a `plan` job without approval or
-  publishing credentials that checks the candidate run, public registry state and the
-  absence attestations before anyone is asked to approve. GitHub Releases, Modrinth and
-  Hangar then publish in separate jobs behind their first approval, so an outage at one registry
-  no longer blocks the others, and `scripts/release.sh publish ... --destinations hangar`
-  retries only Hangar. An attestation is refused on a re-run attempt and after another
-  publisher run for the same tag. The Hangar page sync and the GitHub latest marker
-  now use the destination ownership rules above. Release candidates are kept for 90 days
-  instead of 30. The Modrinth and Hangar changelogs now carry the `CHANGELOG.md` section
-  without GitHub's generated change list.
-
-## [1.0.0-beta.4] - 2026-11-10
+## [1.0.0-beta.4] - 2026-11-11
 
 **Compatibility** is unchanged from 1.0.0-beta.3: Paper, Purpur, other Paper forks and
 Folia on Minecraft 1.20.x, 1.21.x and 26.1 to 26.3, with CI verifying Folia on 1.20.4,
@@ -102,6 +70,23 @@ it; update any log filter that matches the old wording.
   plot's chunk, and a player still at an unsafe plot is moved by the in-cell repair. One
   task per placement; nothing watches plots after it, and arrival grants no
   invulnerability.
+
+### Changed
+- **The release workflow publishes each destination in its own job.** This changes how
+  maintainers release, not the plugin. Publish Release checks the candidate run, public
+  registry state and the absence attestations in a `plan` job before anyone is asked to
+  approve, then publishes GitHub Releases, Modrinth and Hangar in separate jobs, so an
+  outage at one registry no longer blocks the others, and
+  `scripts/release.sh publish ... --destinations hangar` retries one destination alone.
+  The Hangar project page follows the highest stable version, or the highest pre-release
+  until the first stable, and the GitHub latest marker follows the highest stable release
+  only. Both are rechecked under one lock across tags before each write, and
+  `shared-state` retries them without uploading a version. A changed Modrinth project
+  description is pasted by hand behind its own approval and then checked against the
+  generated file. Modrinth uploads are no longer retried within a run after a lost
+  response, release candidates are kept for 90 days instead of 30, and the Modrinth and
+  Hangar changelogs carry the `CHANGELOG.md` section without GitHub's generated change
+  list.
 
 ### Fixed
 - **Unusable cells skipped during player allocation are now logged.** Each skipped plot
